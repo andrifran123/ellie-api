@@ -51,6 +51,10 @@ app.use(express.static(path.join(__dirname, "public")));
 // ADDED: health checks for Render
 app.get("/healthz", (_req, res) => res.status(200).send("ok")); // ADDED
 app.head("/healthz", (_req, res) => res.status(200).end());     // ADDED
+// ADDED: alias so Vercel's /api/healthz works via the rewrite
+app.get("/api/healthz", (_req, res) => res.status(200).send("ok")); // ADDED
+app.head("/api/healthz", (_req, res) => res.status(200).end());     // ADDED
+
 
 
 // ADDED: Render/Vercel health checks
