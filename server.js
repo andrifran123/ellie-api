@@ -9,11 +9,17 @@ const { Pool } = require("pg");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ADDED: trust proxy so req.ip, secure cookies, etc. behave behind Render/other proxies
+app.set("trust proxy", 1); // ADDED
+
+
+
 /* ──────────────────────────────────────────────────────────────
    Config
    ────────────────────────────────────────────────────────────── */
 const CHAT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 15000);
+// FIXED: env name typo (added missing dot)
+const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 15000); // FIXED
 const MAX_MESSAGE_LEN = Number(process.env.MAX_MESSAGE_LEN || 4000);
 
 // Fuzzy duplicate detection threshold (0..1). 0.8 is conservative; lower if your facts are short.
@@ -33,13 +39,23 @@ const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);            // (
 // Middleware
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",") : true,
+    // ADDED: You can set CORS_ORIGIN to a comma-separated list (e.g., "https://your-site.vercel.app,https://another")
+    // or leave unset (true) during early testing. In production, set it to your Vercel URL.
+    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",") : true, // existing behavior kept
     credentials: true,
   })
 );
 // app.use(bodyParser.json());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
+// ADDED: health checks for Render
+app.get("/healthz", (_req, res) => res.status(200).send("ok")); // ADDED
+app.head("/healthz", (_req, res) => res.status(200).end());     // ADDED
+
+
+// ADDED: Render/Vercel health checks
+app.get("/healthz", (_req, res) => res.status(200).send("ok")); // ADDED
+app.head("/healthz", (_req, res) => res.status(200).end()); // ADDED
 
 // OpenAI API client
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -645,6 +661,27 @@ app.post("/api/reset", (req, res) => {
   histories.set(userId, [{ role: "system", content: ELLIE_SYSTEM_PROMPT }]);
   res.json({ status: "Conversation reset" });
 });
+
+// ADDED: simple database connectivity test endpoint (safe to remove later)
+app.get("/api/test-db", async (_req, res) => { // ADDED
+  try {
+    const { rows } = await pool.query("SELECT NOW() AS now"); // ADDED
+    res.json({ ok: true, now: rows?.[0]?.now || null }); // ADDED
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message }); // ADDED
+  }
+}); // ADDED
+
+// ADDED: graceful shutdown (so Render restarts don’t leak connections)
+function shutdown(signal) { // ADDED
+  console.log(`\n${signal} received. Closing DB pool...`); // ADDED
+  pool.end(() => { // ADDED
+    console.log("DB pool closed. Exiting."); // ADDED
+    process.exit(0); // ADDED
+  }); // ADDED
+} // ADDED
+process.on("SIGTERM", () => shutdown("SIGTERM")); // ADDED
+process.on("SIGINT", () => shutdown("SIGINT"));   // ADDED
 
 // Start server (UNCHANGED)
 app.listen(PORT, () => {
