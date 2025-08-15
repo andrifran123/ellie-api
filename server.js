@@ -1,5 +1,4 @@
 const express = require("express");
-// const bodyParser = require("body-parser"); // removed: use built-in express.json()
 const cors = require("cors");
 const path = require("path");
 require("dotenv").config();
@@ -12,14 +11,40 @@ const PORT = process.env.PORT || 3000;
 // ADDED: trust proxy so req.ip, secure cookies, etc. behave behind Render/other proxies
 app.set("trust proxy", 1); // ADDED
 
+/* ──────────────────────────────────────────────────────────────
+   CORS (configured BEFORE any routes)
+   ────────────────────────────────────────────────────────────── */
+// If CORS_ORIGIN is set, we accept a comma-separated list.
+// Otherwise we allow your Vercel sites and localhost:3000 by default.
+const defaultAllowed = [
+  "https://ellie-web-ochre.vercel.app",
+  "https://ellie-web.vercel.app",
+  "http://localhost:3000",
+];
+const allowedOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(",").map(s => s.trim()).filter(Boolean)
+  : defaultAllowed;
 
+app.use(
+  cors({
+    origin(origin, callback) {
+      // allow non-browser requests (no Origin) like curl/postman
+      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error("Not allowed by CORS"));
+    },
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  })
+);
+// Handle preflight for all routes
+app.options("*", cors());
 
 /* ──────────────────────────────────────────────────────────────
    Config
    ────────────────────────────────────────────────────────────── */
 const CHAT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-// FIXED: env name typo (added missing dot)
-const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 15000); // FIXED
+const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 15000);
 const MAX_MESSAGE_LEN = Number(process.env.MAX_MESSAGE_LEN || 4000);
 
 // Fuzzy duplicate detection threshold (0..1). 0.8 is conservative; lower if your facts are short.
@@ -37,29 +62,15 @@ const PROB_IMPERFECTION = Number(process.env.PROB_IMPERFECTION || 0.2);     // (
 const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);            // (7) Simulated free will
 
 // Middleware
-app.use(
-  cors({
-    // ADDED: You can set CORS_ORIGIN to a comma-separated list (e.g., "https://your-site.vercel.app,https://another")
-    // or leave unset (true) during early testing. In production, set it to your Vercel URL.
-    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",") : true, // existing behavior kept
-    credentials: true,
-  })
-);
-// app.use(bodyParser.json());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
+
 // ADDED: health checks for Render
 app.get("/healthz", (_req, res) => res.status(200).send("ok")); // ADDED
 app.head("/healthz", (_req, res) => res.status(200).end());     // ADDED
 // ADDED: alias so Vercel's /api/healthz works via the rewrite
 app.get("/api/healthz", (_req, res) => res.status(200).send("ok")); // ADDED
 app.head("/api/healthz", (_req, res) => res.status(200).end());     // ADDED
-
-
-
-// ADDED: Render/Vercel health checks
-app.get("/healthz", (_req, res) => res.status(200).send("ok")); // ADDED
-app.head("/healthz", (_req, res) => res.status(200).end()); // ADDED
 
 // OpenAI API client
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
