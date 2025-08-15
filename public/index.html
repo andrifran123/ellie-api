@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ellie</title>
+  <style>
+    :root{
+      --bg:#0b0e12;
+      --panel:#12161c;
+      --panel-2:#0f1318;
+      --text:#e7ecf3;
+      --muted:#9aa3af;
+      --accent:#7c93ff;
+      --accent-2:#ff77b7;
+      --border:#1f2732;
+      --success:#30d158;
+      --error:#ff453a;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      background:linear-gradient(180deg,var(--bg),#0a0d11);
+      color:var(--text);
+      font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    }
+    .wrap{
+      max-width:900px;margin:40px auto;padding:0 16px;
+    }
+    .title{
+      text-align:center;font-weight:800;font-size:32px;letter-spacing:.5px;
+      margin:8px 0 18px 0;
+    }
+    .badge{font-size:12px;color:var(--muted)}
+    .chat{
+      background:var(--panel); border:1px solid var(--border); border-radius:16px;
+      padding:18px; height:64vh; min-height:420px; overflow:auto;
+      box-shadow:0 10px 30px rgba(0,0,0,.25) inset;
+    }
+    .row{margin:6px 0; display:flex; gap:10px; align-items:flex-start}
+    .row.you .bubble{background:#0e1420; border:1px solid var(--border)}
+    .row.ellie .bubble{background:#131a25; border:1px solid var(--border)}
+    .bubble{
+      padding:10px 12px; border-radius:12px; max-width:80%;
+      white-space:pre-wrap; word-wrap:break-word;
+    }
+    .name{font-weight:600; opacity:.9; margin-bottom:2px}
+    .footer{
+      display:flex; gap:10px; margin-top:14px; align-items:center;
+    }
+    textarea{
+      flex:1; resize:none; min-height:48px; max-height:160px; padding:12px 14px;
+      border-radius:12px; border:1px solid var(--border); outline:none;
+      background:var(--panel-2); color:var(--text);
+      box-shadow:0 2px 0 rgba(0,0,0,.15) inset;
+    }
+    textarea:focus{border-color:#263243}
+    button{
+      height:48px; padding:0 18px; border-radius:12px; border:1px solid #394973;
+      background:linear-gradient(180deg,#27345a,#1f2947); color:#eaf0ff;
+      font-weight:700; cursor:pointer;
+      transition:transform .06s ease, filter .2s ease;
+    }
+    button:hover{filter:brightness(1.1)}
+    button:active{transform:translateY(1px)}
+    button:disabled{opacity:.6; cursor:not-allowed}
+    .status{font-size:12px;color:var(--muted); margin-left:6px}
+    .small{font-size:12px;color:var(--muted)}
+    .pill{
+      display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px;
+      background:#111722; border:1px solid var(--border); color:var(--muted); font-size:12px;
+    }
+    .topbar{display:flex; justify-content:center; gap:10px; margin:6px 0 14px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">Ellie</div>
+    <div class="topbar">
+      <span class="pill">Dark Mode • On</span>
+      <span class="pill">Press <b>Enter</b> to send — <b>Shift+Enter</b> for newline</span>
+    </div>
+
+    <div id="chat" class="chat" aria-live="polite" aria-label="Chat history"></div>
+
+    <div class="footer">
+      <textarea id="input" placeholder="Say something..." autocomplete="off" spellcheck="true"></textarea>
+      <button id="send">Send</button>
+    </div>
+    <div class="status" id="status"></div>
+    <div class="small">Tip: try telling Ellie something to remember (e.g., “my dog is Luna”).</div>
+  </div>
+
+  <script>
+    const chatEl = document.getElementById('chat');
+    const inputEl = document.getElementById('input');
+    const sendBtn = document.getElementById('send');
+    const statusEl = document.getElementById('status');
+
+    function addRow(role, text){
+      const row = document.createElement('div');
+      row.className = 'row ' + (role === 'user' ? 'you' : 'ellie');
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.innerText = text;
+      row.appendChild(bubble);
+      chatEl.appendChild(row);
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+
+    async function send(){
+      const text = inputEl.value.trim();
+      if(!text) return;
+      inputEl.value = '';
+      addRow('user', text);
+      setBusy(true);
+
+      try {
+        const res = await fetch('/api/chat', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ message: text }) // userId defaults on server
+        });
+        const data = await res.json();
+        addRow('assistant', data.reply || '…');
+      } catch(err){
+        console.error(err);
+        addRow('assistant', 'Oops, I glitched—try again?');
+      } finally {
+        setBusy(false);
+        inputEl.focus();
+      }
+    }
+
+    function setBusy(b){
+      sendBtn.disabled = b;
+      statusEl.textContent = b ? 'Sending…' : '';
+    }
+
+    // Send on click
+    sendBtn.addEventListener('click', send);
+
+    // Send on Enter (Shift+Enter inserts newline)
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        send();
+      }
+    });
+
+    // Focus the input on load
+    inputEl.focus();
+
+    // Optional: greet once
+    addRow('assistant', "Hey 👋 what’s up?");
+  </script>
+</body>
+</html>
