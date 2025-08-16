@@ -687,6 +687,16 @@ app.get("/api/test-db", async (_req, res) => { // ADDED
   }
 }); // ADDED
 
+// ADDED: MULTER presence test (to verify it's installed on Render)
+app.get("/api/multer-test", (_req, res) => { // ADDED
+  try {
+    const version = require("multer/package.json").version;
+    res.json({ ok: true, multerVersion: version });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+}); // ADDED
+
 // ADDED: graceful shutdown (so Render restarts don’t leak connections)
 function shutdown(signal) { // ADDED
   console.log(`\n${signal} received. Closing DB pool...`); // ADDED
