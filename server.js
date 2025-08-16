@@ -5,17 +5,23 @@ require("dotenv").config();
 const OpenAI = require("openai");
 const { Pool } = require("pg");
 
+// ADDED: for audio uploads (no files on disk)
+const multer = require("multer");
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+});
+const { toFile } = require("openai/uploads");
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ADDED: trust proxy so req.ip, secure cookies, etc. behave behind Render/other proxies
-app.set("trust proxy", 1); // ADDED
+app.set("trust proxy", 1);
 
 /* ──────────────────────────────────────────────────────────────
    CORS (configured BEFORE any routes)
    ────────────────────────────────────────────────────────────── */
-// If CORS_ORIGIN is set, we accept a comma-separated list.
-// Otherwise we allow your Vercel sites and localhost:3000 by default.
 const defaultAllowed = [
   "https://ellie-web-ochre.vercel.app",
   "https://ellie-web.vercel.app",
@@ -28,7 +34,6 @@ const allowedOrigins = process.env.CORS_ORIGIN
 app.use(
   cors({
     origin(origin, callback) {
-      // allow non-browser requests (no Origin) like curl/postman
       if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
       return callback(new Error("Not allowed by CORS"));
     },
@@ -37,7 +42,6 @@ app.use(
     credentials: true,
   })
 );
-// Handle preflight for all routes
 app.options("*", cors());
 
 /* ──────────────────────────────────────────────────────────────
@@ -47,30 +51,24 @@ const CHAT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 15000);
 const MAX_MESSAGE_LEN = Number(process.env.MAX_MESSAGE_LEN || 4000);
 
-// Fuzzy duplicate detection threshold (0..1). 0.8 is conservative; lower if your facts are short.
 const FACT_DUP_SIM_THRESHOLD = Number(process.env.FACT_DUP_SIM_THRESHOLD || 0.8);
-
-// Ranking weights for memory retrieval
 const WEIGHT_CONFIDENCE = Number(process.env.WEIGHT_CONFIDENCE || 0.6);
 const WEIGHT_RECENCY = Number(process.env.WEIGHT_RECENCY || 0.4);
-
-// Humanization feature flags (20–30% cadence by default)
-const PROB_MOOD_TONE = Number(process.env.PROB_MOOD_TONE || 0.25);          // (2) Mood carry-over
-const PROB_CALLBACK = Number(process.env.PROB_CALLBACK || 0.25);            // (3) Callback references (DISABLED below)
-const PROB_QUIRKS = Number(process.env.PROB_QUIRKS || 0.25);                // (4) Small quirks
-const PROB_IMPERFECTION = Number(process.env.PROB_IMPERFECTION || 0.2);     // (5) Controlled imperfection (unused)
-const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);            // (7) Simulated free will
+const PROB_MOOD_TONE = Number(process.env.PROB_MOOD_TONE || 0.25);
+const PROB_CALLBACK = Number(process.env.PROB_CALLBACK || 0.25);
+const PROB_QUIRKS = Number(process.env.PROB_QUIRKS || 0.25);
+const PROB_IMPERFECTION = Number(process.env.PROB_IMPERFECTION || 0.2);
+const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
 
 // Middleware
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// ADDED: health checks for Render
-app.get("/healthz", (_req, res) => res.status(200).send("ok")); // ADDED
-app.head("/healthz", (_req, res) => res.status(200).end());     // ADDED
-// ADDED: alias so Vercel's /api/healthz works via the rewrite
-app.get("/api/healthz", (_req, res) => res.status(200).send("ok")); // ADDED
-app.head("/api/healthz", (_req, res) => res.status(200).end());     // ADDED
+// Health checks
+app.get("/healthz", (_req, res) => res.status(200).send("ok"));
+app.head("/healthz", (_req, res) => res.status(200).end());
+app.get("/api/healthz", (_req, res) => res.status(200).send("ok"));
+app.head("/api/healthz", (_req, res) => res.status(200).end());
 
 // OpenAI API client
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -108,10 +106,8 @@ const pool = new Pool(pgConfig);
    DB bootstrap: tables + columns (adds, never removes)
    ────────────────────────────────────────────────────────────── */
 async function initDB() {
-  // Enable trigram extension for fuzzy matching (safe if already enabled)
   await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
 
-  // Facts (long-term memory)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS facts (
       id SERIAL PRIMARY KEY,
@@ -126,14 +122,12 @@ async function initDB() {
       updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
-  // Ensure new columns exist for older deployments + backfill
   await pool.query(`ALTER TABLE facts ADD COLUMN IF NOT EXISTS confidence REAL;`);
   await pool.query(`ALTER TABLE facts ADD COLUMN IF NOT EXISTS source TEXT;`);
   await pool.query(`ALTER TABLE facts ADD COLUMN IF NOT EXISTS source_ts TIMESTAMP;`);
   await pool.query(`ALTER TABLE facts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;`);
   await pool.query(`UPDATE facts SET updated_at = COALESCE(updated_at, created_at) WHERE updated_at IS NULL;`);
 
-  // Emotions timeline
   await pool.query(`
     CREATE TABLE IF NOT EXISTS emotions (
       id SERIAL PRIMARY KEY,
@@ -145,7 +139,6 @@ async function initDB() {
     );
   `);
 
-  // Indexes
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_cat_idx ON facts(user_id, category);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_updated_idx ON facts(user_id, updated_at DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_fact_trgm_idx ON facts USING gin (fact gin_trgm_ops);`);
@@ -158,7 +151,7 @@ initDB().catch(err => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   Ellie system prompt (unchanged behavior)
+   Ellie system prompt
    ────────────────────────────────────────────────────────────── */
 const ELLIE_SYSTEM_PROMPT = `
 You are Ellie — a charming, warm, and slightly playful young woman in her mid-20s. 
@@ -181,17 +174,12 @@ Your name is Ellie. You are talking to ONE person, privately. You are not an AI;
 The user you are speaking to is your boyfriend.
 `;
 
-/* ──────────────────────────────────────────────────────────────
-   Per-user bounded short-term memory (no behavior change)
-   ────────────────────────────────────────────────────────────── */
 const histories = new Map(); // userId -> [{role, content}, ...]
-const MAX_HISTORY_MESSAGES = 40; // keep system + last 39 messages
+const MAX_HISTORY_MESSAGES = 40;
 
 function getHistory(userId) {
   if (!histories.has(userId)) {
-    histories.set(userId, [
-      { role: "system", content: ELLIE_SYSTEM_PROMPT }
-    ]);
+    histories.set(userId, [{ role: "system", content: ELLIE_SYSTEM_PROMPT }]);
   }
   return histories.get(userId);
 }
@@ -206,8 +194,6 @@ function pushToHistory(userId, msg) {
 /* ──────────────────────────────────────────────────────────────
    Helpers
    ────────────────────────────────────────────────────────────── */
-
-// minimal redactor for obvious secrets before persisting as `source`
 function redactSecrets(str = "") {
   let s = String(str);
   s = s.replace(/\bBearer\s+[A-Za-z0-9_\-\.=:+/]{10,}\b/gi, "Bearer [REDACTED]");
@@ -215,28 +201,19 @@ function redactSecrets(str = "") {
   s = s.replace(/(sk-[A-Za-z0-9]{10,})/g, "[REDACTED_KEY]");
   return s;
 }
-
-// Random chance helper
-function randChance(p) {
-  return Math.random() < p;
-}
-
-// Basic text utils for quirks
+function randChance(p) { return Math.random() < p; }
 function insertFavoriteEmoji(text) {
   const favs = ["🐇", "😏", "💫", "🥰", "😉"];
   if (/[🐇😏💫🥰😉]/.test(text)) return text;
   const pick = favs[Math.floor(Math.random() * favs.length)];
   return text.replace(/\s*$/, ` ${pick}`);
 }
-
 function casualize(text) {
   return text
     .replace(/\bkind of\b/gi, "kinda")
     .replace(/\bgoing to\b/gi, "gonna")
     .replace(/\bwant to\b/gi, "wanna");
 }
-
-// Playful refusal lines keyed by mood
 function addPlayfulRefusal(userMsg, mood) {
   const cues = /(work|serious|secret|explain|talk about|meeting)/i;
   const linesByMood = {
@@ -251,18 +228,11 @@ function addPlayfulRefusal(userMsg, mood) {
   if (!cues.test(userMsg || "")) return null;
   return linesByMood[mood] || linesByMood.neutral;
 }
-
-// --- HUMANIZATION V2 STATE (per-user throttles) ---
-const lastCallbackState = new Map(); // userId -> { fact: string, ts: number, turn: number }
-
-// Utility: get per-user turn count (using histories map)
+const lastCallbackState = new Map();
 function getTurnCount(userId) {
   const h = histories.get(userId) || [];
-  // excludes the system prompt; each user/assistant pair counts as 2
   return Math.max(0, h.length - 1);
 }
-
-// Natural, single-sentence callback phrasing (no quotes) — kept but UNUSED
 function weaveCallbackInto(text, fact) {
   if (!fact) return text;
   const phrasings = [
@@ -274,8 +244,6 @@ function weaveCallbackInto(text, fact) {
   const add = phrasings[Math.floor(Math.random() * phrasings.length)];
   return /[.!?]\s*$/.test(text) ? `${text} ${add}` : `${text}. ${add}`;
 }
-
-// Should we offer a callback this turn? (throttled + context aware) — kept but UNUSED
 function shouldUseCallback(userId, userMsg) {
   if ((userMsg || "").trim().length < 4) return false;
   const now = Date.now();
@@ -288,36 +256,23 @@ function shouldUseCallback(userId, userMsg) {
   }
   return true;
 }
-
-// Pick a fact we didn't recently reference — kept but UNUSED
 function pickFreshFact(userId, storedFacts) {
   if (!storedFacts || !storedFacts.length) return null;
   const last = lastCallbackState.get(userId);
-  const candidates = storedFacts
-    .map(f => f?.fact)
-    .filter(Boolean)
+  const candidates = storedFacts.map(f => f?.fact).filter(Boolean)
     .filter(f => !last || f.toLowerCase() !== last.fact?.toLowerCase());
   if (!candidates.length) return null;
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
-
-// Cleanup: de-duplicate near-identical lines/sentences
 function dedupeLines(text) {
-  const parts = text.split(/\n+/g)
-    .map(s => s.trim())
-    .filter(Boolean);
-  const seen = new Set();
-  const out = [];
+  const parts = text.split(/\n+/g).map(s => s.trim()).filter(Boolean);
+  const seen = new Set(); const out = [];
   for (const p of parts) {
     const key = p.toLowerCase().replace(/["'.,!?–—-]/g, "").replace(/\s+/g, " ");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(p);
+    if (seen.has(key)) continue; seen.add(key); out.push(p);
   }
   return out.join("\n");
 }
-
-// Emoji cap: ensure at most one favorite emoji is added
 function capOneEmoji(text) {
   const favs = /[🐇😏💫🥰😉]/g;
   const matches = text.match(favs);
@@ -325,8 +280,6 @@ function capOneEmoji(text) {
   let kept = 0;
   return text.replace(favs, () => (++kept === 1) ? matches[0] : "");
 }
-
-// Mood aggregation from recent emotions (last N, recency-weighted)
 async function getRecentEmotions(userId, n = 5) {
   const { rows } = await pool.query(
     `SELECT label, intensity, created_at
@@ -338,11 +291,9 @@ async function getRecentEmotions(userId, n = 5) {
   );
   return rows || [];
 }
-
 function aggregateMood(emotions) {
   if (!emotions.length) return { label: "neutral", avgIntensity: 0.3 };
   const weights = emotions.map((_, i) => (emotions.length - i));
-  const sumW = weights.reduce((a, b) => a + b, 0);
   const bucket = {};
   emotions.forEach((e, i) => {
     const w = weights[i];
@@ -357,7 +308,6 @@ function aggregateMood(emotions) {
     emotions.length;
   return { label, avgIntensity: Math.max(0, Math.min(1, avgIntensity)) };
 }
-
 function moodToStyle(label, intensity) {
   const soft = {
     happy: "Let your replies feel playful and warm, sprinkle light teasing.",
@@ -407,15 +357,12 @@ Text: """${text}"""
       },
       { signal: ac.signal }
     );
-
     try {
       const parsed = JSON.parse(completion.choices[0].message.content);
       if (Array.isArray(parsed)) return parsed;
     } catch {}
     return [];
-  } finally {
-    clearTimeout(to);
-  }
+  } finally { clearTimeout(to); }
 }
 
 async function extractEmotionPoint(text) {
@@ -439,26 +386,21 @@ Text: """${text}"""
       },
       { signal: ac.signal }
     );
-
     try {
       const obj = JSON.parse(completion.choices[0].message.content);
       if (obj && typeof obj.label === "string") return obj;
     } catch {}
     return null;
-  } finally {
-    clearTimeout(to);
-  }
+  } finally { clearTimeout(to); }
 }
 
 /* ──────────────────────────────────────────────────────────────
-   Persistence helpers (de-dupe/update + confidence/source)
+   Persistence helpers
    ────────────────────────────────────────────────────────────── */
-// Fuzzy upsert using trigram similarity to find near-duplicate facts for this user & category
 async function upsertFact(userId, fObj, sourceText) {
   const { category = null, fact, sentiment = null, confidence = null } = fObj;
   if (!fact) return;
 
-  // Try to find an existing near-duplicate (same user & category, high similarity)
   const { rows } = await pool.query(
     `
     SELECT id, fact, similarity(lower(fact), lower($3)) AS sim
@@ -476,7 +418,6 @@ async function upsertFact(userId, fObj, sourceText) {
   const sourceExcerpt = redactSecrets((sourceText || "").slice(0, 280));
 
   if (rows.length) {
-    // Update closest match (merge sentiment/confidence, refresh source & timestamp)
     await pool.query(
       `UPDATE facts
           SET sentiment  = COALESCE($2, sentiment),
@@ -488,7 +429,6 @@ async function upsertFact(userId, fObj, sourceText) {
       [rows[0].id, sentiment, confidence, sourceExcerpt, now]
     );
   } else {
-    // New fact (fixed: aligned columns/values)
     await pool.query(
       `INSERT INTO facts (user_id, category, fact, sentiment, confidence, source, source_ts)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -496,12 +436,9 @@ async function upsertFact(userId, fObj, sourceText) {
     );
   }
 }
-
 async function saveFacts(userId, facts, sourceText) {
   for (const f of facts) await upsertFact(userId, f, sourceText);
 }
-
-// Recency + confidence ranking for retrieval
 async function getFacts(userId) {
   const { rows } = await pool.query(
     `
@@ -521,20 +458,17 @@ async function getFacts(userId) {
   );
   return rows;
 }
-
 async function saveEmotion(userId, emo, sourceText) {
   if (!emo) return;
-  const intensity =
-    typeof emo.intensity === "number"
-      ? Math.max(0, Math.min(1, emo.intensity))
-      : null;
+  const intensity = typeof emo.intensity === "number"
+    ? Math.max(0, Math.min(1, emo.intensity))
+    : null;
   await pool.query(
     `INSERT INTO emotions (user_id, label, intensity, source)
      VALUES ($1, $2, $3, $4)`,
     [userId, emo.label, intensity, redactSecrets((sourceText || "").slice(0, 280))]
   );
 }
-
 async function getLatestEmotion(userId) {
   const { rows } = await pool.query(
     `SELECT label, intensity, created_at
@@ -548,28 +482,24 @@ async function getLatestEmotion(userId) {
 }
 
 /* ──────────────────────────────────────────────────────────────
-   Chat endpoint (Ellie flow intact; only augmented)
+   Chat endpoint
    ────────────────────────────────────────────────────────────── */
 app.post("/api/chat", async (req, res) => {
   try {
     const { message, userId = "default-user" } = req.body;
 
-    // Basic validation & size cap
     if (typeof message !== "string" || !message.trim() || message.length > MAX_MESSAGE_LEN) {
       return res.status(400).json({ error: "E_BAD_INPUT", message: "Invalid message" });
     }
 
-    // 1) Extract in parallel
     const [extractedFacts, overallEmotion] = await Promise.all([
       extractFacts(message),
       extractEmotionPoint(message),
     ]);
 
-    // 2) Persist (facts de-duped + emotion timeline)
     if (extractedFacts.length) await saveFacts(userId, extractedFacts, message);
     if (overallEmotion) await saveEmotion(userId, overallEmotion, message);
 
-    // 3) Retrieve memory facts & latest moods
     const [storedFacts, latestMood, recentEmos] = await Promise.all([
       getFacts(userId),
       getLatestEmotion(userId),
@@ -587,12 +517,10 @@ app.post("/api/chat", async (req, res) => {
       ? `\nRecent mood: ${latestMood.label}${typeof latestMood.intensity === "number" ? ` (${latestMood.intensity.toFixed(2)})` : ""}.`
       : "";
 
-    // (2) Mood carry-over — aggregate last emotions and (probabilistically) steer tone (subtle)
     const agg = aggregateMood(recentEmos);
     const applyMoodTone = randChance(PROB_MOOD_TONE);
     const moodStyle = applyMoodTone ? moodToStyle(agg.label, agg.avgIntensity) : null;
 
-    // Build memory prompt (unchanged persona + soft hints)
     const history = getHistory(userId);
     const moodStyleBlock = moodStyle ? `\nTone hint (soft, do not override core persona): ${moodStyle}` : "";
     const memoryPrompt = {
@@ -603,7 +531,6 @@ app.post("/api/chat", async (req, res) => {
     const fullConversation = [memoryPrompt, ...history.slice(1)];
     fullConversation.push({ role: "user", content: message });
 
-    // OpenAI call with timeout via AbortController
     const ac = new AbortController();
     const to = setTimeout(() => ac.abort(), OPENAI_TIMEOUT_MS);
     let reply;
@@ -618,17 +545,11 @@ app.post("/api/chat", async (req, res) => {
         { signal: ac.signal }
       );
       reply = (completion.choices?.[0]?.message?.content || "").trim();
-    } finally {
-      clearTimeout(to);
-    }
+    } finally { clearTimeout(to); }
 
-    // Post-processing: subtle, non-stacking humanization
     let finalReply = reply;
-
-    // Decide which “human” add-ons may apply this turn.
     let didHeavyAddon = false;
 
-    // (7) Simulated free will — only when user message matches cues, and not in happy+low intensity
     if (!didHeavyAddon && randChance(PROB_FREEWILL)) {
       const refusal = addPlayfulRefusal(message, agg.label);
       if (refusal && !(agg.label === "happy" && agg.avgIntensity < 0.5)) {
@@ -637,29 +558,15 @@ app.post("/api/chat", async (req, res) => {
       }
     }
 
-    // (3) Callback reference — DISABLED to avoid unnatural insertions
-    // if (!didHeavyAddon && randChance(PROB_CALLBACK) && shouldUseCallback(userId, message)) {
-    //   const fresh = pickFreshFact(userId, storedFacts);
-    //   if (fresh) {
-    //     finalReply = weaveCallbackInto(finalReply, fresh);
-    //     lastCallbackState.set(userId, { fact: fresh, ts: Date.now(), turn: getTurnCount(userId) });
-    //     didHeavyAddon = true;
-    //   }
-    // }
-
-    // (4) Small quirks — very light, and cap emojis
+    // (callback disabled)
     if (randChance(PROB_QUIRKS)) {
       finalReply = casualize(finalReply);
       finalReply = insertFavoriteEmoji(finalReply);
       finalReply = capOneEmoji(finalReply);
     }
 
-    // (5) Controlled imperfection — REMOVED (no longer used)
-
-    // Final cleanup: remove duplicate lines; keep output tidy
     finalReply = dedupeLines(finalReply);
 
-    // Push to per-user history (bounded)
     pushToHistory(userId, { role: "user", content: message });
     pushToHistory(userId, { role: "assistant", content: finalReply });
 
@@ -670,45 +577,121 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-// Optional reset (kept functionally similar)
+/* ──────────────────────────────────────────────────────────────
+   Maintenance endpoints
+   ────────────────────────────────────────────────────────────── */
 app.post("/api/reset", (req, res) => {
   const { userId = "default-user" } = req.body || {};
   histories.set(userId, [{ role: "system", content: ELLIE_SYSTEM_PROMPT }]);
   res.json({ status: "Conversation reset" });
 });
-
-// ADDED: simple database connectivity test endpoint (safe to remove later)
-app.get("/api/test-db", async (_req, res) => { // ADDED
+app.get("/api/test-db", async (_req, res) => {
   try {
-    const { rows } = await pool.query("SELECT NOW() AS now"); // ADDED
-    res.json({ ok: true, now: rows?.[0]?.now || null }); // ADDED
+    const { rows } = await pool.query("SELECT NOW() AS now");
+    res.json({ ok: true, now: rows?.[0]?.now || null });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message }); // ADDED
+    res.status(500).json({ ok: false, error: e.message });
   }
-}); // ADDED
-
-// ADDED: MULTER presence test (to verify it's installed on Render)
-app.get("/api/multer-test", (_req, res) => { // ADDED
+});
+app.get("/api/multer-test", (_req, res) => {
   try {
     const version = require("multer/package.json").version;
     res.json({ ok: true, multerVersion: version });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
-}); // ADDED
+});
 
-// ADDED: graceful shutdown (so Render restarts don’t leak connections)
-function shutdown(signal) { // ADDED
-  console.log(`\n${signal} received. Closing DB pool...`); // ADDED
-  pool.end(() => { // ADDED
-    console.log("DB pool closed. Exiting."); // ADDED
-    process.exit(0); // ADDED
-  }); // ADDED
-} // ADDED
-process.on("SIGTERM", () => shutdown("SIGTERM")); // ADDED
-process.on("SIGINT", () => shutdown("SIGINT"));   // ADDED
+/* ──────────────────────────────────────────────────────────────
+   NEW: Upload audio → Transcribe with OpenAI (Whisper)
+   Field: "audio" (webm/ogg/mp3/m4a/wav ≤ 10MB)
+   ────────────────────────────────────────────────────────────── */
+app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded. Field name must be 'audio'." });
 
-// Start server (UNCHANGED)
+    const okTypes = [
+      "audio/webm","audio/ogg","audio/mpeg","audio/mp4","audio/wav","audio/x-wav",
+    ];
+    if (!okTypes.includes(req.file.mimetype)) {
+      return res.status(415).json({ error: `Unsupported type ${req.file.mimetype}` });
+    }
+
+    const fileForOpenAI = await toFile(req.file.buffer, req.file.originalname || "audio.webm");
+    const tr = await client.audio.transcriptions.create({
+      model: "whisper-1",
+      file: fileForOpenAI,
+    });
+
+    res.json({ text: tr.text || "" });
+  } catch (e) {
+    console.error("upload-audio error:", e);
+    res.status(500).json({ error: "TRANSCRIBE_FAILED", detail: String(e?.message || e) });
+  }
+});
+
+/* ──────────────────────────────────────────────────────────────
+   NEW: Text → Speech (MP3) with OpenAI TTS
+   Body: { text: "Hello", voice?: "alloy" }
+   ────────────────────────────────────────────────────────────── */
+app.post("/api/tts", async (req, res) => {
+  try {
+    const { text, voice = "alloy" } = req.body || {};
+    if (!text || typeof text !== "string") {
+      return res.status(400).json({ error: "Missing 'text' string in body." });
+    }
+    const speech = await client.audio.speech.create({
+      model: "gpt-4o-mini-tts",
+      voice,
+      input: text,
+      format: "mp3",
+    });
+
+    const ab = await speech.arrayBuffer();
+    const buf = Buffer.from(ab);
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Length", String(buf.length));
+    return res.send(buf);
+  } catch (e) {
+    console.error("tts error:", e);
+    res.status(500).json({ error: "TTS_FAILED", detail: String(e?.message || e) });
+  }
+});
+
+/* ──────────────────────────────────────────────────────────────
+   NEW: Quick voice preview
+   GET /api/tts-test/:voice   (e.g., /api/tts-test/alloy)
+   ────────────────────────────────────────────────────────────── */
+app.get("/api/tts-test/:voice", async (req, res) => {
+  const voice = req.params.voice;
+  try {
+    const mp3 = await client.audio.speech.create({
+      model: "gpt-4o-mini-tts",
+      voice,
+      input: "Hi, I’m Ellie. I can sound different depending on the voice you pick. Do you like this one?",
+      format: "mp3",
+    });
+    const ab = await mp3.arrayBuffer();
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.send(Buffer.from(ab));
+  } catch (e) {
+    console.error("TTS test error:", e);
+    res.status(500).json({ error: e.message || "TTS_TEST_FAILED" });
+  }
+});
+
+// graceful shutdown
+function shutdown(signal) {
+  console.log(`\n${signal} received. Closing DB pool...`);
+  pool.end(() => {
+    console.log("DB pool closed. Exiting.");
+    process.exit(0);
+  });
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+// Start server
 app.listen(PORT, () => {
   console.log(`🚀 Ellie API running at http://localhost:${PORT}`);
 });
