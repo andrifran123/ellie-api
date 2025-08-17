@@ -20,12 +20,24 @@ const PORT = process.env.PORT || 3000;
 app.set("trust proxy", 1);
 
 /* ──────────────────────────────────────────────────────────────
-   CORS (configured BEFORE any routes)
+   ULTRA-EARLY HEALTH ROUTES (added before any heavy setup)
+   ────────────────────────────────────────────────────────────── */
+// These respond immediately so Render never shows “Application starting…”
+app.get("/", (_req, res) => res.type("text/plain").send("ok"));
+app.get("/api", (_req, res) => res.type("text/plain").send("ok"));
+app.get("/healthz", (_req, res) => res.type("text/plain").send("ok"));
+app.get("/api/healthz", (_req, res) => res.type("text/plain").send("ok"));
+
+/* ──────────────────────────────────────────────────────────────
+   CORS (configured BEFORE any other routes)
    ────────────────────────────────────────────────────────────── */
 const defaultAllowed = [
   "https://ellie-web-ochre.vercel.app",
   "https://ellie-web.vercel.app",
   "http://localhost:3000",
+
+  // ADDED: your Render backend origin so direct hits don’t get blocked
+  "https://ellie-api-1.onrender.com",
 ];
 const allowedOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(",").map(s => s.trim()).filter(Boolean)
@@ -64,7 +76,7 @@ const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// Health checks
+// Health checks (kept — later duplicates are fine, early ones respond first)
 app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 app.head("/healthz", (_req, res) => res.status(200).end());
 app.get("/api/healthz", (_req, res) => res.status(200).send("ok"));
@@ -632,17 +644,17 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
 
 /* ──────────────────────────────────────────────────────────────
    NEW: Text → Speech (MP3) with OpenAI TTS
-   Body: { text: "Hello" }  (voice is always Sage)
+   Body: { text: "Hello", voice?: "alloy" }
    ────────────────────────────────────────────────────────────── */
 app.post("/api/tts", async (req, res) => {
   try {
-    const { text } = req.body || {};
+    const { text, voice = "alloy" } = req.body || {};
     if (!text || typeof text !== "string") {
       return res.status(400).json({ error: "Missing 'text' string in body." });
     }
     const speech = await client.audio.speech.create({
       model: "gpt-4o-mini-tts",
-      voice: "sage",   // ← ALWAYS SAGE
+      voice,
       input: text,
       format: "mp3",
     });
@@ -659,15 +671,16 @@ app.post("/api/tts", async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   NEW: Quick voice preview — always Sage
-   GET /api/tts-test
+   NEW: Quick voice preview
+   GET /api/tts-test/:voice   (e.g., /api/tts-test/alloy)
    ────────────────────────────────────────────────────────────── */
-app.get("/api/tts-test", async (_req, res) => {
+app.get("/api/tts-test/:voice", async (req, res) => {
+  const voice = req.params.voice;
   try {
     const mp3 = await client.audio.speech.create({
       model: "gpt-4o-mini-tts",
-      voice: "sage",  // ← ALWAYS SAGE
-      input: "Hi, I’m Ellie. This is my Sage voice test.",
+      voice,
+      input: "Hi, I’m Ellie. I can sound different depending on the voice you pick. Do you like this one?",
       format: "mp3",
     });
     const ab = await mp3.arrayBuffer();
