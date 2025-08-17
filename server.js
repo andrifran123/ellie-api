@@ -13,6 +13,24 @@ const upload = multer({
 });
 const { toFile } = require("openai/uploads");
 
+// ADDED: http server + websockets (for always-on voice mode)
+const http = require("http");
+const WebSocket = require("ws");
+
+// ADDED: FFmpeg post-processing (pitch/EQ/etc.)
+const ffmpeg = require("fluent-ffmpeg");
+const ffmpegPath = require("ffmpeg-static");
+const { Readable } = require("stream");
+if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath);
+
+function bufferToStream(buf) {
+  const r = new Readable();
+  r._read = () => {};
+  r.push(buf);
+  r.push(null);
+  return r;
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -22,7 +40,6 @@ app.set("trust proxy", 1);
 /* ──────────────────────────────────────────────────────────────
    ULTRA-EARLY HEALTH ROUTES (added before any heavy setup)
    ────────────────────────────────────────────────────────────── */
-// These respond immediately so Render never shows “Application starting…”
 app.get("/", (_req, res) => res.type("text/plain").send("ok"));
 app.get("/api", (_req, res) => res.type("text/plain").send("ok"));
 app.get("/healthz", (_req, res) => res.type("text/plain").send("ok"));
@@ -35,8 +52,6 @@ const defaultAllowed = [
   "https://ellie-web-ochre.vercel.app",
   "https://ellie-web.vercel.app",
   "http://localhost:3000",
-
-  // ADDED: your Render backend origin so direct hits don’t get blocked
   "https://ellie-api-1.onrender.com",
 ];
 const allowedOrigins = process.env.CORS_ORIGIN
@@ -62,6 +77,9 @@ app.options("*", cors());
 const CHAT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 15000);
 const MAX_MESSAGE_LEN = Number(process.env.MAX_MESSAGE_LEN || 4000);
+
+// NEW: default OpenAI voice + per-request override support
+const DEFAULT_VOICE = process.env.ELLIE_VOICE || "alloy";
 
 const FACT_DUP_SIM_THRESHOLD = Number(process.env.FACT_DUP_SIM_THRESHOLD || 0.8);
 const WEIGHT_CONFIDENCE = Number(process.env.WEIGHT_CONFIDENCE || 0.6);
@@ -163,7 +181,7 @@ initDB().catch(err => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   Ellie system prompt
+   Ellie system prompt (kept)
    ────────────────────────────────────────────────────────────── */
 const ELLIE_SYSTEM_PROMPT = `
 You are Ellie — a charming, warm, and slightly playful young woman in her mid-20s. 
@@ -204,7 +222,7 @@ function pushToHistory(userId, msg) {
 }
 
 /* ──────────────────────────────────────────────────────────────
-   Helpers
+   Helpers (kept)
    ────────────────────────────────────────────────────────────── */
 function redactSecrets(str = "") {
   let s = String(str);
@@ -338,7 +356,7 @@ function moodToStyle(label, intensity) {
 }
 
 /* ──────────────────────────────────────────────────────────────
-   Language support (NEW)
+   Language support (kept)
    ────────────────────────────────────────────────────────────── */
 const SUPPORTED_LANGUAGES = {
   en: "English",
@@ -371,7 +389,6 @@ async function getPreferredLanguage(userId) {
   const code = rows?.[0]?.fact?.toLowerCase();
   return code && SUPPORTED_LANGUAGES[code] ? code : null;
 }
-
 async function setPreferredLanguage(userId, langCode) {
   if (!SUPPORTED_LANGUAGES[langCode]) return;
   await upsertFact(
@@ -381,41 +398,8 @@ async function setPreferredLanguage(userId, langCode) {
   );
 }
 
-// kept for future use; now we prefer explicit user choice
-async function detectLanguageISO(text) {
-  const t = (text || "").trim();
-  const isASCII = /^[\x00-\x7F]*$/.test(t);
-  const EN_HINT = /\b(hi|hey|hello|what|how|why|please|thanks|ok|okay|yes|no|good|morning|evening|night)\b/i;
-  if (!t) return "en";
-  if (isASCII && (t.length < 12 || EN_HINT.test(t))) return "en";
-  if (/[\u0900-\u097F]/.test(t)) return "hi";
-  if (/[\u4E00-\u9FFF]/.test(t)) return "zh";
-  if (/[\u3040-\u30FF]/.test(t)) return "ja";
-  if (/[\uAC00-\uD7AF]/.test(t)) return "ko";
-  try {
-    const completion = await client.chat.completions.create({
-      model: CHAT_MODEL,
-      temperature: 0,
-      messages: [
-        {
-          role: "system",
-          content:
-            `Return ONLY a 2-letter ISO 639-1 code from this set: ${Object.keys(SUPPORTED_LANGUAGES).join(", ")}.\n` +
-            `If the text is ambiguous or short and could be English, return "en".\n` +
-            `IMPORTANT: The greeting "hi" in English is NOT the Hindi language code.`,
-        },
-        { role: "user", content: `Detect language for: """${t.slice(0, 500)}"""` },
-      ],
-    });
-    const code = completion.choices?.[0]?.message?.content?.trim().toLowerCase() || "en";
-    return SUPPORTED_LANGUAGES[code] ? code : "en";
-  } catch {
-    return "en";
-  }
-}
-
 /* ──────────────────────────────────────────────────────────────
-   Fact & emotion extraction (additive only)
+   Fact & emotion extraction (kept)
    ────────────────────────────────────────────────────────────── */
 async function extractFacts(text) {
   const prompt = `
@@ -484,7 +468,7 @@ Text: """${text}"""
 }
 
 /* ──────────────────────────────────────────────────────────────
-   Persistence helpers
+   Persistence helpers (kept)
    ────────────────────────────────────────────────────────────── */
 async function upsertFact(userId, fObj, sourceText) {
   const { category = null, fact, sentiment = null, confidence = null } = fObj;
@@ -571,16 +555,144 @@ async function getLatestEmotion(userId) {
 }
 
 /* ──────────────────────────────────────────────────────────────
-   Unified reply generator (voice == text) — NEW
+   Voice settings + PRESETS (NEW)
+   ────────────────────────────────────────────────────────────── */
+const DEFAULT_VOICE_SETTINGS = {
+  pitchSemi: 0,      // -6 .. +6 (semitones)
+  tempo: 1.0,        // 0.85 .. 1.20 (speed, pitch preserved)
+  stability: 0.75,   // 0..1 -> more compression = more stable loudness
+  clarity: 0.6,      // 0..1 -> high-shelf EQ (air)
+  style: 0.2,        // 0..1 -> subtle echo/reverb
+  speakerBoost: false
+};
+
+// Preset names & tuned settings
+const VOICE_PRESETS = {
+  natural: { ...DEFAULT_VOICE_SETTINGS },
+  warm:    { pitchSemi: -2, tempo: 0.98, stability: 0.80, clarity: 0.35, style: 0.25, speakerBoost: true  },
+  bright:  { pitchSemi: +2, tempo: 1.02, stability: 0.70, clarity: 0.80, style: 0.15, speakerBoost: false },
+  soft:    { pitchSemi: -1, tempo: 0.95, stability: 0.85, clarity: 0.25, style: 0.35, speakerBoost: true  },
+};
+
+function validPresetName(name) {
+  return typeof name === "string" && Object.prototype.hasOwnProperty.call(VOICE_PRESETS, name);
+}
+
+async function getVoicePreset(userId) {
+  const { rows } = await pool.query(
+    `SELECT fact FROM facts
+     WHERE user_id=$1 AND category='voice_preset'
+     ORDER BY updated_at DESC NULLS LAST, created_at DESC
+     LIMIT 1`,
+    [userId]
+  );
+  return rows?.[0]?.fact || null;
+}
+
+async function setVoicePreset(userId, presetName) {
+  if (!validPresetName(presetName)) return null;
+  await upsertFact(
+    userId,
+    { category: "voice_preset", fact: presetName, confidence: 1.0 },
+    "system:setVoicePreset"
+  );
+  return presetName;
+}
+
+async function applyVoicePreset(userId, presetName) {
+  if (!validPresetName(presetName)) {
+    throw new Error("Unknown preset");
+  }
+  const settings = VOICE_PRESETS[presetName];
+  await setVoiceSettings(userId, settings);
+  await setVoicePreset(userId, presetName);
+  return settings;
+}
+
+async function getVoiceSettings(userId) {
+  const { rows } = await pool.query(
+    `SELECT fact FROM facts
+     WHERE user_id=$1 AND category='voice_settings'
+     ORDER BY updated_at DESC NULLS LAST, created_at DESC
+     LIMIT 1`,
+    [userId]
+  );
+  if (!rows?.[0]?.fact) return { ...DEFAULT_VOICE_SETTINGS };
+  try {
+    const json = JSON.parse(rows[0].fact);
+    return { ...DEFAULT_VOICE_SETTINGS, ...json };
+  } catch {
+    return { ...DEFAULT_VOICE_SETTINGS };
+  }
+}
+
+async function setVoiceSettings(userId, settingsObj) {
+  const clean = { ...DEFAULT_VOICE_SETTINGS, ...(settingsObj || {}) };
+  clean.pitchSemi = Math.max(-12, Math.min(12, Number(clean.pitchSemi || 0)));
+  clean.tempo = Math.max(0.5, Math.min(2.0, Number(clean.tempo || 1)));
+  clean.stability = Math.max(0, Math.min(1, Number(clean.stability || 0.75)));
+  clean.clarity = Math.max(0, Math.min(1, Number(clean.clarity || 0.6)));
+  clean.style = Math.max(0, Math.min(1, Number(clean.style || 0.2)));
+  clean.speakerBoost = !!clean.speakerBoost;
+
+  await upsertFact(
+    userId,
+    { category: "voice_settings", fact: JSON.stringify(clean), confidence: 1.0 },
+    "system:setVoiceSettings"
+  );
+  return clean;
+}
+
+// FFmpeg filter chain for pitch/speed/EQ/compression/reverb/loudness
+async function applyVoiceFXMp3(mp3Buffer, settings) {
+  const s = { ...DEFAULT_VOICE_SETTINGS, ...(settings || {}) };
+
+  const pitchSemi = Number(s.pitchSemi || 0);
+  const shift = Math.pow(2, pitchSemi / 12); // 2^(n/12)
+  const tempo = Math.max(0.5, Math.min(2.0, Number(s.tempo || 1)));
+
+  const ratio = 1 + 7 * Math.max(0, Math.min(1, s.stability));     // 1..8
+  const threshold = -24 + (1 - s.stability) * 12;                   // -24..-12 dB
+  const attack = 10;  // ms
+  const release = 200;// ms
+
+  const highShelfGain = (s.clarity || 0) * 5; // up to +5dB @ 8–12kHz
+  const styleMix = Math.max(0, Math.min(1, Number(s.style || 0)));
+  const loudnorm = s.speakerBoost ? ",loudnorm=I=-16:TP=-1.5:LRA=11" : "";
+
+  const pitchFilter = pitchSemi !== 0
+    ? `asetrate=48000*${shift},aresample=48000,atempo=${(1/shift).toFixed(5)}`
+    : `anull`;
+  const tempoFilter = tempo !== 1 ? `,atempo=${tempo.toFixed(3)}` : "";
+  const eqFilter = highShelfGain > 0
+    ? `,firequalizer=gain_entry='8000 ${highShelfGain.toFixed(2)}|12000 ${(highShelfGain*0.7).toFixed(2)}'`
+    : "";
+  const compFilter = `,acompressor=ratio=${ratio.toFixed(2)}:threshold=${threshold.toFixed(1)}dB:attack=${attack}:release=${release}`;
+  const echoIn = styleMix > 0 ? `,aecho=0.25:0.25:${60 + 40*styleMix}:${0.2 + 0.25*styleMix}` : "";
+
+  const filter = `${pitchFilter}${tempoFilter}${eqFilter}${compFilter}${echoIn}${loudnorm}`;
+
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    ffmpeg()
+      .input(bufferToStream(mp3Buffer))
+      .inputFormat("mp3")
+      .audioFilters(filter)
+      .format("mp3")
+      .on("error", reject)
+      .on("end", () => resolve(Buffer.concat(chunks)))
+      .pipe()
+      .on("data", c => chunks.push(c));
+  });
+}
+
+/* ──────────────────────────────────────────────────────────────
+   Unified reply generator (voice == text) — kept
    ────────────────────────────────────────────────────────────── */
 async function generateEllieReply({ userId, userText }) {
-  // 1) Use saved language; if absent, fall back to 'en' (do NOT auto-save here)
   let prefLang = await getPreferredLanguage(userId);
-  if (!prefLang) {
-    prefLang = "en"; // frontend is expected to set language on first load
-  }
+  if (!prefLang) prefLang = "en";
 
-  // 2) Memory & mood
   const [storedFacts, latestMood, recentEmos] = await Promise.all([
     getFacts(userId),
     getLatestEmotion(userId),
@@ -601,7 +713,6 @@ async function generateEllieReply({ userId, userText }) {
   const applyMoodTone = randChance(PROB_MOOD_TONE);
   const moodStyle = applyMoodTone ? moodToStyle(agg.label, agg.avgIntensity) : null;
 
-  // 3) Rules: language + answer-first, plus a hint for voice cadence
   const languageRules = `
 Language rules:
 - Always reply in ${SUPPORTED_LANGUAGES[prefLang]} (${prefLang}).
@@ -617,7 +728,6 @@ Language rules:
 
   const fullConversation = [memoryPrompt, ...history.slice(1), { role: "user", content: userText }];
 
-  // 4) Focused generation
   const completion = await client.chat.completions.create({
     model: CHAT_MODEL,
     messages: fullConversation,
@@ -627,7 +737,6 @@ Language rules:
 
   let reply = (completion.choices?.[0]?.message?.content || "").trim();
 
-  // 5) Preserve Ellie behavior post-processing
   let finalReply = reply;
   let didHeavyAddon = false;
 
@@ -647,7 +756,6 @@ Language rules:
 
   finalReply = dedupeLines(finalReply);
 
-  // 6) History updates
   pushToHistory(userId, { role: "user", content: userText });
   pushToHistory(userId, { role: "assistant", content: finalReply });
 
@@ -655,7 +763,7 @@ Language rules:
 }
 
 /* ──────────────────────────────────────────────────────────────
-   Chat endpoint
+   Chat endpoint (kept)
    ────────────────────────────────────────────────────────────── */
 app.post("/api/chat", async (req, res) => {
   try {
@@ -665,7 +773,6 @@ app.post("/api/chat", async (req, res) => {
       return res.status(400).json({ error: "E_BAD_INPUT", message: "Invalid message" });
     }
 
-    // Keep your fact/emotion extraction exactly as-is
     const [extractedFacts, overallEmotion] = await Promise.all([
       extractFacts(message),
       extractEmotionPoint(message),
@@ -674,7 +781,6 @@ app.post("/api/chat", async (req, res) => {
     if (extractedFacts.length) await saveFacts(userId, extractedFacts, message);
     if (overallEmotion) await saveEmotion(userId, overallEmotion, message);
 
-    // Unified generator
     const { reply, language } = await generateEllieReply({ userId, userText: message });
 
     res.json({ reply, language });
@@ -685,7 +791,7 @@ app.post("/api/chat", async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   Maintenance + language endpoints
+   Maintenance + language endpoints (kept + get-language)
    ────────────────────────────────────────────────────────────── */
 app.post("/api/reset", (req, res) => {
   const { userId = "default-user" } = req.body || {};
@@ -709,7 +815,7 @@ app.get("/api/multer-test", (_req, res) => {
   }
 });
 
-// NEW: Get saved language for a user (for first-run language gate in frontend)
+// language endpoints
 app.get("/api/get-language", async (req, res) => {
   try {
     const userId = String(req.query.userId || "default-user");
@@ -719,8 +825,6 @@ app.get("/api/get-language", async (req, res) => {
     res.status(500).json({ error: "E_INTERNAL", message: e.message });
   }
 });
-
-// NEW: Set preferred language (kept)
 app.post("/api/set-language", async (req, res) => {
   try {
     const { userId = "default-user", language } = req.body || {};
@@ -736,9 +840,62 @@ app.post("/api/set-language", async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   Upload audio → Transcribe with OpenAI (Whisper)
-   Field: "audio" (webm/ogg/mp3/m4a/wav ≤ 10MB)
-   (No 409 anymore; fall back to 'en' if not set)
+   Voice settings & PRESET endpoints (NEW)
+   ────────────────────────────────────────────────────────────── */
+app.get("/api/get-voice-settings", async (req, res) => {
+  try {
+    const userId = String(req.query.userId || "default-user");
+    const settings = await getVoiceSettings(userId);
+    const preset = await getVoicePreset(userId);
+    res.json({ settings, preset: preset || null, defaults: DEFAULT_VOICE_SETTINGS, presets: VOICE_PRESETS });
+  } catch (e) {
+    res.status(500).json({ error: "E_INTERNAL", message: String(e?.message || e) });
+  }
+});
+app.post("/api/set-voice-settings", async (req, res) => {
+  try {
+    const { userId = "default-user", settings = {} } = req.body || {};
+    const saved = await setVoiceSettings(userId, settings);
+    res.json({ ok: true, settings: saved });
+  } catch (e) {
+    res.status(500).json({ error: "E_INTERNAL", message: String(e?.message || e) });
+  }
+});
+app.get("/api/get-voice-presets", async (_req, res) => {
+  try {
+    res.json({
+      presets: Object.entries(VOICE_PRESETS).map(([key, val]) => ({
+        key, label: key[0].toUpperCase() + key.slice(1), settings: val
+      }))
+    });
+  } catch (e) {
+    res.status(500).json({ error: "E_INTERNAL", message: String(e?.message || e) });
+  }
+});
+app.get("/api/get-voice-preset", async (req, res) => {
+  try {
+    const userId = String(req.query.userId || "default-user");
+    const preset = await getVoicePreset(userId);
+    res.json({ preset: preset || null });
+  } catch (e) {
+    res.status(500).json({ error: "E_INTERNAL", message: String(e?.message || e) });
+  }
+});
+app.post("/api/apply-voice-preset", async (req, res) => {
+  try {
+    const { userId = "default-user", preset } = req.body || {};
+    if (!validPresetName(preset)) {
+      return res.status(400).json({ error: "E_BAD_PRESET", message: "Unknown preset" });
+    }
+    const saved = await applyVoicePreset(userId, preset);
+    res.json({ ok: true, preset, settings: saved });
+  } catch (e) {
+    res.status(500).json({ error: "E_INTERNAL", message: String(e?.message || e) });
+  }
+});
+
+/* ──────────────────────────────────────────────────────────────
+   Upload audio → Transcribe (kept) — returns raw text only
    ────────────────────────────────────────────────────────────── */
 app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
   try {
@@ -759,9 +916,7 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
       prefLang = requestedLang;
       await setPreferredLanguage(userId, requestedLang);
     }
-    if (!prefLang) {
-      prefLang = "en"; // default, frontend should have set language on first load
-    }
+    if (!prefLang) prefLang = "en";
 
     const fileForOpenAI = await toFile(req.file.buffer, req.file.originalname || "audio.webm");
     const tr = await client.audio.transcriptions.create({
@@ -778,9 +933,7 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   Voice chat (parity with text)
-   POST audio → transcribe (forced language or fallback) → generate reply → TTS mp3 (base64)
-   (No 409 anymore; fall back to 'en')
+   Voice chat (with FX)
    ────────────────────────────────────────────────────────────── */
 app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
   try {
@@ -791,16 +944,13 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
       return res.status(400).json({ error: "E_BAD_AUDIO", message: "Upload audio/webm|ogg|mp3|m4a|wav ≤ 10MB" });
     }
 
-    // Resolve language (allow client override; else saved; else 'en')
     let prefLang = await getPreferredLanguage(userId);
     const requestedLang = (req.body?.language || "").toLowerCase();
     if (requestedLang && SUPPORTED_LANGUAGES[requestedLang]) {
       prefLang = requestedLang;
       await setPreferredLanguage(userId, requestedLang);
     }
-    if (!prefLang) {
-      prefLang = "en"; // default, frontend should have set language on first load
-    }
+    if (!prefLang) prefLang = "en";
 
     const fileForOpenAI = await toFile(req.file.buffer, req.file.originalname || "audio.webm");
     const tr = await client.audio.transcriptions.create({
@@ -814,7 +964,6 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
       return res.status(200).json({ text: "", reply: "", language: prefLang, audioMp3Base64: null });
     }
 
-    // Save facts/emotion from transcribed text (same as text flow)
     const [extractedFacts, overallEmotion] = await Promise.all([
       extractFacts(userText),
       extractEmotionPoint(userText),
@@ -822,19 +971,23 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     if (extractedFacts.length) await saveFacts(userId, extractedFacts, userText);
     if (overallEmotion) await saveEmotion(userId, overallEmotion, userText);
 
-    // Same brain as /api/chat
     const { reply, language } = await generateEllieReply({ userId, userText });
 
-    // TTS in same language
+    const voice = req.body?.voice || DEFAULT_VOICE;
     const speech = await client.audio.speech.create({
       model: "gpt-4o-mini-tts",
-      voice: req.body?.voice || "alloy",
+      voice,
       input: reply,
       format: "mp3",
     });
     const ab = await speech.arrayBuffer();
-    const audioMp3Base64 = Buffer.from(ab).toString("base64");
 
+    // apply per-user voice FX
+    const settings = await getVoiceSettings(userId);
+    let outBuf = Buffer.from(ab);
+    outBuf = await applyVoiceFXMp3(outBuf, settings);
+
+    const audioMp3Base64 = outBuf.toString("base64");
     res.json({ text: userText, reply, language, audioMp3Base64 });
   } catch (e) {
     console.error("voice-chat error:", e);
@@ -843,12 +996,11 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   Text → Speech (MP3) with OpenAI TTS
-   Body: { text: "Hello", voice?: "alloy" }
+   Text → Speech (MP3) with OpenAI TTS (+FX)
    ────────────────────────────────────────────────────────────── */
 app.post("/api/tts", async (req, res) => {
   try {
-    const { text, voice = "alloy" } = req.body || {};
+    const { text, voice = DEFAULT_VOICE, userId = "default-user" } = req.body || {};
     if (!text || typeof text !== "string") {
       return res.status(400).json({ error: "Missing 'text' string in body." });
     }
@@ -860,7 +1012,11 @@ app.post("/api/tts", async (req, res) => {
     });
 
     const ab = await speech.arrayBuffer();
-    const buf = Buffer.from(ab);
+    let buf = Buffer.from(ab);
+
+    const settings = await getVoiceSettings(userId);
+    buf = await applyVoiceFXMp3(buf, settings);
+
     res.setHeader("Content-Type", "audio/mpeg");
     res.setHeader("Content-Length", String(buf.length));
     return res.send(buf);
@@ -871,8 +1027,7 @@ app.post("/api/tts", async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   Quick voice preview
-   GET /api/tts-test/:voice   (e.g., /api/tts-test/alloy)
+   Quick voice preview (kept, no FX)
    ────────────────────────────────────────────────────────────── */
 app.get("/api/tts-test/:voice", async (req, res) => {
   const voice = req.params.voice;
@@ -892,7 +1047,101 @@ app.get("/api/tts-test/:voice", async (req, res) => {
   }
 });
 
-// graceful shutdown
+/* ──────────────────────────────────────────────────────────────
+   WebSocket voice sessions (always-on voice mode): /ws/voice
+   ────────────────────────────────────────────────────────────── */
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server, path: "/ws/voice" });
+
+wss.on("connection", (ws, req) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  let userId = url.searchParams.get("userId") || "default-user";
+  let sessionLang = null;
+  let sessionVoice = DEFAULT_VOICE;
+
+  ws.on("message", async (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString("utf8"));
+
+      if (msg.type === "hello") {
+        userId = msg.userId || userId;
+        if (typeof msg.voice === "string") sessionVoice = msg.voice;
+        if (msg.preset && validPresetName(msg.preset)) await applyVoicePreset(userId, msg.preset);
+        if (msg.settings) await setVoiceSettings(userId, msg.settings);
+        const code = await getPreferredLanguage(userId);
+        sessionLang = code || "en";
+        ws.send(JSON.stringify({ type: "hello-ok", userId, language: sessionLang, voice: sessionVoice }));
+        return;
+      }
+
+      if (msg.type === "audio" && msg.audio) {
+        const mime = msg.mime || "audio/webm";
+        const b = Buffer.from(msg.audio, "base64");
+
+        const fileForOpenAI = await toFile(b, `chunk.${mime.includes("webm") ? "webm" : "wav"}`);
+        const lang = sessionLang || (await getPreferredLanguage(userId)) || "en";
+        const tr = await client.audio.transcriptions.create({
+          model: "whisper-1",
+          file: fileForOpenAI,
+          language: lang,
+        });
+        const userText = (tr.text || "").trim();
+        if (!userText) {
+          ws.send(JSON.stringify({ type: "reply", text: "", reply: "", language: lang, audioMp3Base64: null }));
+          return;
+        }
+
+        const [facts, emo] = await Promise.all([extractFacts(userText), extractEmotionPoint(userText)]);
+        if (facts.length) await saveFacts(userId, facts, userText);
+        if (emo) await saveEmotion(userId, emo, userText);
+
+        const { reply, language } = await generateEllieReply({ userId, userText });
+
+        const speech = await client.audio.speech.create({
+          model: "gpt-4o-mini-tts",
+          voice: sessionVoice || DEFAULT_VOICE,
+          input: reply,
+          format: "mp3",
+        });
+        const ab = await speech.arrayBuffer();
+
+        const settings = await getVoiceSettings(userId);
+        let outBuf = Buffer.from(ab);
+        outBuf = await applyVoiceFXMp3(outBuf, settings);
+
+        ws.send(JSON.stringify({
+          type: "reply",
+          text: userText,
+          reply,
+          language,
+          audioMp3Base64: outBuf.toString("base64")
+        }));
+        return;
+      }
+
+      if (msg.type === "apply-preset" && validPresetName(msg.preset)) {
+        const s = await applyVoicePreset(userId, msg.preset);
+        ws.send(JSON.stringify({ type: "preset-ok", preset: msg.preset, settings: s }));
+        return;
+      }
+
+      if (msg.type === "ping") {
+        ws.send(JSON.stringify({ type: "pong", t: Date.now() }));
+        return;
+      }
+    } catch (e) {
+      try {
+        ws.send(JSON.stringify({ type: "error", message: String(e?.message || e) }));
+      } catch {}
+    }
+  });
+
+  ws.on("close", () => {});
+});
+
+/* ──────────────────────────────────────────────────────────────
+   graceful shutdown
+   ────────────────────────────────────────────────────────────── */
 function shutdown(signal) {
   console.log(`\n${signal} received. Closing DB pool...`);
   pool.end(() => {
@@ -903,7 +1152,8 @@ function shutdown(signal) {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
-// Start server
-app.listen(PORT, () => {
+// Start server (HTTP + WS)
+server.listen(PORT, () => {
   console.log(`🚀 Ellie API running at http://localhost:${PORT}`);
+  console.log(`🔊 WebSocket voice at ws://localhost:${PORT}/ws/voice`);
 });
