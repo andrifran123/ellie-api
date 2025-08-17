@@ -381,15 +381,31 @@ async function setPreferredLanguage(userId, langCode) {
   );
 }
 
+// kept for future use; now we prefer explicit user choice
 async function detectLanguageISO(text) {
+  const t = (text || "").trim();
+  const isASCII = /^[\x00-\x7F]*$/.test(t);
+  const EN_HINT = /\b(hi|hey|hello|what|how|why|please|thanks|ok|okay|yes|no|good|morning|evening|night)\b/i;
+  if (!t) return "en";
+  if (isASCII && (t.length < 12 || EN_HINT.test(t))) return "en";
+  if (/[\u0900-\u097F]/.test(t)) return "hi";
+  if (/[\u4E00-\u9FFF]/.test(t)) return "zh";
+  if (/[\u3040-\u30FF]/.test(t)) return "ja";
+  if (/[\uAC00-\uD7AF]/.test(t)) return "ko";
   try {
     const completion = await client.chat.completions.create({
       model: CHAT_MODEL,
       temperature: 0,
       messages: [
-        { role: "system", content: `Return ONLY a 2-letter ISO 639-1 code (lowercase) from this set: ${Object.keys(SUPPORTED_LANGUAGES).join(", ")}. If unsure, return "en".` },
-        { role: "user", content: `Detect language for: """${(text || "").slice(0, 500)}"""` }
-      ]
+        {
+          role: "system",
+          content:
+            `Return ONLY a 2-letter ISO 639-1 code from this set: ${Object.keys(SUPPORTED_LANGUAGES).join(", ")}.\n` +
+            `If the text is ambiguous or short and could be English, return "en".\n` +
+            `IMPORTANT: The greeting "hi" in English is NOT the Hindi language code.`,
+        },
+        { role: "user", content: `Detect language for: """${t.slice(0, 500)}"""` },
+      ],
     });
     const code = completion.choices?.[0]?.message?.content?.trim().toLowerCase() || "en";
     return SUPPORTED_LANGUAGES[code] ? code : "en";
@@ -558,11 +574,10 @@ async function getLatestEmotion(userId) {
    Unified reply generator (voice == text) — NEW
    ────────────────────────────────────────────────────────────── */
 async function generateEllieReply({ userId, userText }) {
-  // 1) Ensure language is set
+  // 1) Use saved language; if absent, fall back to 'en' (do NOT auto-save here)
   let prefLang = await getPreferredLanguage(userId);
   if (!prefLang) {
-    prefLang = await detectLanguageISO(userText || "");
-    await setPreferredLanguage(userId, prefLang);
+    prefLang = "en"; // frontend is expected to set language on first load
   }
 
   // 2) Memory & mood
@@ -602,7 +617,7 @@ Language rules:
 
   const fullConversation = [memoryPrompt, ...history.slice(1), { role: "user", content: userText }];
 
-  // 4) Focused generation (lower temperature) — behavior is still Ellie (system prompt unchanged)
+  // 4) Focused generation
   const completion = await client.chat.completions.create({
     model: CHAT_MODEL,
     messages: fullConversation,
@@ -612,7 +627,7 @@ Language rules:
 
   let reply = (completion.choices?.[0]?.message?.content || "").trim();
 
-  // 5) Preserve Ellie behavior post-processing (same as your /api/chat flow)
+  // 5) Preserve Ellie behavior post-processing
   let finalReply = reply;
   let didHeavyAddon = false;
 
@@ -659,7 +674,7 @@ app.post("/api/chat", async (req, res) => {
     if (extractedFacts.length) await saveFacts(userId, extractedFacts, message);
     if (overallEmotion) await saveEmotion(userId, overallEmotion, message);
 
-    // NEW: unified generator (same brain used by voice)
+    // Unified generator
     const { reply, language } = await generateEllieReply({ userId, userText: message });
 
     res.json({ reply, language });
@@ -670,7 +685,7 @@ app.post("/api/chat", async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   Maintenance endpoints
+   Maintenance + language endpoints
    ────────────────────────────────────────────────────────────── */
 app.post("/api/reset", (req, res) => {
   const { userId = "default-user" } = req.body || {};
@@ -694,10 +709,36 @@ app.get("/api/multer-test", (_req, res) => {
   }
 });
 
+// NEW: Get saved language for a user (for first-run language gate in frontend)
+app.get("/api/get-language", async (req, res) => {
+  try {
+    const userId = String(req.query.userId || "default-user");
+    const code = await getPreferredLanguage(userId);
+    res.json({ language: code });
+  } catch (e) {
+    res.status(500).json({ error: "E_INTERNAL", message: e.message });
+  }
+});
+
+// NEW: Set preferred language (kept)
+app.post("/api/set-language", async (req, res) => {
+  try {
+    const { userId = "default-user", language } = req.body || {};
+    const code = String(language || "").toLowerCase();
+    if (!SUPPORTED_LANGUAGES[code]) {
+      return res.status(400).json({ error: "E_BAD_LANGUAGE", message: "Unsupported language code." });
+    }
+    await setPreferredLanguage(userId, code);
+    res.json({ ok: true, language: code, label: SUPPORTED_LANGUAGES[code] });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 /* ──────────────────────────────────────────────────────────────
-   NEW: Upload audio → Transcribe with OpenAI (Whisper)
+   Upload audio → Transcribe with OpenAI (Whisper)
    Field: "audio" (webm/ogg/mp3/m4a/wav ≤ 10MB)
-   (Now: deterministic language + 409 if not set)
+   (No 409 anymore; fall back to 'en' if not set)
    ────────────────────────────────────────────────────────────── */
 app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
   try {
@@ -712,7 +753,6 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
 
     const userId = (req.body?.userId || "default-user");
 
-    // Resolve language (allow client override; else require selection)
     let prefLang = await getPreferredLanguage(userId);
     const requestedLang = (req.body?.language || "").toLowerCase();
     if (requestedLang && SUPPORTED_LANGUAGES[requestedLang]) {
@@ -720,18 +760,14 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
       await setPreferredLanguage(userId, requestedLang);
     }
     if (!prefLang) {
-      return res.status(409).json({
-        error: "LANGUAGE_NOT_SET",
-        message: "No preferred language saved. Ask user to choose one.",
-        options: Object.entries(SUPPORTED_LANGUAGES).map(([code, name]) => ({ code, name })),
-      });
+      prefLang = "en"; // default, frontend should have set language on first load
     }
 
     const fileForOpenAI = await toFile(req.file.buffer, req.file.originalname || "audio.webm");
     const tr = await client.audio.transcriptions.create({
       model: "whisper-1",
       file: fileForOpenAI,
-      language: prefLang, // force to saved language
+      language: prefLang,
     });
 
     res.json({ text: tr.text || "", language: prefLang });
@@ -742,8 +778,9 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   NEW: Voice chat (parity with text)
-   POST audio → transcribe (forced language) → generate reply (same brain) → TTS mp3 (base64)
+   Voice chat (parity with text)
+   POST audio → transcribe (forced language or fallback) → generate reply → TTS mp3 (base64)
+   (No 409 anymore; fall back to 'en')
    ────────────────────────────────────────────────────────────── */
 app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
   try {
@@ -754,7 +791,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
       return res.status(400).json({ error: "E_BAD_AUDIO", message: "Upload audio/webm|ogg|mp3|m4a|wav ≤ 10MB" });
     }
 
-    // Resolve language (allow client override; else require selection)
+    // Resolve language (allow client override; else saved; else 'en')
     let prefLang = await getPreferredLanguage(userId);
     const requestedLang = (req.body?.language || "").toLowerCase();
     if (requestedLang && SUPPORTED_LANGUAGES[requestedLang]) {
@@ -762,11 +799,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
       await setPreferredLanguage(userId, requestedLang);
     }
     if (!prefLang) {
-      return res.status(409).json({
-        error: "LANGUAGE_NOT_SET",
-        message: "No preferred language saved. Ask user to choose one.",
-        options: Object.entries(SUPPORTED_LANGUAGES).map(([code, name]) => ({ code, name })),
-      });
+      prefLang = "en"; // default, frontend should have set language on first load
     }
 
     const fileForOpenAI = await toFile(req.file.buffer, req.file.originalname || "audio.webm");
@@ -792,7 +825,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     // Same brain as /api/chat
     const { reply, language } = await generateEllieReply({ userId, userText });
 
-    // TTS in same language (reply is already in that language)
+    // TTS in same language
     const speech = await client.audio.speech.create({
       model: "gpt-4o-mini-tts",
       voice: req.body?.voice || "alloy",
@@ -810,7 +843,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   NEW: Text → Speech (MP3) with OpenAI TTS
+   Text → Speech (MP3) with OpenAI TTS
    Body: { text: "Hello", voice?: "alloy" }
    ────────────────────────────────────────────────────────────── */
 app.post("/api/tts", async (req, res) => {
@@ -838,7 +871,7 @@ app.post("/api/tts", async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   NEW: Quick voice preview
+   Quick voice preview
    GET /api/tts-test/:voice   (e.g., /api/tts-test/alloy)
    ────────────────────────────────────────────────────────────── */
 app.get("/api/tts-test/:voice", async (req, res) => {
@@ -856,24 +889,6 @@ app.get("/api/tts-test/:voice", async (req, res) => {
   } catch (e) {
     console.error("TTS test error:", e);
     res.status(500).json({ error: e.message || "TTS_TEST_FAILED" });
-  }
-});
-
-/* ──────────────────────────────────────────────────────────────
-   NEW: Set preferred language endpoint (optional but handy)
-   Body: { userId, language: "en" }
-   ────────────────────────────────────────────────────────────── */
-app.post("/api/set-language", async (req, res) => {
-  try {
-    const { userId = "default-user", language } = req.body || {};
-    const code = String(language || "").toLowerCase();
-    if (!SUPPORTED_LANGUAGES[code]) {
-      return res.status(400).json({ error: "E_BAD_LANGUAGE", message: "Unsupported language code." });
-    }
-    await setPreferredLanguage(userId, code);
-    res.json({ ok: true, language: code, label: SUPPORTED_LANGUAGES[code] });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
