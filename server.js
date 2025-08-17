@@ -632,17 +632,17 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
 
 /* ──────────────────────────────────────────────────────────────
    NEW: Text → Speech (MP3) with OpenAI TTS
-   Body: { text: "Hello", voice?: "alloy" }
+   Body: { text: "Hello" }  (voice is always Sage)
    ────────────────────────────────────────────────────────────── */
 app.post("/api/tts", async (req, res) => {
   try {
-    const { text, voice = "alloy" } = req.body || {};
+    const { text } = req.body || {};
     if (!text || typeof text !== "string") {
       return res.status(400).json({ error: "Missing 'text' string in body." });
     }
     const speech = await client.audio.speech.create({
       model: "gpt-4o-mini-tts",
-      voice,
+      voice: "sage",   // ← ALWAYS SAGE
       input: text,
       format: "mp3",
     });
@@ -659,16 +659,15 @@ app.post("/api/tts", async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   NEW: Quick voice preview
-   GET /api/tts-test/:voice   (e.g., /api/tts-test/alloy)
+   NEW: Quick voice preview — always Sage
+   GET /api/tts-test
    ────────────────────────────────────────────────────────────── */
-app.get("/api/tts-test/:voice", async (req, res) => {
-  const voice = req.params.voice;
+app.get("/api/tts-test", async (_req, res) => {
   try {
     const mp3 = await client.audio.speech.create({
       model: "gpt-4o-mini-tts",
-      voice,
-      input: "Hi, I’m Ellie. I can sound different depending on the voice you pick. Do you like this one?",
+      voice: "sage",  // ← ALWAYS SAGE
+      input: "Hi, I’m Ellie. This is my Sage voice test.",
       format: "mp3",
     });
     const ab = await mp3.arrayBuffer();
