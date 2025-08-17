@@ -52,6 +52,7 @@ const defaultAllowed = [
   "https://ellie-web-ochre.vercel.app",
   "https://ellie-web.vercel.app",
   "http://localhost:3000",
+  // ADDED: your Render backend origin so direct hits don’t get blocked
   "https://ellie-api-1.onrender.com",
 ];
 const allowedOrigins = process.env.CORS_ORIGIN
@@ -80,6 +81,9 @@ const MAX_MESSAGE_LEN = Number(process.env.MAX_MESSAGE_LEN || 4000);
 
 // NEW: default OpenAI voice + per-request override support
 const DEFAULT_VOICE = process.env.ELLIE_VOICE || "alloy";
+
+// Allow turning FX off quickly via env (ELLIE_VOICE_FX=off)
+const FX_ENABLED = (process.env.ELLIE_VOICE_FX || "on").toLowerCase() !== "off";
 
 const FACT_DUP_SIM_THRESHOLD = Number(process.env.FACT_DUP_SIM_THRESHOLD || 0.8);
 const WEIGHT_CONFIDENCE = Number(process.env.WEIGHT_CONFIDENCE || 0.6);
@@ -275,7 +279,7 @@ function weaveCallbackInto(text, fact) {
   return /[.!?]\s*$/.test(text) ? `${text} ${add}` : `${text}. ${add}`;
 }
 function shouldUseCallback(userId, userMsg) {
-  if ((userMsg || "").trim().length < 4) return false;
+  if ((userMsg || "").trim.length < 4) return false;
   const now = Date.now();
   const turns = getTurnCount(userId);
   const last = lastCallbackState.get(userId);
@@ -561,7 +565,7 @@ const DEFAULT_VOICE_SETTINGS = {
   pitchSemi: 0,      // -6 .. +6 (semitones)
   tempo: 1.0,        // 0.85 .. 1.20 (speed, pitch preserved)
   stability: 0.75,   // 0..1 -> more compression = more stable loudness
-  clarity: 0.6,      // 0..1 -> high-shelf EQ (air)
+  clarity: 0.6,      // 0..1 -> high-shelf (air)
   style: 0.2,        // 0..1 -> subtle echo/reverb
   speakerBoost: false
 };
@@ -643,47 +647,91 @@ async function setVoiceSettings(userId, settingsObj) {
   return clean;
 }
 
-// FFmpeg filter chain for pitch/speed/EQ/compression/reverb/loudness
-async function applyVoiceFXMp3(mp3Buffer, settings) {
+/* ---------- Robust FFmpeg FX with fallbacks ---------- */
+
+// Build a filter string with options for fallback
+function buildVoiceFilter(settings, { useFirequalizer = true, useLoudnorm = true } = {}) {
   const s = { ...DEFAULT_VOICE_SETTINGS, ...(settings || {}) };
 
   const pitchSemi = Number(s.pitchSemi || 0);
-  const shift = Math.pow(2, pitchSemi / 12); // 2^(n/12)
+  const shift = Math.pow(2, pitchSemi / 12);  // 2^(n/12)
   const tempo = Math.max(0.5, Math.min(2.0, Number(s.tempo || 1)));
 
-  const ratio = 1 + 7 * Math.max(0, Math.min(1, s.stability));     // 1..8
-  const threshold = -24 + (1 - s.stability) * 12;                   // -24..-12 dB
-  const attack = 10;  // ms
-  const release = 200;// ms
+  const ratio = 1 + 7 * Math.max(0, Math.min(1, s.stability)); // 1..8
+  const threshold = -24 + (1 - s.stability) * 12;               // -24..-12 dB
+  const attack = 10, release = 200;
 
-  const highShelfGain = (s.clarity || 0) * 5; // up to +5dB @ 8–12kHz
+  const highShelfGain = (s.clarity || 0) * 5;   // up to +5dB
   const styleMix = Math.max(0, Math.min(1, Number(s.style || 0)));
-  const loudnorm = s.speakerBoost ? ",loudnorm=I=-16:TP=-1.5:LRA=11" : "";
+  const wantLoud = !!s.speakerBoost && useLoudnorm;
 
   const pitchFilter = pitchSemi !== 0
     ? `asetrate=48000*${shift},aresample=48000,atempo=${(1/shift).toFixed(5)}`
     : `anull`;
   const tempoFilter = tempo !== 1 ? `,atempo=${tempo.toFixed(3)}` : "";
-  const eqFilter = highShelfGain > 0
-    ? `,firequalizer=gain_entry='8000 ${highShelfGain.toFixed(2)}|12000 ${(highShelfGain*0.7).toFixed(2)}'`
+
+  // Prefer firequalizer; if not available, fallback to treble
+  const eqFilter = (highShelfGain > 0)
+    ? (useFirequalizer
+        ? `,firequalizer=gain_entry='8000 ${highShelfGain.toFixed(2)}|12000 ${(highShelfGain*0.7).toFixed(2)}'`
+        : `,treble=g=${highShelfGain.toFixed(2)}:f=8000`)
     : "";
+
   const compFilter = `,acompressor=ratio=${ratio.toFixed(2)}:threshold=${threshold.toFixed(1)}dB:attack=${attack}:release=${release}`;
   const echoIn = styleMix > 0 ? `,aecho=0.25:0.25:${60 + 40*styleMix}:${0.2 + 0.25*styleMix}` : "";
 
-  const filter = `${pitchFilter}${tempoFilter}${eqFilter}${compFilter}${echoIn}${loudnorm}`;
+  // loudness: try loudnorm; can be disabled in fallback
+  const loudnorm = wantLoud ? ",loudnorm=I=-16:TP=-1.5:LRA=11" : "";
 
+  return `${pitchFilter}${tempoFilter}${eqFilter}${compFilter}${echoIn}${loudnorm}`;
+}
+
+function runFfmpegOnBuffer(mp3Buffer, filter) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    ffmpeg()
+    const proc = ffmpeg()
       .input(bufferToStream(mp3Buffer))
       .inputFormat("mp3")
       .audioFilters(filter)
       .format("mp3")
-      .on("error", reject)
+      .on("start", cmd => console.log("[ffmpeg] start:", cmd))
+      .on("stderr", line => console.log("[ffmpeg]", line?.toString?.() || line))
+      .on("error", err => reject(err))
       .on("end", () => resolve(Buffer.concat(chunks)))
-      .pipe()
-      .on("data", c => chunks.push(c));
+      .pipe();
+
+    proc.on("data", c => chunks.push(c));
   });
+}
+
+// Robust FX with fallbacks:
+// 1) firequalizer + loudnorm
+// 2) treble (no firequalizer) + loudnorm
+// 3) treble only (no loudnorm)
+// If all fail, return original audio.
+async function applyVoiceFXMp3(mp3Buffer, settings) {
+  if (!FX_ENABLED) return mp3Buffer;
+
+  const attempts = [
+    { useFirequalizer: true,  useLoudnorm: true  },
+    { useFirequalizer: false, useLoudnorm: true  },
+    { useFirequalizer: false, useLoudnorm: false },
+  ];
+
+  for (const opts of attempts) {
+    const filter = buildVoiceFilter(settings, opts);
+    try {
+      console.log("[fx] trying filter:", filter);
+      const out = await runFfmpegOnBuffer(mp3Buffer, filter);
+      console.log("[fx] success with opts", opts);
+      return out;
+    } catch (e) {
+      console.warn("[fx] filter failed with opts", opts, "error:", e?.message || e);
+    }
+  }
+
+  console.warn("[fx] all filters failed — returning original audio");
+  return mp3Buffer;
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -982,10 +1030,14 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     });
     const ab = await speech.arrayBuffer();
 
-    // apply per-user voice FX
+    // apply per-user voice FX (robust fallback inside)
     const settings = await getVoiceSettings(userId);
     let outBuf = Buffer.from(ab);
-    outBuf = await applyVoiceFXMp3(outBuf, settings);
+    try {
+      outBuf = await applyVoiceFXMp3(outBuf, settings);
+    } catch (e) {
+      console.error("[fx] unexpected error:", e);
+    }
 
     const audioMp3Base64 = outBuf.toString("base64");
     res.json({ text: userText, reply, language, audioMp3Base64 });
@@ -1014,8 +1066,13 @@ app.post("/api/tts", async (req, res) => {
     const ab = await speech.arrayBuffer();
     let buf = Buffer.from(ab);
 
-    const settings = await getVoiceSettings(userId);
-    buf = await applyVoiceFXMp3(buf, settings);
+    // apply per-user FX (robust fallback inside)
+    try {
+      const settings = await getVoiceSettings(userId);
+      buf = await applyVoiceFXMp3(buf, settings);
+    } catch (e) {
+      console.error("[fx] unexpected error:", e);
+    }
 
     res.setHeader("Content-Type", "audio/mpeg");
     res.setHeader("Content-Length", String(buf.length));
@@ -1107,7 +1164,11 @@ wss.on("connection", (ws, req) => {
 
         const settings = await getVoiceSettings(userId);
         let outBuf = Buffer.from(ab);
-        outBuf = await applyVoiceFXMp3(outBuf, settings);
+        try {
+          outBuf = await applyVoiceFXMp3(outBuf, settings);
+        } catch (e) {
+          console.error("[fx] unexpected error:", e);
+        }
 
         ws.send(JSON.stringify({
           type: "reply",
