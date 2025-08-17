@@ -338,6 +338,67 @@ function moodToStyle(label, intensity) {
 }
 
 /* ──────────────────────────────────────────────────────────────
+   Language support (NEW)
+   ────────────────────────────────────────────────────────────── */
+const SUPPORTED_LANGUAGES = {
+  en: "English",
+  is: "Icelandic",
+  pt: "Portuguese",
+  es: "Spanish",
+  fr: "French",
+  de: "German",
+  it: "Italian",
+  sv: "Swedish",
+  da: "Danish",
+  no: "Norwegian",
+  nl: "Dutch",
+  pl: "Polish",
+  ar: "Arabic",
+  hi: "Hindi",
+  ja: "Japanese",
+  ko: "Korean",
+  zh: "Chinese",
+};
+
+async function getPreferredLanguage(userId) {
+  const { rows } = await pool.query(
+    `SELECT fact FROM facts
+      WHERE user_id=$1 AND category='language'
+      ORDER BY updated_at DESC NULLS LAST, created_at DESC
+      LIMIT 1`,
+    [userId]
+  );
+  const code = rows?.[0]?.fact?.toLowerCase();
+  return code && SUPPORTED_LANGUAGES[code] ? code : null;
+}
+
+async function setPreferredLanguage(userId, langCode) {
+  if (!SUPPORTED_LANGUAGES[langCode]) return;
+  await upsertFact(
+    userId,
+    { category: "language", fact: langCode, sentiment: null, confidence: 1.0 },
+    `system: setPreferredLanguage(${langCode})`
+  );
+}
+
+async function detectLanguageISO(text) {
+  try {
+    const completion = await client.chat.completions.create({
+      model: CHAT_MODEL,
+      temperature: 0,
+      messages: [
+        { role: "system", content: `Return ONLY a 2-letter ISO 639-1 code (lowercase) from this set: ${Object.keys(SUPPORTED_LANGUAGES).join(", ")}. If unsure, return "en".` },
+        { role: "user", content: `Detect language for: """${(text || "").slice(0, 500)}"""` }
+      ]
+    });
+    const code = completion.choices?.[0]?.message?.content?.trim().toLowerCase() || "en";
+    return SUPPORTED_LANGUAGES[code] ? code : "en";
+  } catch {
+    return "en";
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
    Fact & emotion extraction (additive only)
    ────────────────────────────────────────────────────────────── */
 async function extractFacts(text) {
@@ -494,6 +555,91 @@ async function getLatestEmotion(userId) {
 }
 
 /* ──────────────────────────────────────────────────────────────
+   Unified reply generator (voice == text) — NEW
+   ────────────────────────────────────────────────────────────── */
+async function generateEllieReply({ userId, userText }) {
+  // 1) Ensure language is set
+  let prefLang = await getPreferredLanguage(userId);
+  if (!prefLang) {
+    prefLang = await detectLanguageISO(userText || "");
+    await setPreferredLanguage(userId, prefLang);
+  }
+
+  // 2) Memory & mood
+  const [storedFacts, latestMood, recentEmos] = await Promise.all([
+    getFacts(userId),
+    getLatestEmotion(userId),
+    getRecentEmotions(userId, 5),
+  ]);
+
+  const factsLines = storedFacts.map(r => {
+    const conf = r.confidence != null ? ` (conf ${Number(r.confidence).toFixed(2)})` : "";
+    const emo  = r.sentiment && r.sentiment !== "neutral" ? ` [${r.sentiment}]` : "";
+    return `- ${r.fact}${emo}${conf}`;
+  });
+  const factsSummary = factsLines.length ? `Known facts:\n${factsLines.join("\n")}` : "No stored facts yet.";
+  const moodLine = latestMood
+    ? `\nRecent mood: ${latestMood.label}${typeof latestMood.intensity === "number" ? ` (${latestMood.intensity.toFixed(2)})` : ""}.`
+    : "";
+
+  const agg = aggregateMood(recentEmos);
+  const applyMoodTone = randChance(PROB_MOOD_TONE);
+  const moodStyle = applyMoodTone ? moodToStyle(agg.label, agg.avgIntensity) : null;
+
+  // 3) Rules: language + answer-first, plus a hint for voice cadence
+  const languageRules = `
+Language rules:
+- Always reply in ${SUPPORTED_LANGUAGES[prefLang]} (${prefLang}).
+- Do not switch languages unless the user explicitly asks to change it.
+`;
+  const VOICE_MODE_HINT = `If this is voice mode, keep sentences 5–18 words and answer directly first.`;
+
+  const history = getHistory(userId);
+  const memoryPrompt = {
+    role: "system",
+    content: `${history[0].content}\n\n${languageRules}\n\n${factsSummary}${moodLine}${moodStyle ? `\n${moodStyle}` : ""}\n\n${VOICE_MODE_HINT}`
+  };
+
+  const fullConversation = [memoryPrompt, ...history.slice(1), { role: "user", content: userText }];
+
+  // 4) Focused generation (lower temperature) — behavior is still Ellie (system prompt unchanged)
+  const completion = await client.chat.completions.create({
+    model: CHAT_MODEL,
+    messages: fullConversation,
+    temperature: 0.6,
+    top_p: 0.9,
+  });
+
+  let reply = (completion.choices?.[0]?.message?.content || "").trim();
+
+  // 5) Preserve Ellie behavior post-processing (same as your /api/chat flow)
+  let finalReply = reply;
+  let didHeavyAddon = false;
+
+  if (!didHeavyAddon && randChance(PROB_FREEWILL)) {
+    const refusal = addPlayfulRefusal(userText, agg.label);
+    if (refusal && !(agg.label === "happy" && agg.avgIntensity < 0.5)) {
+      finalReply = `${refusal}\n\n${finalReply}`;
+      didHeavyAddon = true;
+    }
+  }
+
+  if (randChance(PROB_QUIRKS)) {
+    finalReply = casualize(finalReply);
+    finalReply = insertFavoriteEmoji(finalReply);
+    finalReply = capOneEmoji(finalReply);
+  }
+
+  finalReply = dedupeLines(finalReply);
+
+  // 6) History updates
+  pushToHistory(userId, { role: "user", content: userText });
+  pushToHistory(userId, { role: "assistant", content: finalReply });
+
+  return { reply: finalReply, language: prefLang };
+}
+
+/* ──────────────────────────────────────────────────────────────
    Chat endpoint
    ────────────────────────────────────────────────────────────── */
 app.post("/api/chat", async (req, res) => {
@@ -504,6 +650,7 @@ app.post("/api/chat", async (req, res) => {
       return res.status(400).json({ error: "E_BAD_INPUT", message: "Invalid message" });
     }
 
+    // Keep your fact/emotion extraction exactly as-is
     const [extractedFacts, overallEmotion] = await Promise.all([
       extractFacts(message),
       extractEmotionPoint(message),
@@ -512,77 +659,10 @@ app.post("/api/chat", async (req, res) => {
     if (extractedFacts.length) await saveFacts(userId, extractedFacts, message);
     if (overallEmotion) await saveEmotion(userId, overallEmotion, message);
 
-    const [storedFacts, latestMood, recentEmos] = await Promise.all([
-      getFacts(userId),
-      getLatestEmotion(userId),
-      getRecentEmotions(userId, 5),
-    ]);
+    // NEW: unified generator (same brain used by voice)
+    const { reply, language } = await generateEllieReply({ userId, userText: message });
 
-    const factsLines = storedFacts.map(r => {
-      const conf = r.confidence != null ? ` (conf ${Number(r.confidence).toFixed(2)})` : "";
-      const emo  = r.sentiment && r.sentiment !== "neutral" ? ` [${r.sentiment}]` : "";
-      return `- ${r.fact}${emo}${conf}`;
-    });
-    const factsSummary = factsLines.length ? `Known facts:\n${factsLines.join("\n")}` : "No stored facts yet.";
-
-    const moodLine = latestMood
-      ? `\nRecent mood: ${latestMood.label}${typeof latestMood.intensity === "number" ? ` (${latestMood.intensity.toFixed(2)})` : ""}.`
-      : "";
-
-    const agg = aggregateMood(recentEmos);
-    const applyMoodTone = randChance(PROB_MOOD_TONE);
-    const moodStyle = applyMoodTone ? moodToStyle(agg.label, agg.avgIntensity) : null;
-
-    const history = getHistory(userId);
-    const moodStyleBlock = moodStyle ? `\nTone hint (soft, do not override core persona): ${moodStyle}` : "";
-    const memoryPrompt = {
-      role: "system",
-      content: `${history[0].content}\n\n${factsSummary}${moodLine}${moodStyleBlock}`
-    };
-
-    const fullConversation = [memoryPrompt, ...history.slice(1)];
-    fullConversation.push({ role: "user", content: message });
-
-    const ac = new AbortController();
-    const to = setTimeout(() => ac.abort(), OPENAI_TIMEOUT_MS);
-    let reply;
-    try {
-      const completion = await client.chat.completions.create(
-        {
-          model: CHAT_MODEL,
-          messages: fullConversation,
-          temperature: 0.9,
-          top_p: 0.9,
-        },
-        { signal: ac.signal }
-      );
-      reply = (completion.choices?.[0]?.message?.content || "").trim();
-    } finally { clearTimeout(to); }
-
-    let finalReply = reply;
-    let didHeavyAddon = false;
-
-    if (!didHeavyAddon && randChance(PROB_FREEWILL)) {
-      const refusal = addPlayfulRefusal(message, agg.label);
-      if (refusal && !(agg.label === "happy" && agg.avgIntensity < 0.5)) {
-        finalReply = `${refusal}\n\n${finalReply}`;
-        didHeavyAddon = true;
-      }
-    }
-
-    // (callback disabled)
-    if (randChance(PROB_QUIRKS)) {
-      finalReply = casualize(finalReply);
-      finalReply = insertFavoriteEmoji(finalReply);
-      finalReply = capOneEmoji(finalReply);
-    }
-
-    finalReply = dedupeLines(finalReply);
-
-    pushToHistory(userId, { role: "user", content: message });
-    pushToHistory(userId, { role: "assistant", content: finalReply });
-
-    res.json({ reply: finalReply });
+    res.json({ reply, language });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "E_INTERNAL", message: "Something went wrong" });
@@ -617,6 +697,7 @@ app.get("/api/multer-test", (_req, res) => {
 /* ──────────────────────────────────────────────────────────────
    NEW: Upload audio → Transcribe with OpenAI (Whisper)
    Field: "audio" (webm/ogg/mp3/m4a/wav ≤ 10MB)
+   (Now: deterministic language + 409 if not set)
    ────────────────────────────────────────────────────────────── */
 app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
   try {
@@ -629,16 +710,102 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
       return res.status(415).json({ error: `Unsupported type ${req.file.mimetype}` });
     }
 
+    const userId = (req.body?.userId || "default-user");
+
+    // Resolve language (allow client override; else require selection)
+    let prefLang = await getPreferredLanguage(userId);
+    const requestedLang = (req.body?.language || "").toLowerCase();
+    if (requestedLang && SUPPORTED_LANGUAGES[requestedLang]) {
+      prefLang = requestedLang;
+      await setPreferredLanguage(userId, requestedLang);
+    }
+    if (!prefLang) {
+      return res.status(409).json({
+        error: "LANGUAGE_NOT_SET",
+        message: "No preferred language saved. Ask user to choose one.",
+        options: Object.entries(SUPPORTED_LANGUAGES).map(([code, name]) => ({ code, name })),
+      });
+    }
+
     const fileForOpenAI = await toFile(req.file.buffer, req.file.originalname || "audio.webm");
     const tr = await client.audio.transcriptions.create({
       model: "whisper-1",
       file: fileForOpenAI,
+      language: prefLang, // force to saved language
     });
 
-    res.json({ text: tr.text || "" });
+    res.json({ text: tr.text || "", language: prefLang });
   } catch (e) {
     console.error("upload-audio error:", e);
     res.status(500).json({ error: "TRANSCRIBE_FAILED", detail: String(e?.message || e) });
+  }
+});
+
+/* ──────────────────────────────────────────────────────────────
+   NEW: Voice chat (parity with text)
+   POST audio → transcribe (forced language) → generate reply (same brain) → TTS mp3 (base64)
+   ────────────────────────────────────────────────────────────── */
+app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
+  try {
+    const userId = (req.body?.userId || "default-user");
+
+    const okTypes = ["audio/webm","audio/ogg","audio/mpeg","audio/mp4","audio/wav","audio/x-wav"];
+    if (!req.file || !okTypes.includes(req.file.mimetype)) {
+      return res.status(400).json({ error: "E_BAD_AUDIO", message: "Upload audio/webm|ogg|mp3|m4a|wav ≤ 10MB" });
+    }
+
+    // Resolve language (allow client override; else require selection)
+    let prefLang = await getPreferredLanguage(userId);
+    const requestedLang = (req.body?.language || "").toLowerCase();
+    if (requestedLang && SUPPORTED_LANGUAGES[requestedLang]) {
+      prefLang = requestedLang;
+      await setPreferredLanguage(userId, requestedLang);
+    }
+    if (!prefLang) {
+      return res.status(409).json({
+        error: "LANGUAGE_NOT_SET",
+        message: "No preferred language saved. Ask user to choose one.",
+        options: Object.entries(SUPPORTED_LANGUAGES).map(([code, name]) => ({ code, name })),
+      });
+    }
+
+    const fileForOpenAI = await toFile(req.file.buffer, req.file.originalname || "audio.webm");
+    const tr = await client.audio.transcriptions.create({
+      model: "whisper-1",
+      file: fileForOpenAI,
+      language: prefLang,
+    });
+
+    const userText = (tr.text || "").trim();
+    if (!userText) {
+      return res.status(200).json({ text: "", reply: "", language: prefLang, audioMp3Base64: null });
+    }
+
+    // Save facts/emotion from transcribed text (same as text flow)
+    const [extractedFacts, overallEmotion] = await Promise.all([
+      extractFacts(userText),
+      extractEmotionPoint(userText),
+    ]);
+    if (extractedFacts.length) await saveFacts(userId, extractedFacts, userText);
+    if (overallEmotion) await saveEmotion(userId, overallEmotion, userText);
+
+    // Same brain as /api/chat
+    const { reply, language } = await generateEllieReply({ userId, userText });
+
+    // TTS in same language (reply is already in that language)
+    const speech = await client.audio.speech.create({
+      model: "gpt-4o-mini-tts",
+      voice: req.body?.voice || "alloy",
+      input: reply,
+      format: "mp3",
+    });
+    const ab = await speech.arrayBuffer();
+    const audioMp3Base64 = Buffer.from(ab).toString("base64");
+
+    res.json({ text: userText, reply, language, audioMp3Base64 });
+  } catch (e) {
+    console.error("voice-chat error:", e);
+    res.status(500).json({ error: "VOICE_CHAT_FAILED", detail: String(e?.message || e) });
   }
 });
 
@@ -689,6 +856,24 @@ app.get("/api/tts-test/:voice", async (req, res) => {
   } catch (e) {
     console.error("TTS test error:", e);
     res.status(500).json({ error: e.message || "TTS_TEST_FAILED" });
+  }
+});
+
+/* ──────────────────────────────────────────────────────────────
+   NEW: Set preferred language endpoint (optional but handy)
+   Body: { userId, language: "en" }
+   ────────────────────────────────────────────────────────────── */
+app.post("/api/set-language", async (req, res) => {
+  try {
+    const { userId = "default-user", language } = req.body || {};
+    const code = String(language || "").toLowerCase();
+    if (!SUPPORTED_LANGUAGES[code]) {
+      return res.status(400).json({ error: "E_BAD_LANGUAGE", message: "Unsupported language code." });
+    }
+    await setPreferredLanguage(userId, code);
+    res.json({ ok: true, language: code, label: SUPPORTED_LANGUAGES[code] });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
