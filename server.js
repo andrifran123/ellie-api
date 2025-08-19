@@ -1,4 +1,4 @@
-// server/index.js  (drop-in replacement)
+// server/index.js  (drop-in replacement with voiceMode chooser)
 
 const express = require("express");
 const cors = require("cors");
@@ -556,7 +556,7 @@ async function getLatestEmotion(userId) {
 }
 
 /* ──────────────────────────────────────────────────────────────
-   Voice PRESET storage (kept) + simple mapping helpers
+   Voice PRESET storage (kept) + mapping helpers
    ────────────────────────────────────────────────────────────── */
 async function getVoicePreset(userId) {
   const { rows } = await pool.query(
@@ -586,7 +586,7 @@ async function getEffectiveVoiceForUser(userId, fallbackVoice = DEFAULT_VOICE) {
 }
 
 /* ──────────────────────────────────────────────────────────────
-   Unified reply generator (voice == text) — kept
+   Ellie reply generator (kept — unchanged behavior)
    ────────────────────────────────────────────────────────────── */
 async function generateEllieReply({ userId, userText }) {
   let prefLang = await getPreferredLanguage(userId);
@@ -639,8 +639,8 @@ Language rules:
   let finalReply = reply;
 
   if (randChance(PROB_FREEWILL)) {
-    const refusal = addPlayfulRefusal(userText, agg.label);
-    if (refusal && !(agg.label === "happy" && agg.avgIntensity < 0.5)) {
+    const refusal = addPlayfulRefusal(userText, aggregateMood(recentEmos).label);
+    if (refusal && !(aggregateMood(recentEmos).label === "happy" && aggregateMood(recentEmos).avgIntensity < 0.5)) {
       finalReply = `${refusal}\n\n${finalReply}`;
     }
   }
@@ -657,6 +657,37 @@ Language rules:
   pushToHistory(userId, { role: "assistant", content: finalReply });
 
   return { reply: finalReply, language: prefLang };
+}
+
+/* ──────────────────────────────────────────────────────────────
+   NEW: voiceMode chooser (heuristics only; cheap + fast)
+   ────────────────────────────────────────────────────────────── */
+function getTtsModelForVoiceMode(voiceMode) {
+  return voiceMode === "full" ? "gpt-4o-tts" : "gpt-4o-mini-tts";
+}
+
+function decideVoiceMode({ replyText }) {
+  const text = (replyText || "").trim();
+
+  // 1) Long replies → full
+  if (text.length > 280) return { voiceMode: "full", reason: "long reply (>280 chars)" };
+
+  // 2) Obvious storytelling / reading vibes
+  if (/(story|once upon a time|bedtime|narrate|read this|poem|monologue|letter)/i.test(text)) {
+    return { voiceMode: "full", reason: "storytelling keyword" };
+  }
+
+  // 3) Emotional support phrases
+  if (/(i care|i love|i miss you|i'm proud|i'm sorry|breathe with me|it’s okay|I’m here)/i.test(text)) {
+    return { voiceMode: "full", reason: "emotional cue" };
+  }
+
+  // 4) Two+ sentences often benefit from richer prosody
+  const sentenceCount = (text.match(/[.!?](\s|$)/g) || []).length;
+  if (sentenceCount >= 3) return { voiceMode: "full", reason: "multi-sentence reply" };
+
+  // Default: mini
+  return { voiceMode: "mini", reason: "short/casual" };
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -830,7 +861,7 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   Voice chat (NO FX) — uses preset → base voice
+   Voice chat (NO FX) — uses preset → base voice + voiceMode
    ────────────────────────────────────────────────────────────── */
 app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
   try {
@@ -858,7 +889,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
 
     const userText = (tr.text || "").trim();
     if (!userText) {
-      return res.status(200).json({ text: "", reply: "", language: prefLang, audioMp3Base64: null });
+      return res.status(200).json({ text: "", reply: "", language: prefLang, audioMp3Base64: null, voiceMode: "mini" });
     }
 
     const [extractedFacts, overallEmotion] = await Promise.all([
@@ -870,9 +901,13 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
 
     const { reply, language } = await generateEllieReply({ userId, userText });
 
+    // Decide voice mode for this reply
+    const decision = decideVoiceMode({ replyText: reply });
+    const model = getTtsModelForVoiceMode(decision.voiceMode);
+
     const chosenVoice = await getEffectiveVoiceForUser(userId, DEFAULT_VOICE);
     const speech = await client.audio.speech.create({
-      model: "gpt-4o-mini-tts",
+      model,
       voice: chosenVoice,
       input: reply,
       format: "mp3",
@@ -880,7 +915,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     const ab = await speech.arrayBuffer();
     const audioMp3Base64 = Buffer.from(ab).toString("base64");
 
-    res.json({ text: userText, reply, language, audioMp3Base64 });
+    res.json({ text: userText, reply, language, audioMp3Base64, voiceMode: decision.voiceMode, ttsModel: model });
   } catch (e) {
     console.error("voice-chat error:", e);
     res.status(500).json({ error: "VOICE_CHAT_FAILED", detail: String(e?.message || e) });
@@ -888,19 +923,27 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
 });
 
 /* ──────────────────────────────────────────────────────────────
-   Text → Speech (MP3) with OpenAI TTS (NO FX)
+   Text → Speech (MP3) with OpenAI TTS (NO FX) + voiceMode
    ────────────────────────────────────────────────────────────── */
 app.post("/api/tts", async (req, res) => {
   try {
-    const { text, voice, userId = "default-user" } = req.body || {};
+    const { text, voice, userId = "default-user", voiceMode } = req.body || {};
     if (!text || typeof text !== "string") {
       return res.status(400).json({ error: "Missing 'text' string in body." });
     }
 
+    // Use client-provided voiceMode if valid; else decide heuristically
+    const decision = (voiceMode === "full" || voiceMode === "mini")
+      ? { voiceMode, reason: "client" }
+      : decideVoiceMode({ replyText: text });
+
+    const model = getTtsModelForVoiceMode(decision.voiceMode);
     const chosenVoice = voice || await getEffectiveVoiceForUser(userId, DEFAULT_VOICE);
 
+    console.log(`[TTS] user=${userId} chars=${text.length} mode=${decision.voiceMode} model=${model} voice=${chosenVoice} reason=${decision.reason}`);
+
     const speech = await client.audio.speech.create({
-      model: "gpt-4o-mini-tts",
+      model,
       voice: chosenVoice,
       input: text,
       format: "mp3",
@@ -910,7 +953,8 @@ app.post("/api/tts", async (req, res) => {
     const buf = Buffer.from(ab);
 
     res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Content-Length", String(buf.length));
+    res.setHeader("X-Voice-Mode", decision.voiceMode);
+    res.setHeader("X-TTS-Model", model);
     return res.send(buf);
   } catch (e) {
     console.error("tts error:", e);
@@ -941,7 +985,7 @@ app.get("/api/tts-test/:voice", async (req, res) => {
 
 /* ──────────────────────────────────────────────────────────────
    WebSocket voice sessions (always-on voice mode): /ws/voice
-   (NO FX; uses preset → base voice)
+   (NO FX; uses preset → base voice + voiceMode)
    ────────────────────────────────────────────────────────────── */
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/ws/voice" });
@@ -979,7 +1023,7 @@ wss.on("connection", (ws, req) => {
         });
         const userText = (tr.text || "").trim();
         if (!userText) {
-          ws.send(JSON.stringify({ type: "reply", text: "", reply: "", language: lang, audioMp3Base64: null }));
+          ws.send(JSON.stringify({ type: "reply", text: "", reply: "", language: lang, audioMp3Base64: null, voiceMode: "mini" }));
           return;
         }
 
@@ -989,10 +1033,12 @@ wss.on("connection", (ws, req) => {
 
         const { reply, language } = await generateEllieReply({ userId, userText });
 
-        // Use preset voice if set; otherwise sessionVoice/default
+        const decision = decideVoiceMode({ replyText: reply });
+        const model = getTtsModelForVoiceMode(decision.voiceMode);
+
         const chosenVoice = await getEffectiveVoiceForUser(userId, sessionVoice || DEFAULT_VOICE);
         const speech = await client.audio.speech.create({
-          model: "gpt-4o-mini-tts",
+          model,
           voice: chosenVoice,
           input: reply,
           format: "mp3",
@@ -1004,7 +1050,9 @@ wss.on("connection", (ws, req) => {
           text: userText,
           reply,
           language,
-          audioMp3Base64: Buffer.from(ab).toString("base64")
+          audioMp3Base64: Buffer.from(ab).toString("base64"),
+          voiceMode: decision.voiceMode,
+          ttsModel: model
         }));
         return;
       }
