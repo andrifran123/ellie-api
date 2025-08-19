@@ -846,8 +846,11 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
 
     const { reply, language } = await generateEllieReply({ userId, userText });
 
-    const decision = decideVoiceMode({ replyText: reply });
-    const model = getTtsModelForVoiceMode(decision.voiceMode);
+    // ───── CHANGE: force a single, stable TTS model (disable auto-switching) ─────
+    const decision = { voiceMode: "mini" };
+    const model = "gpt-4o-mini-tts";
+    // ─────────────────────────────────────────────────────────────────────────────
+
     const chosenVoice = await getEffectiveVoiceForUser(userId, DEFAULT_VOICE);
 
     const speech = await client.audio.speech.create({
