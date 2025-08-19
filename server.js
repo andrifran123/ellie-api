@@ -132,7 +132,6 @@ try {
   console.error("❌ Invalid DATABASE_URL:", rawDbUrl);
   throw e;
 }
-const { Pool } = require("pg");
 const pool = new Pool(pgConfig);
 
 async function initDB() {
