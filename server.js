@@ -563,53 +563,77 @@ async function queryBrave(q) {
   }
 }
 
+// (kept; unused after patch, but NOT deleted per your request)
 function extractUSPresident(braveJson) {
   try {
     const results = braveJson?.web?.results || [];
     for (const item of results) {
-      const hay = `${item.title || ""} ${item.description || ""}`.toLowerCase();
-      const m = hay.match(/([\p{L}\p{M}\.'\- ]+)\s+is\s+the\s+(?:current\s+)?president\s+of\s+the\s+united\s+states/u);
+      const title = item.title || "";
+      const desc  = item.description || "";
+      const hay   = (title + " " + desc).replace(/\s+/g, " ");
+      let m =
+        hay.match(/current\s+president\s+of\s+the\s+united\s+states[^A-Za-z]+([A-Z][A-Za-z.\- ]+)/i) ||
+        hay.match(/([A-Z][A-Za-z.\- ]+)\s+is\s+the\s+(?:current\s+)?president\s+of\s+the\s+united\s+states/i) ||
+        hay.match(/President\s+([A-Z][A-Za-z.\- ]+)\b.*United\s+States/i);
       if (m && m[1]) {
         const name = m[1].trim().replace(/\s{2,}/g, " ");
         return { value: name, source: item.url || item.thumbnail?.url || "" };
       }
-      if (/wikipedia/i.test(item.url || "") && /president of the united states/i.test(item.title || "")) {
-        const snip = (item.description || "").replace(/\s+/g, " ");
-        const m2 = snip.match(/The\s+current\s+president\s+.*?\s+is\s+([A-Z][A-Za-z\.\- ]+)/i);
-        if (m2 && m2[1]) return { value: m2[1].trim(), source: item.url };
-      }
     }
-  } catch {}
+  } catch (e) {
+    console.log("[brave] parse error:", e.message || e);
+  }
   return null;
 }
 
-// Detect fresh facts we can fetch
+/* >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+   PATCHED: broader detector + pass Brave snippets directly
+   >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> */
 async function getFreshFacts(userText) {
   const text = (userText || "").trim();
-  const facts = [];
 
-  if (/\bwho\b.*\bpresident\b/i.test(text) || /\bcurrent president\b/i.test(text)) {
-    if (!BRAVE_API_KEY) {
-      facts.push({
-        label: "realtime_notice",
-        fact: "User asked who the current U.S. president is; live web is disabled. Do NOT guess; say your knowledge may be out of date and offer to look it up if enabled.",
-        source: null
-      });
-      return facts;
-    }
-    const data = await queryBrave("current president of the United States");
-    const found = extractUSPresident(data);
-    if (found && found.value) {
-      facts.push({
-        label: "us_president",
-        fact: `The current President of the United States is ${found.value}.`,
-        source: found.source || null
-      });
-      return facts;
-    }
+  const looksLikePresidentQ =
+    (/\bpresident\b/i.test(text) && /\b(who|current|now|today|is)\b/i.test(text)) ||
+    /forseti/i.test(text) ||         // Icelandic
+    /presidente/i.test(text) ||      // ES/PT/IT
+    /président/i.test(text) ||       // FR
+    /präsident/i.test(text) ||       // DE
+    /presidenten/i.test(text);       // SV/DA/NO
+
+  if (!looksLikePresidentQ) return [];
+
+  if (!BRAVE_API_KEY) {
+    return [{
+      label: "realtime_notice",
+      fact: "User asked a current-events question (president). Live web is disabled. Do NOT guess; say your knowledge may be out of date and offer to look it up if enabled.",
+      source: null
+    }];
   }
 
-  return facts;
+  const data = await queryBrave("who is the current president of the United States");
+  const results = data?.web?.results || [];
+  if (!results.length) return [];
+
+  // Log first result for visibility (helps debugging)
+  try {
+    console.log("[brave] first result:", JSON.stringify(results[0]).slice(0, 400));
+  } catch {}
+
+  // Pass top 3 snippets to Ellie as fresh facts instead of parsing a single name
+  const top = results.slice(0, 3).map(r => ({
+    label: "search_snippet",
+    fact: `${(r.title || "").trim()} — ${(r.description || "").trim()}`.replace(/\s+/g, " "),
+    source: r.url || null
+  }));
+
+  // Nudge the model to use them as ground truth
+  top.unshift({
+    label: "instruction",
+    fact: "Use the search snippets below as fresh ground truth. If they conflict, prefer the most recent-looking source. Answer directly and naturally.",
+    source: null
+  });
+
+  return top;
 }
 
 /* ─────────────────────────────────────────────────────────────
