@@ -22,13 +22,17 @@ const PORT = process.env.PORT || 3000;
 // Trust proxy (Render)
 app.set("trust proxy", 1);
 
+// ──────────────────────────────────────────────────────────────
 // Ultra-early health
+// ──────────────────────────────────────────────────────────────
 app.get("/", (_req, res) => res.type("text/plain").send("ok"));
 app.get("/api", (_req, res) => res.type("text/plain").send("ok"));
 app.get("/healthz", (_req, res) => res.type("text/plain").send("ok"));
 app.get("/api/healthz", (_req, res) => res.type("text/plain").send("ok"));
 
-// CORS
+// ──────────────────────────────────────────────────────────────
+/** CORS (keep your origins; add env override) */
+// ──────────────────────────────────────────────────────────────
 const defaultAllowed = [
   "https://ellie-web-ochre.vercel.app",
   "https://ellie-web.vercel.app",
@@ -52,16 +56,22 @@ app.use(
 );
 app.options("*", cors());
 
+// ──────────────────────────────────────────────────────────────
 // Config
+// ──────────────────────────────────────────────────────────────
 const CHAT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 15000);
 const MAX_MESSAGE_LEN = Number(process.env.MAX_MESSAGE_LEN || 4000);
+
+// Base OpenAI TTS voice (overridden by presets)
 const DEFAULT_VOICE = process.env.ELLIE_VOICE || "sage";
+
 const BRAVE_API_KEY = process.env.BRAVE_API_KEY || ""; // set in Render to enable live web search
 
+// Disable FX fully (kept for clarity)
 const FX_ENABLED = false;
 
-// Voice presets
+// Voice presets → OpenAI base voices (no DSP)
 const VOICE_PRESETS = {
   natural: "sage",
   warm: "alloy",
@@ -84,13 +94,15 @@ const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// Redundant health
+// Redundant health (kept)
 app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 app.head("/healthz", (_req, res) => res.status(200).end());
 app.get("/api/healthz", (_req, res) => res.status(200).send("ok"));
 app.head("/api/healthz", (_req, res) => res.status(200).end());
 
+// ──────────────────────────────────────────────────────────────
 // DB (Supabase transaction pooler friendly)
+// ──────────────────────────────────────────────────────────────
 const rawDbUrl = process.env.DATABASE_URL;
 if (!rawDbUrl) {
   console.error("❌ Missing DATABASE_URL in .env (use Supabase Transaction Pooler URI, port 6543).");
@@ -119,6 +131,7 @@ const pool = new Pool(pgConfig);
 
 async function initDB() {
   await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS facts (
       id SERIAL PRIMARY KEY,
@@ -133,6 +146,7 @@ async function initDB() {
       updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS emotions (
       id SERIAL PRIMARY KEY,
@@ -143,9 +157,11 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_cat_idx ON facts(user_id, category);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_updated_idx ON facts(user_id, updated_at DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_fact_trgm_idx ON facts USING gin (fact gin_trgm_ops);`);
+
   console.log("✅ Facts & Emotions tables ready");
 }
 initDB().catch((err) => {
@@ -153,7 +169,9 @@ initDB().catch((err) => {
   process.exit(1);
 });
 
+// ──────────────────────────────────────────────────────────────
 // Ellie system prompt & memory
+// ──────────────────────────────────────────────────────────────
 const ELLIE_SYSTEM_PROMPT = `
 You are Ellie — a charming, warm, and slightly playful young woman in her mid-20s. 
 You speak casually, like a real person, using natural contractions (“I’m”, “you’re”) and short, lively sentences.
@@ -192,7 +210,9 @@ function pushToHistory(userId, msg) {
   }
 }
 
+// ──────────────────────────────────────────────────────────────
 // Helpers
+// ──────────────────────────────────────────────────────────────
 function redactSecrets(str = "") {
   let s = String(str);
   s = s.replace(/\bBearer\s+[A-Za-z0-9_\-\.=:+/]{10,}\b/gi, "Bearer [REDACTED]");
@@ -262,14 +282,14 @@ async function getRecentEmotions(userId, n = 5) {
 function aggregateMood(emotions) {
   if (!emotions.length) return { label: "neutral", avgIntensity: 0.3 };
   const weights = emotions.map((_, i) => (emotions.length - i));
-  const totals = {};
+  const bucket = {};
   emotions.forEach((e, i) => {
     const w = weights[i];
     const label = e.label || "neutral";
     const intensity = typeof e.intensity === "number" ? e.intensity : 0.5;
-    totals[label] = (totals[label] || 0) + w * intensity;
+    bucket[label] = (bucket[label] || 0) + w * intensity;
   });
-  const top = Object.entries(totals).sort((a, b) => b[1] - a[1])[0];
+  const top = Object.entries(bucket).sort((a, b) => b[1] - a[1])[0];
   const label = top ? top[0] : "neutral";
   const avgIntensity =
     emotions.reduce((a, e) => a + (typeof e.intensity === "number" ? e.intensity : 0.5), 0) /
@@ -293,7 +313,9 @@ function moodToStyle(label, intensity) {
   return `${soft} ${intensifier}`;
 }
 
-// Languages
+// ──────────────────────────────────────────────────────────────
+// Language support & storage (facts table used to store preference)
+// ──────────────────────────────────────────────────────────────
 const SUPPORTED_LANGUAGES = {
   en: "English",
   is: "Icelandic",
@@ -334,7 +356,9 @@ async function setPreferredLanguage(userId, langCode) {
   );
 }
 
-// Facts & emotions
+// ──────────────────────────────────────────────────────────────
+// Fact & emotion extraction / persistence
+// ──────────────────────────────────────────────────────────────
 async function extractFacts(text) {
   const prompt = `
 From the following text, extract any personal facts, events, secrets, or stable preferences about the speaker.
@@ -385,7 +409,7 @@ Text: """${text}"""
     const completion = await client.chat.completions.create(
       {
         model: CHAT_MODEL,
-        messages: [
+      messages: [
           { role: "system", content: "You are an emotion rater. Respond with strict JSON only." },
           { role: "user", content: prompt }
         ],
@@ -485,7 +509,9 @@ async function getLatestEmotion(userId) {
   return rows[0] || null;
 }
 
-// Voice presets
+// ──────────────────────────────────────────────────────────────
+// Voice presets (no FX). Store chosen preset name in facts.
+// ──────────────────────────────────────────────────────────────
 async function getVoicePreset(userId) {
   const { rows } = await pool.query(
     `SELECT fact FROM facts
@@ -513,9 +539,11 @@ async function getEffectiveVoiceForUser(userId, fallback = DEFAULT_VOICE) {
   return fallback;
 }
 
+// Decide mini vs full TTS model
 function decideVoiceMode({ replyText }) {
   const t = (replyText || "").trim();
   if (!t) return { voiceMode: "mini", reason: "empty" };
+  // heuristics
   if (t.length > 280) return { voiceMode: "full", reason: "long" };
   const sentences = (t.match(/[.!?](\s|$)/g) || []).length;
   if (sentences >= 3) return { voiceMode: "full", reason: "multi-sentence" };
@@ -527,7 +555,9 @@ function getTtsModelForVoiceMode(mode) {
   return mode === "full" ? "gpt-4o-tts" : "gpt-4o-mini-tts";
 }
 
-// Audio MIME helper
+// ──────────────────────────────────────────────────────────────
+// Audio MIME helper (accepts codecs suffix)
+// ──────────────────────────────────────────────────────────────
 function isOkAudio(mime) {
   if (!mime) return false;
   const base = String(mime).split(";")[0].trim().toLowerCase();
@@ -563,32 +593,27 @@ async function queryBrave(q) {
   }
 }
 
-// (kept; unused after patch, but NOT deleted per your request)
 function extractUSPresident(braveJson) {
   try {
     const results = braveJson?.web?.results || [];
     for (const item of results) {
-      const title = item.title || "";
-      const desc  = item.description || "";
-      const hay   = (title + " " + desc).replace(/\s+/g, " ");
-      let m =
-        hay.match(/current\s+president\s+of\s+the\s+united\s+states[^A-Za-z]+([A-Z][A-Za-z.\- ]+)/i) ||
-        hay.match(/([A-Z][A-Za-z.\- ]+)\s+is\s+the\s+(?:current\s+)?president\s+of\s+the\s+united\s+states/i) ||
-        hay.match(/President\s+([A-Z][A-Za-z.\- ]+)\b.*United\s+States/i);
+      const hay = `${item.title || ""} ${item.description || ""}`.toLowerCase();
+      const m = hay.match(/([\p{L}\p{M}\.'\- ]+)\s+is\s+the\s+(?:current\s+)?president\s+of\s+the\s+united\s+states/u);
       if (m && m[1]) {
         const name = m[1].trim().replace(/\s{2,}/g, " ");
         return { value: name, source: item.url || item.thumbnail?.url || "" };
       }
+      if (/wikipedia/i.test(item.url || "") && /president of the united states/i.test(item.title || "")) {
+        const snip = (item.description || "").replace(/\s+/g, " ");
+        const m2 = snip.match(/The\s+current\s+president\s+.*?\s+is\s+([A-Z][A-Za-z\.\- ]+)/i);
+        if (m2 && m2[1]) return { value: m2[1].trim(), source: item.url };
+      }
     }
-  } catch (e) {
-    console.log("[brave] parse error:", e.message || e);
-  }
+  } catch {}
   return null;
 }
 
-/* >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-   PATCHED: broader detector + pass Brave snippets directly
-   >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> */
+/* (Already patched earlier) Detects & returns Brave snippets */
 async function getFreshFacts(userText) {
   const text = (userText || "").trim();
 
@@ -637,6 +662,35 @@ async function getFreshFacts(userText) {
 }
 
 /* ─────────────────────────────────────────────────────────────
+   NEW: Personality fallback (centralized)
+   ───────────────────────────────────────────────────────────── */
+function ellieFallbackReply(userMessage = "") {
+  const playfulOptions = [
+    "Andri 😏, are you trying to turn me into Google again? I’m your Ellie, not a search engine.",
+    "I could pretend to be the news… but wouldn’t you rather gossip with me instead? 😉",
+    "You want live facts, but right now it’s just me and my sass. Should I tease you instead?",
+    "Mmm, I don’t have the latest scoop in this mode, but I can always give you my *opinion*… want that?",
+  ];
+  return playfulOptions[Math.floor(Math.random() * playfulOptions.length)];
+}
+
+// Detect “Google-like” queries while avoiding personal ones about Ellie
+function looksLikeSearchQuery(text = "") {
+  const q = text.toLowerCase();
+  // If user is asking about Ellie herself → not a fact lookup
+  if (q.includes(" you ") || q.startsWith("you ") || q.endsWith(" you") || q.includes(" your ")) {
+    return false;
+  }
+  // Keywords that usually mean factual/current events lookups
+  const factyWords = [
+    "current", "today", "latest", "president", "prime minister",
+    "weather", "time in", "news", "capital of", "population",
+    "stock", "price of", "currency", "who won", "results"
+  ];
+  return factyWords.some(w => q.includes(w));
+}
+
+/* ─────────────────────────────────────────────────────────────
    Unified reply generator (accepts freshFacts)
    ───────────────────────────────────────────────────────────── */
 async function generateEllieReply({ userId, userText, freshFacts = [] }) {
@@ -668,7 +722,6 @@ Language rules:
 - Always reply in ${SUPPORTED_LANGUAGES[prefLang]} (${prefLang}).
 - Do not switch languages unless the user explicitly asks to change it.
 `;
-
   const VOICE_MODE_HINT = `If this is voice mode, keep sentences 5–18 words and answer directly first.`;
 
   const freshBlock = freshFacts.length
@@ -692,6 +745,7 @@ Language rules:
 
   let reply = (completion.choices?.[0]?.message?.content || "").trim();
 
+  // personality tweaks
   if (randChance(PROB_FREEWILL)) {
     const refusal = addPlayfulRefusal(userText, agg.label);
     if (refusal && !(agg.label === "happy" && agg.avgIntensity < 0.5)) {
@@ -711,9 +765,9 @@ Language rules:
   return { reply: reply, language: prefLang };
 }
 
-/* ─────────────────────────────────────────────────────────────
-   Routes
-   ───────────────────────────────────────────────────────────── */
+// ──────────────────────────────────────────────────────────────
+// Routes
+// ──────────────────────────────────────────────────────────────
 
 // Reset conversation
 app.post("/api/reset", (req, res) => {
@@ -746,7 +800,7 @@ app.post("/api/set-language", async (req, res) => {
   }
 });
 
-// Voice presets
+// Voice presets (no FX)
 app.get("/api/get-voice-presets", async (_req, res) => {
   try {
     res.json({
@@ -793,11 +847,20 @@ app.post("/api/chat", async (req, res) => {
       extractFacts(message),
       extractEmotionPoint(message),
     ]);
+
     if (extractedFacts.length) await saveFacts(userId, extractedFacts, message);
     if (overallEmotion) await saveEmotion(userId, overallEmotion, message);
 
     // Fresh facts for live questions
     const freshFacts = await getFreshFacts(message);
+
+    // NEW: personality fallback if it's a searchy question but we have no fresh facts (Brave off/empty)
+    if (!freshFacts.length && looksLikeSearchQuery(message)) {
+      const reply = ellieFallbackReply(message);
+      const decision = decideVoiceMode({ replyText: reply });
+      const lang = (await getPreferredLanguage(userId)) || "en";
+      return res.json({ reply, language: lang, voiceMode: decision.voiceMode, freshFacts: [] });
+    }
 
     const { reply, language } = await generateEllieReply({ userId, userText: message, freshFacts });
 
@@ -902,17 +965,23 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     // Fresh facts for the spoken prompt too
     const freshFacts = await getFreshFacts(userText);
 
-    const { reply, language } = await generateEllieReply({ userId, userText, freshFacts });
+    // NEW: personality fallback if it's a searchy question but we have no fresh facts
+    let replyForVoice;
+    if (!freshFacts.length && looksLikeSearchQuery(userText)) {
+      replyForVoice = ellieFallbackReply(userText);
+    } else {
+      const { reply } = await generateEllieReply({ userId, userText, freshFacts });
+      replyForVoice = reply;
+    }
 
-    const decision = decideVoiceMode({ replyText: reply });
+    const decision = decideVoiceMode({ replyText: replyForVoice });
     const model = getTtsModelForVoiceMode(decision.voiceMode);
-
     const chosenVoice = await getEffectiveVoiceForUser(userId, DEFAULT_VOICE);
 
     const speech = await client.audio.speech.create({
       model,
       voice: chosenVoice,
-      input: reply,
+      input: replyForVoice,
       format: "mp3",
     });
     const ab = await speech.arrayBuffer();
@@ -920,8 +989,8 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
 
     res.json({
       text: userText,
-      reply,
-      language,
+      reply: replyForVoice,
+      language: prefLang,
       audioMp3Base64,
       voiceMode: decision.voiceMode,
       ttsModel: model,
@@ -933,39 +1002,9 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
   }
 });
 
-// Text → Speech
-app.post("/api/tts", async (req, res) => {
-  try {
-    const { text, voice, userId = "default-user", voiceMode } = req.body || {};
-    if (!text || typeof text !== "string") {
-      return res.status(400).json({ error: "Missing 'text' string in body." });
-    }
-    const decision = (voiceMode === "full" || voiceMode === "mini")
-      ? { voiceMode, reason: "client" }
-      : decideVoiceMode({ replyText: text });
-    const model = getTtsModelForVoiceMode(decision.voiceMode);
-    const chosenVoice = voice || await getEffectiveVoiceForUser(userId, DEFAULT_VOICE);
-
-    const speech = await client.audio.speech.create({
-      model,
-      voice: chosenVoice,
-      input: text,
-      format: "mp3",
-    });
-    const ab = await speech.arrayBuffer();
-    const buf = Buffer.from(ab);
-
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("X-Voice-Mode", decision.voiceMode);
-    res.setHeader("X-TTS-Model", model);
-    return res.send(buf);
-  } catch (e) {
-    console.error("tts error:", e);
-    res.status(500).json({ error: "TTS_FAILED", detail: String(e?.message || e) });
-  }
-});
-
-// WebSocket voice sessions (no web search here to keep latency low)
+// ──────────────────────────────────────────────────────────────
+// WebSocket voice sessions (/ws/voice)
+// ──────────────────────────────────────────────────────────────
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/ws/voice" });
 
@@ -1018,7 +1057,14 @@ wss.on("connection", (ws, req) => {
         if (emo) await saveEmotion(userId, emo, userText);
 
         // Keep WS path simple and fast (no web search to minimize latency)
-        const { reply, language } = await generateEllieReply({ userId, userText });
+        // NEW: if it's a searchy question, use personality fallback in WS mode
+        let reply;
+        if (looksLikeSearchQuery(userText)) {
+          reply = ellieFallbackReply(userText);
+        } else {
+          const out = await generateEllieReply({ userId, userText });
+          reply = out.reply;
+        }
 
         const decision = decideVoiceMode({ replyText: reply });
         const model = getTtsModelForVoiceMode(decision.voiceMode);
@@ -1031,7 +1077,7 @@ wss.on("connection", (ws, req) => {
           type: "reply",
           text: userText,
           reply,
-          language,
+          language: sessionLang,
           audioMp3Base64: Buffer.from(ab).toString("base64"),
           voiceMode: decision.voiceMode,
           ttsModel: model
@@ -1059,7 +1105,9 @@ wss.on("connection", (ws, req) => {
   ws.on("close", () => {});
 });
 
+// ──────────────────────────────────────────────────────────────
 // Graceful shutdown
+// ──────────────────────────────────────────────────────────────
 function shutdown(signal) {
   console.log(`\n${signal} received. Closing DB pool...`);
   pool.end(() => {
