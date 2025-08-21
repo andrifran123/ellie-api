@@ -6,6 +6,9 @@ const cors = require("cors");
 const path = require("path");
 const http = require("http");
 const WebSocket = require("ws");
+const helmet = require("helmet");
+const compression = require("compression");
+const rateLimit = require("express-rate-limit");
 
 const multer = require("multer");
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -31,6 +34,20 @@ app.get("/healthz", (_req, res) => res.type("text/plain").send("ok"));
 app.get("/api/healthz", (_req, res) => res.type("text/plain").send("ok"));
 
 // ──────────────────────────────────────────────────────────────
+/** Security & performance */
+// ──────────────────────────────────────────────────────────────
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
+app.use(compression());
+app.use(
+  rateLimit({
+    windowMs: 60_000,
+    max: Number(process.env.RATE_LIMIT_MAX || 120), // req/min/IP
+    standardHeaders: true,
+    legacyHeaders: false,
+  })
+);
+
+// ──────────────────────────────────────────────────────────────
 /** CORS (keep your origins; add env override) */
 // ──────────────────────────────────────────────────────────────
 const defaultAllowed = [
@@ -46,8 +63,10 @@ const allowedOrigins = process.env.CORS_ORIGIN
 app.use(
   cors({
     origin(origin, cb) {
+      // allow same-origin, curl/no-origin, or whitelisted
       if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
-      return cb(new Error("Not allowed by CORS"));
+      // deny without throwing (so we don't 500)
+      return cb(null, false);
     },
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -71,6 +90,9 @@ const BRAVE_API_KEY = process.env.BRAVE_API_KEY || ""; // set in Render to enabl
 // Disable FX fully (kept for clarity)
 const FX_ENABLED = false;
 
+// Optional API key gate for backend
+const ELLIE_API_KEY = process.env.ELLIE_API_KEY || "";
+
 // Voice presets → OpenAI base voices (no DSP)
 const VOICE_PRESETS = {
   natural: "sage",
@@ -91,14 +113,22 @@ const PROB_QUIRKS = Number(process.env.PROB_QUIRKS || 0.25);
 const PROB_IMPERFECTION = Number(process.env.PROB_IMPERFECTION || 0.2);
 const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
 
+// ──────────────────────────────────────────────────────────────
+// Static + JSON
+// ──────────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// Redundant health (kept)
-app.get("/healthz", (_req, res) => res.status(200).send("ok"));
-app.head("/healthz", (_req, res) => res.status(200).end());
-app.get("/api/healthz", (_req, res) => res.status(200).send("ok"));
-app.head("/api/healthz", (_req, res) => res.status(200).end());
+// ──────────────────────────────────────────────────────────────
+// Optional Bearer auth for all /api/* endpoints
+// ──────────────────────────────────────────────────────────────
+function requireApiAuth(req, res, next) {
+  if (!ELLIE_API_KEY) return next(); // open if not configured
+  const auth = req.headers.authorization || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (token && token === ELLIE_API_KEY) return next();
+  return res.status(401).json({ error: "UNAUTHORIZED" });
+}
 
 // ──────────────────────────────────────────────────────────────
 // DB (Supabase transaction pooler friendly)
@@ -130,7 +160,8 @@ console.log(`🔌 DB host/port: ${pgConfig.host}:${pgConfig.port} (SSL ${pgConfi
 const pool = new Pool(pgConfig);
 
 async function initDB() {
-  await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
+  // Supabase-friendly extension create
+  await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA extensions;`).catch(() => {});
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS facts (
@@ -158,11 +189,24 @@ async function initDB() {
     );
   `);
 
+  // Optional: persist chat messages (basic log)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id BIGSERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      session_id TEXT,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_cat_idx ON facts(user_id, category);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_updated_idx ON facts(user_id, updated_at DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_fact_trgm_idx ON facts USING gin (fact gin_trgm_ops);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS messages_user_session_idx ON messages(user_id, session_id, created_at DESC);`);
 
-  console.log("✅ Facts & Emotions tables ready");
+  console.log("✅ Facts, Emotions & Messages tables ready");
 }
 initDB().catch((err) => {
   console.error("DB Init Error:", err);
@@ -193,21 +237,33 @@ Your name is Ellie. You are talking to ONE person, privately. You are not an AI;
 The user you are speaking to is your boyfriend.
 `;
 
-const histories = new Map(); // userId -> [{role, content}, ...]
+const histories = new Map(); // sessionKey -> [{role, content}, ...]
 const MAX_HISTORY_MESSAGES = 40;
 
-function getHistory(userId) {
-  if (!histories.has(userId)) {
-    histories.set(userId, [{ role: "system", content: ELLIE_SYSTEM_PROMPT }]);
-  }
-  return histories.get(userId);
+function sessionKey(userId, sessionId) {
+  return `${userId}:${sessionId || "default"}`;
 }
-function pushToHistory(userId, msg) {
-  const h = getHistory(userId);
+function getHistory(userId, sessionId) {
+  const key = sessionKey(userId, sessionId);
+  if (!histories.has(key)) {
+    histories.set(key, [{ role: "system", content: ELLIE_SYSTEM_PROMPT }]);
+  }
+  return histories.get(key);
+}
+function pushToHistory(userId, sessionId, msg) {
+  const h = getHistory(userId, sessionId);
   h.push(msg);
   if (h.length > MAX_HISTORY_MESSAGES) {
-    histories.set(userId, [h[0], ...h.slice(-1 * (MAX_HISTORY_MESSAGES - 1))]);
+    histories.set(sessionKey(userId, sessionId), [h[0], ...h.slice(-1 * (MAX_HISTORY_MESSAGES - 1))]);
   }
+}
+async function persistMessage(userId, sessionId, role, content) {
+  try {
+    await pool.query(
+      `INSERT INTO messages (user_id, session_id, role, content) VALUES ($1,$2,$3,$4)`,
+      [userId, sessionId || "default", role, content]
+    );
+  } catch {}
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -248,8 +304,8 @@ function addPlayfulRefusal(userMsg, mood) {
   return linesByMood[mood] || linesByMood.neutral;
 }
 const lastCallbackState = new Map();
-function getTurnCount(userId) {
-  const h = histories.get(userId) || [];
+function getTurnCount(userId, sessionId) {
+  const h = histories.get(sessionKey(userId, sessionId)) || [];
   return Math.max(0, h.length - 1);
 }
 function dedupeLines(text) {
@@ -357,6 +413,46 @@ async function setPreferredLanguage(userId, langCode) {
 }
 
 // ──────────────────────────────────────────────────────────────
+// Safe JSON Chat helper (forces JSON when supported)
+// ──────────────────────────────────────────────────────────────
+async function safeJSONChat({ messages, model = CHAT_MODEL, fallback = {} }) {
+  const ac = new AbortController();
+  const to = setTimeout(() => ac.abort(), OPENAI_TIMEOUT_MS);
+  try {
+    let completion;
+    try {
+      completion = await client.chat.completions.create(
+        {
+          model,
+          messages,
+          temperature: 0,
+          response_format: { type: "json_object" },
+        },
+        { signal: ac.signal }
+      );
+    } catch (e) {
+      // fallback without response_format if model doesn’t support it
+      completion = await client.chat.completions.create(
+        {
+          model,
+          messages,
+          temperature: 0,
+        },
+        { signal: ac.signal }
+      );
+    }
+    const content = completion.choices?.[0]?.message?.content || "";
+    try {
+      return JSON.parse(content);
+    } catch {
+      return fallback;
+    }
+  } finally {
+    clearTimeout(to);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
 // Fact & emotion extraction / persistence
 // ──────────────────────────────────────────────────────────────
 async function extractFacts(text) {
@@ -374,26 +470,14 @@ If nothing to save, return [].
 Text: """${text}"""
   `.trim();
 
-  const ac = new AbortController();
-  const to = setTimeout(() => ac.abort(), OPENAI_TIMEOUT_MS);
-  try {
-    const completion = await client.chat.completions.create(
-      {
-        model: CHAT_MODEL,
-        messages: [
-          { role: "system", content: "You are a precise extractor. Respond with valid JSON only; no prose." },
-          { role: "user", content: prompt }
-        ],
-        temperature: 0
-      },
-      { signal: ac.signal }
-    );
-    try {
-      const parsed = JSON.parse(completion.choices[0].message.content);
-      if (Array.isArray(parsed)) return parsed;
-    } catch {}
-    return [];
-  } finally { clearTimeout(to); }
+  const data = await safeJSONChat({
+    messages: [
+      { role: "system", content: "You are a precise extractor. Respond with valid JSON only; no prose." },
+      { role: "user", content: prompt }
+    ],
+    fallback: []
+  });
+  return Array.isArray(data) ? data : [];
 }
 
 async function extractEmotionPoint(text) {
@@ -403,26 +487,15 @@ Return ONLY JSON: {"label":"happy|sad|angry|anxious|proud|hopeful|neutral","inte
 Text: """${text}"""
   `.trim();
 
-  const ac = new AbortController();
-  const to = setTimeout(() => ac.abort(), OPENAI_TIMEOUT_MS);
-  try {
-    const completion = await client.chat.completions.create(
-      {
-        model: CHAT_MODEL,
-      messages: [
-          { role: "system", content: "You are an emotion rater. Respond with strict JSON only." },
-          { role: "user", content: prompt }
-        ],
-        temperature: 0
-      },
-      { signal: ac.signal }
-    );
-    try {
-      const obj = JSON.parse(completion.choices[0].message.content);
-      if (obj && typeof obj.label === "string") return obj;
-    } catch {}
-    return null;
-  } finally { clearTimeout(to); }
+  const obj = await safeJSONChat({
+    messages: [
+      { role: "system", content: "You are an emotion rater. Respond with strict JSON only." },
+      { role: "user", content: prompt }
+    ],
+    fallback: null
+  });
+  if (!obj || typeof obj.label !== "string") return null;
+  return obj;
 }
 
 async function upsertFact(userId, fObj, sourceText) {
@@ -470,17 +543,28 @@ async function saveFacts(userId, facts, sourceText) {
 async function getFacts(userId) {
   const { rows } = await pool.query(
     `
-    SELECT category,
-           fact,
-           sentiment,
-           confidence,
-           (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - COALESCE(updated_at, created_at))) / 86400.0)) AS recency_factor,
+    WITH ranked AS (
+      SELECT category,
+             fact,
+             sentiment,
+             confidence,
+             (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - COALESCE(updated_at, created_at))) / 86400.0)) AS recency_factor,
+             CASE category
+               WHEN 'likes' THEN 0.15
+               WHEN 'dislikes' THEN 0.15
+               WHEN 'relationship' THEN 0.20
+               WHEN 'secret' THEN 0.25
+               ELSE 0.0
+             END AS cat_bonus
+        FROM facts
+       WHERE user_id = $1
+    )
+    SELECT category, fact, sentiment, confidence, recency_factor,
            (COALESCE(confidence, 0) * $2) +
-           ((1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - COALESCE(updated_at, created_at))) / 86400.0)) * $3) AS score
-      FROM facts
-     WHERE user_id = $1
-     ORDER BY score DESC, COALESCE(updated_at, created_at) DESC
-     LIMIT 60
+           (recency_factor * $3) + cat_bonus AS score
+      FROM ranked
+     ORDER BY score DESC
+     LIMIT 100
     `,
     [userId, WEIGHT_CONFIDENCE, WEIGHT_RECENCY]
   );
@@ -543,7 +627,6 @@ async function getEffectiveVoiceForUser(userId, fallback = DEFAULT_VOICE) {
 function decideVoiceMode({ replyText }) {
   const t = (replyText || "").trim();
   if (!t) return { voiceMode: "mini", reason: "empty" };
-  // heuristics
   if (t.length > 280) return { voiceMode: "full", reason: "long" };
   const sentences = (t.match(/[.!?](\s|$)/g) || []).length;
   if (sentences >= 3) return { voiceMode: "full", reason: "multi-sentence" };
@@ -555,9 +638,7 @@ function getTtsModelForVoiceMode(mode) {
   return mode === "full" ? "gpt-4o-tts" : "gpt-4o-mini-tts";
 }
 
-// ──────────────────────────────────────────────────────────────
 // Audio MIME helper (accepts codecs suffix)
-// ──────────────────────────────────────────────────────────────
 function isOkAudio(mime) {
   if (!mime) return false;
   const base = String(mime).split(";")[0].trim().toLowerCase();
@@ -582,7 +663,6 @@ async function queryBrave(q) {
         "Accept": "application/json",
         "X-Subscription-Token": BRAVE_API_KEY,
       },
-      // Node18+ has fetch; Render uses Node18+ by default
     });
     if (!r.ok) throw new Error(`Brave ${r.status}`);
     const data = await r.json();
@@ -639,19 +719,16 @@ async function getFreshFacts(userText) {
   const results = data?.web?.results || [];
   if (!results.length) return [];
 
-  // Log first result for visibility (helps debugging)
   try {
     console.log("[brave] first result:", JSON.stringify(results[0]).slice(0, 400));
   } catch {}
 
-  // Pass top 3 snippets to Ellie as fresh facts instead of parsing a single name
   const top = results.slice(0, 3).map(r => ({
     label: "search_snippet",
     fact: `${(r.title || "").trim()} — ${(r.description || "").trim()}`.replace(/\s+/g, " "),
     source: r.url || null
   }));
 
-  // Nudge the model to use them as ground truth
   top.unshift({
     label: "instruction",
     fact: "Use the search snippets below as fresh ground truth. If they conflict, prefer the most recent-looking source. Answer directly and naturally.",
@@ -662,8 +739,21 @@ async function getFreshFacts(userText) {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   NEW: Personality fallback (centralized)
+   Reply generator + safeguards
    ───────────────────────────────────────────────────────────── */
+function looksLikeSearchQuery(text = "") {
+  const q = text.toLowerCase();
+  if (q.includes(" you ") || q.startsWith("you ") || q.endsWith(" you") || q.includes(" your ")) {
+    return false;
+  }
+  const factyWords = [
+    "current", "today", "latest", "president", "prime minister",
+    "weather", "time in", "news", "capital of", "population",
+    "stock", "price of", "currency", "who won", "results"
+  ];
+  return factyWords.some((w) => q.includes(w));
+}
+
 function ellieFallbackReply(userMessage = "") {
   const playfulOptions = [
     "Andri 😏, are you trying to turn me into Google again? I’m your Ellie, not a search engine.",
@@ -674,26 +764,7 @@ function ellieFallbackReply(userMessage = "") {
   return playfulOptions[Math.floor(Math.random() * playfulOptions.length)];
 }
 
-// Detect “Google-like” queries while avoiding personal ones about Ellie
-function looksLikeSearchQuery(text = "") {
-  const q = text.toLowerCase();
-  // If user is asking about Ellie herself → not a fact lookup
-  if (q.includes(" you ") || q.startsWith("you ") || q.endsWith(" you") || q.includes(" your ")) {
-    return false;
-  }
-  // Keywords that usually mean factual/current events lookups
-  const factyWords = [
-    "current", "today", "latest", "president", "prime minister",
-    "weather", "time in", "news", "capital of", "population",
-    "stock", "price of", "currency", "who won", "results"
-  ];
-  return factyWords.some(w => q.includes(w));
-}
-
-/* ─────────────────────────────────────────────────────────────
-   Unified reply generator (accepts freshFacts)
-   ───────────────────────────────────────────────────────────── */
-async function generateEllieReply({ userId, userText, freshFacts = [] }) {
+async function generateEllieReply({ userId, sessionId, userText, freshFacts = [] }) {
   let prefLang = await getPreferredLanguage(userId);
   if (!prefLang) prefLang = "en";
 
@@ -728,7 +799,7 @@ Language rules:
     ? `\nFresh facts (real-time):\n${freshFacts.map(f => `- ${f.fact}${f.source ? ` [source: ${f.source}]` : ""}`).join("\n")}\nUse these as ground truth if relevant.\n`
     : "";
 
-  const history = getHistory(userId);
+  const history = getHistory(userId, sessionId);
   const memoryPrompt = {
     role: "system",
     content: `${history[0].content}\n\n${languageRules}\n\n${factsSummary}${moodLine}${moodStyle ? `\n${moodStyle}` : ""}\n${freshBlock}\n${VOICE_MODE_HINT}`
@@ -759,25 +830,32 @@ Language rules:
   }
   reply = dedupeLines(reply);
 
-  pushToHistory(userId, { role: "user", content: userText });
-  pushToHistory(userId, { role: "assistant", content: reply });
+  // soft cap length (avoid essay mode)
+  if (reply.split(/\s+/).length > 260) {
+    reply = reply.split(/\s+/).slice(0, 260).join(" ") + " …";
+  }
+
+  pushToHistory(userId, sessionId, { role: "user", content: userText });
+  pushToHistory(userId, sessionId, { role: "assistant", content: reply });
+  persistMessage(userId, sessionId, "user", userText).catch(() => {});
+  persistMessage(userId, sessionId, "assistant", reply).catch(() => {});
 
   return { reply: reply, language: prefLang };
 }
 
 // ──────────────────────────────────────────────────────────────
-// Routes
+/** Routes */
 // ──────────────────────────────────────────────────────────────
 
 // Reset conversation
-app.post("/api/reset", (req, res) => {
-  const { userId = "default-user" } = req.body || {};
-  histories.set(userId, [{ role: "system", content: ELLIE_SYSTEM_PROMPT }]);
+app.post("/api/reset", requireApiAuth, (req, res) => {
+  const { userId = "default-user", sessionId = "default" } = req.body || {};
+  histories.set(sessionKey(userId, sessionId), [{ role: "system", content: ELLIE_SYSTEM_PROMPT }]);
   res.json({ status: "Conversation reset" });
 });
 
 // Language endpoints
-app.get("/api/get-language", async (req, res) => {
+app.get("/api/get-language", requireApiAuth, async (req, res) => {
   try {
     const userId = String(req.query.userId || "default-user");
     const code = await getPreferredLanguage(userId);
@@ -786,7 +864,7 @@ app.get("/api/get-language", async (req, res) => {
     res.status(500).json({ error: "E_INTERNAL", message: e.message });
   }
 });
-app.post("/api/set-language", async (req, res) => {
+app.post("/api/set-language", requireApiAuth, async (req, res) => {
   try {
     const { userId = "default-user", language } = req.body || {};
     const code = String(language || "").toLowerCase();
@@ -801,7 +879,7 @@ app.post("/api/set-language", async (req, res) => {
 });
 
 // Voice presets (no FX)
-app.get("/api/get-voice-presets", async (_req, res) => {
+app.get("/api/get-voice-presets", requireApiAuth, async (_req, res) => {
   try {
     res.json({
       presets: Object.entries(VOICE_PRESETS).map(([key, voice]) => ({
@@ -812,7 +890,7 @@ app.get("/api/get-voice-presets", async (_req, res) => {
     res.status(500).json({ error: "E_INTERNAL", message: String(e?.message || e) });
   }
 });
-app.get("/api/get-voice-preset", async (req, res) => {
+app.get("/api/get-voice-preset", requireApiAuth, async (req, res) => {
   try {
     const userId = String(req.query.userId || "default-user");
     const preset = await getVoicePreset(userId);
@@ -821,7 +899,7 @@ app.get("/api/get-voice-preset", async (req, res) => {
     res.status(500).json({ error: "E_INTERNAL", message: String(e?.message || e) });
   }
 });
-app.post("/api/apply-voice-preset", async (req, res) => {
+app.post("/api/apply-voice-preset", requireApiAuth, async (req, res) => {
   try {
     const { userId = "default-user", preset } = req.body || {};
     if (!validPresetName(preset)) {
@@ -835,9 +913,9 @@ app.post("/api/apply-voice-preset", async (req, res) => {
 });
 
 // Chat (text → reply) + report voiceMode for UI
-app.post("/api/chat", async (req, res) => {
+app.post("/api/chat", requireApiAuth, async (req, res) => {
   try {
-    const { message, userId = "default-user" } = req.body;
+    const { message, userId = "default-user", sessionId = "default" } = req.body;
 
     if (typeof message !== "string" || !message.trim() || message.length > MAX_MESSAGE_LEN) {
       return res.status(400).json({ error: "E_BAD_INPUT", message: "Invalid message" });
@@ -854,15 +932,19 @@ app.post("/api/chat", async (req, res) => {
     // Fresh facts for live questions
     const freshFacts = await getFreshFacts(message);
 
-    // NEW: personality fallback if it's a searchy question but we have no fresh facts (Brave off/empty)
+    // Personality fallback for searchy questions without fresh facts
     if (!freshFacts.length && looksLikeSearchQuery(message)) {
       const reply = ellieFallbackReply(message);
       const decision = decideVoiceMode({ replyText: reply });
       const lang = (await getPreferredLanguage(userId)) || "en";
+      persistMessage(userId, sessionId, "user", message).catch(() => {});
+      persistMessage(userId, sessionId, "assistant", reply).catch(() => {});
+      pushToHistory(userId, sessionId, { role: "user", content: message });
+      pushToHistory(userId, sessionId, { role: "assistant", content: reply });
       return res.json({ reply, language: lang, voiceMode: decision.voiceMode, freshFacts: [] });
     }
 
-    const { reply, language } = await generateEllieReply({ userId, userText: message, freshFacts });
+    const { reply, language } = await generateEllieReply({ userId, sessionId, userText: message, freshFacts });
 
     const decision = decideVoiceMode({ replyText: reply });
     res.json({ reply, language, voiceMode: decision.voiceMode, freshFacts });
@@ -873,7 +955,7 @@ app.post("/api/chat", async (req, res) => {
 });
 
 // Upload audio → transcription (language REQUIRED)
-app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
+app.post("/api/upload-audio", requireApiAuth, upload.single("audio"), async (req, res) => {
   try {
     if (!req.file || !isOkAudio(req.file.mimetype)) {
       return res.status(400).json({
@@ -914,9 +996,9 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
 });
 
 // Voice chat (language REQUIRED) + TTS
-app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
+app.post("/api/voice-chat", requireApiAuth, upload.single("audio"), async (req, res) => {
   try {
-    const userId = (req.body?.userId || "default-user");
+    const { userId = "default-user", sessionId = "default" } = req.body || {};
 
     if (!req.file || !isOkAudio(req.file.mimetype)) {
       return res.status(400).json({
@@ -931,11 +1013,9 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
       prefLang = requestedLang; await setPreferredLanguage(userId, requestedLang);
     }
     if (!prefLang) {
-      return res.status(412).json({
-        error: "E_LANGUAGE_REQUIRED",
-        message: "Please choose a language first.",
-        hint: "Call /api/set-language or pick it in the UI.",
-      });
+      // Graceful default instead of 412
+      prefLang = "en";
+      await setPreferredLanguage(userId, prefLang);
     }
 
     const fileForOpenAI = await toFile(req.file.buffer, req.file.originalname || "audio.webm");
@@ -970,7 +1050,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     if (!freshFacts.length && looksLikeSearchQuery(userText)) {
       replyForVoice = ellieFallbackReply(userText);
     } else {
-      const { reply } = await generateEllieReply({ userId, userText, freshFacts });
+      const { reply } = await generateEllieReply({ userId, sessionId, userText, freshFacts });
       replyForVoice = reply;
     }
 
@@ -986,6 +1066,12 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     });
     const ab = await speech.arrayBuffer();
     const audioMp3Base64 = Buffer.from(ab).toString("base64");
+
+    // persist turns
+    persistMessage(userId, sessionId, "user", userText).catch(() => {});
+    persistMessage(userId, sessionId, "assistant", replyForVoice).catch(() => {});
+    pushToHistory(userId, sessionId, { role: "user", content: userText });
+    pushToHistory(userId, sessionId, { role: "assistant", content: replyForVoice });
 
     res.json({
       text: userText,
@@ -1011,31 +1097,50 @@ const wss = new WebSocket.Server({ server, path: "/ws/voice" });
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let userId = url.searchParams.get("userId") || "default-user";
+  let sessionId = url.searchParams.get("sessionId") || "default";
   let sessionLang = null;
   let sessionVoice = DEFAULT_VOICE;
 
+  // Optional auth for WS via query or header
+  if (ELLIE_API_KEY) {
+    const urlToken = url.searchParams.get("token");
+    const headerAuth = req.headers["authorization"] || "";
+    const headerToken = headerAuth.startsWith("Bearer ") ? headerAuth.slice(7) : "";
+    const ok = (urlToken && urlToken === ELLIE_API_KEY) || (headerToken && headerToken === ELLIE_API_KEY);
+    if (!ok) {
+      try { ws.close(1008, "UNAUTHORIZED"); } catch {}
+      return;
+    }
+  }
+
   ws.on("message", async (raw) => {
     try {
-      const msg = JSON.parse(raw.toString("utf8"));
+      // guard size & JSON parse
+      const str = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw);
+      if (str.length > 200_000) throw new Error("Frame too large");
+      let msg;
+      try { msg = JSON.parse(str); } catch { throw new Error("Bad JSON"); }
 
       if (msg.type === "hello") {
         userId = msg.userId || userId;
+        sessionId = msg.sessionId || sessionId;
         if (typeof msg.voice === "string") sessionVoice = msg.voice;
         if (msg.preset && validPresetName(msg.preset)) await setVoicePreset(userId, msg.preset);
         const code = await getPreferredLanguage(userId);
         sessionLang = code || null;
         if (!sessionLang) {
-          ws.send(JSON.stringify({ type: "error", code: "E_LANGUAGE_REQUIRED", message: "Please choose a language first." }));
-          return;
+          // Graceful default
+          sessionLang = "en";
+          await setPreferredLanguage(userId, sessionLang);
         }
-        ws.send(JSON.stringify({ type: "hello-ok", userId, language: sessionLang, voice: sessionVoice }));
+        ws.send(JSON.stringify({ type: "hello-ok", userId, sessionId, language: sessionLang, voice: sessionVoice }));
         return;
       }
 
       if (msg.type === "audio" && msg.audio) {
         if (!sessionLang) {
-          ws.send(JSON.stringify({ type: "error", code: "E_LANGUAGE_REQUIRED", message: "Please choose a language first." }));
-          return;
+          sessionLang = "en";
+          await setPreferredLanguage(userId, sessionLang);
         }
         const mime = msg.mime || "audio/webm";
         const b = Buffer.from(msg.audio, "base64");
@@ -1057,12 +1162,11 @@ wss.on("connection", (ws, req) => {
         if (emo) await saveEmotion(userId, emo, userText);
 
         // Keep WS path simple and fast (no web search to minimize latency)
-        // NEW: if it's a searchy question, use personality fallback in WS mode
         let reply;
         if (looksLikeSearchQuery(userText)) {
           reply = ellieFallbackReply(userText);
         } else {
-          const out = await generateEllieReply({ userId, userText });
+          const out = await generateEllieReply({ userId, sessionId, userText });
           reply = out.reply;
         }
 
@@ -1072,6 +1176,12 @@ wss.on("connection", (ws, req) => {
         const chosenVoice = await getEffectiveVoiceForUser(userId, sessionVoice || DEFAULT_VOICE);
         const speech = await client.audio.speech.create({ model, voice: chosenVoice, input: reply, format: "mp3" });
         const ab = await speech.arrayBuffer();
+
+        // persist & cache
+        persistMessage(userId, sessionId, "user", userText).catch(() => {});
+        persistMessage(userId, sessionId, "assistant", reply).catch(() => {});
+        pushToHistory(userId, sessionId, { role: "user", content: userText });
+        pushToHistory(userId, sessionId, { role: "assistant", content: reply });
 
         ws.send(JSON.stringify({
           type: "reply",
