@@ -1,3 +1,4 @@
+// server.js
 require("dotenv").config();
 
 const express = require("express");
@@ -69,6 +70,10 @@ const BRAVE_API_KEY = process.env.BRAVE_API_KEY || ""; // set in Render to enabl
 
 // Disable FX fully (kept for clarity)
 const FX_ENABLED = false;
+
+// Realtime model for phone-call mode (hands-free)
+const OPENAI_REALTIME_MODEL =
+  process.env.OPENAI_REALTIME_MODEL || "gpt-4o-mini-realtime-preview";
 
 // Voice presets → OpenAI base voices (no DSP)
 const VOICE_PRESETS = {
@@ -312,27 +317,6 @@ function moodToStyle(label, intensity) {
   return `${soft} ${intensifier}`;
 }
 
-// NEW: Build realtime instructions for phone-call mode (keeps Ellie style + memory)
-function buildRealtimeInstructions({ elliePrompt, factsSummary, moodStyle, languageCode }) {
-  return `
-${elliePrompt}
-
-Language rules:
-- Always reply in ${SUPPORTED_LANGUAGES[languageCode] || "English"} (${languageCode}).
-
-Known facts about the user (use naturally, don't list them):
-${factsSummary || "None yet."}
-
-Tone guidance:
-${moodStyle || "Keep it balanced and warm."}
-
-Voice rules:
-- Keep sentences short (5–18 words) unless the user asks for detail.
-- If user asks about personal preferences you've stored, weave them in naturally.
-- If user gets too naughty, cool it down playfully.
-`.trim();
-}
-
 // ──────────────────────────────────────────────────────────────
 // Language support & storage (facts table used to store preference)
 // ──────────────────────────────────────────────────────────────
@@ -559,26 +543,21 @@ async function getEffectiveVoiceForUser(userId, fallback = DEFAULT_VOICE) {
   return fallback;
 }
 
-// Decide mini vs full TTS model
+// Decide mini vs full TTS model (we force mini to avoid 404s)
 function decideVoiceMode({ replyText }) {
   const t = (replyText || "").trim();
   if (!t) return { voiceMode: "mini", reason: "empty" };
-  // heuristics
-  if (t.length > 280) return { voiceMode: "full", reason: "long" };
   const sentences = (t.match(/[.!?](\s|$)/g) || []).length;
-  if (sentences >= 3) return { voiceMode: "full", reason: "multi-sentence" };
-  if (/(story|once upon a time|narrate|bedtime|poem|monologue|read this)/i.test(t)) return { voiceMode: "full", reason: "storytelling" };
-  if (/(i care|i love|i miss you|i'm proud|i'm sorry|breathe with me|it’s okay|i'm here)/i.test(t)) return { voiceMode: "full", reason: "emotional" };
+  if (t.length > 280 || sentences >= 3) return { voiceMode: "full", reason: "long" };
   return { voiceMode: "mini", reason: "short" };
 }
-
-// 🔧 FIXED: Always return a valid, fast TTS model (removes 404 forever)
+// Always return a valid model; avoid gpt-4o-tts 404
 function getTtsModelForVoiceMode(_mode) {
   return "gpt-4o-mini-tts";
 }
 
 // ──────────────────────────────────────────────────────────────
-// Audio helpers
+// Audio MIME helper (accepts codecs suffix)
 // ──────────────────────────────────────────────────────────────
 function isOkAudio(mime) {
   if (!mime) return false;
@@ -586,35 +565,6 @@ function isOkAudio(mime) {
   return [
     "audio/webm", "audio/ogg", "audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav",
   ].includes(base);
-}
-
-// Build a tiny WAV header for PCM16LE so we can transcribe user PCM in phone mode
-function pcm16ToWav(pcmBuffer, sampleRate = 24000, numChannels = 1) {
-  const byteRate = sampleRate * numChannels * 2;
-  const blockAlign = numChannels * 2;
-  const wav = Buffer.alloc(44 + pcmBuffer.length);
-
-  // RIFF chunk descriptor
-  wav.write("RIFF", 0);
-  wav.writeUInt32LE(36 + pcmBuffer.length, 4);
-  wav.write("WAVE", 8);
-
-  // fmt sub-chunk
-  wav.write("fmt ", 12);
-  wav.writeUInt32LE(16, 16);           // Subchunk1Size (16 for PCM)
-  wav.writeUInt16LE(1, 20);            // AudioFormat (1 = PCM)
-  wav.writeUInt16LE(numChannels, 22);  // NumChannels
-  wav.writeUInt32LE(sampleRate, 24);   // SampleRate
-  wav.writeUInt32LE(byteRate, 28);     // ByteRate
-  wav.writeUInt16LE(blockAlign, 32);   // BlockAlign
-  wav.writeUInt16LE(16, 34);           // BitsPerSample
-
-  // data sub-chunk
-  wav.write("data", 36);
-  wav.writeUInt32LE(pcmBuffer.length, 40);
-  pcmBuffer.copy(wav, 44);
-
-  return wav;
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -633,7 +583,6 @@ async function queryBrave(q) {
         "Accept": "application/json",
         "X-Subscription-Token": BRAVE_API_KEY,
       },
-      // Node18+ has fetch; Render uses Node18+ by default
     });
     if (!r.ok) throw new Error(`Brave ${r.status}`);
     const data = await r.json();
@@ -690,19 +639,12 @@ async function getFreshFacts(userText) {
   const results = data?.web?.results || [];
   if (!results.length) return [];
 
-  // Log first result for visibility (helps debugging)
-  try {
-    console.log("[brave] first result:", JSON.stringify(results[0]).slice(0, 400));
-  } catch {}
-
-  // Pass top 3 snippets to Ellie as fresh facts instead of parsing a single name
   const top = results.slice(0, 3).map(r => ({
     label: "search_snippet",
     fact: `${(r.title || "").trim()} — ${(r.description || "").trim()}`.replace(/\s+/g, " "),
     source: r.url || null
   }));
 
-  // Nudge the model to use them as ground truth
   top.unshift({
     label: "instruction",
     fact: "Use the search snippets below as fresh ground truth. If they conflict, prefer the most recent-looking source. Answer directly and naturally.",
@@ -728,11 +670,7 @@ function ellieFallbackReply(userMessage = "") {
 // Detect “Google-like” queries while avoiding personal ones about Ellie
 function looksLikeSearchQuery(text = "") {
   const q = text.toLowerCase();
-  // If user is asking about Ellie herself → not a fact lookup
-  if (q.includes(" you ") || q.startsWith("you ") || q.endsWith(" you") || q.includes(" your ")) {
-    return false;
-  }
-  // Keywords that usually mean factual/current events lookups
+  if (q.includes(" you ") || q.startsWith("you ") || q.endsWith(" you") || q.includes(" your ")) return false;
   const factyWords = [
     "current", "today", "latest", "president", "prime minister",
     "weather", "time in", "news", "capital of", "population",
@@ -796,10 +734,9 @@ Language rules:
 
   let reply = (completion.choices?.[0]?.message?.content || "").trim();
 
-  // personality tweaks
   if (randChance(PROB_FREEWILL)) {
-    const refusal = addPlayfulRefusal(userText, aggregateMood(await getRecentEmotions(userId, 5)).label);
-    if (refusal) {
+    const refusal = addPlayfulRefusal(userText, agg.label);
+    if (refusal && !(agg.label === "happy" && agg.avgIntensity < 0.5)) {
       reply = `${refusal}\n\n${reply}`;
     }
   }
@@ -950,7 +887,7 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
 
     const fileForOpenAI = await toFile(req.file.buffer, req.file.originalname || "audio.webm");
     const tr = await client.audio.transcriptions.create({
-      model: "gpt-4o-mini-transcribe",
+      model: "whisper-1",
       file: fileForOpenAI,
       language: prefLang,
     });
@@ -964,8 +901,7 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
   }
 });
 
-// Voice chat (language REQUIRED) + TTS (record→send path stays)
-// IMPORTANT: we no longer return transcript text to the client (so chat doesn't show "You:")
+// Voice chat (language REQUIRED) + TTS (record/send). Keeps Whisper here.
 app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
   try {
     const userId = (req.body?.userId || "default-user");
@@ -992,7 +928,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
 
     const fileForOpenAI = await toFile(req.file.buffer, req.file.originalname || "audio.webm");
     const tr = await client.audio.transcriptions.create({
-      model: "gpt-4o-mini-transcribe",
+      model: "whisper-1",
       file: fileForOpenAI,
       language: prefLang,
     });
@@ -1000,15 +936,22 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     console.log("[voice-chat] mime:", req.file.mimetype, "text:", (tr.text || "").slice(0, 140));
 
     const userText = (tr.text || "").trim();
-    // (we still use transcript for memory + reply, but we won't echo it back)
+    if (!userText) {
+      return res.status(200).json({
+        text: "",
+        reply: "I couldn’t catch that—can you try again a bit closer to the mic?",
+        language: prefLang,
+        audioMp3Base64: null,
+        voiceMode: "mini",
+      });
+    }
+
     const [facts, emo] = await Promise.all([extractFacts(userText), extractEmotionPoint(userText)]);
     if (facts.length) await saveFacts(userId, facts, userText);
     if (emo) await saveEmotion(userId, emo, userText);
 
-    // Fresh facts for the spoken prompt too
     const freshFacts = await getFreshFacts(userText);
 
-    // NEW: personality fallback if it's a searchy question but we have no fresh facts
     let replyForVoice;
     if (!freshFacts.length && looksLikeSearchQuery(userText)) {
       replyForVoice = ellieFallbackReply(userText);
@@ -1031,7 +974,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     const audioMp3Base64 = Buffer.from(ab).toString("base64");
 
     res.json({
-      // text: userText,  // intentionally omitted so frontend won't show "You:"
+      text: userText,
       reply: replyForVoice,
       language: prefLang,
       audioMp3Base64,
@@ -1046,8 +989,8 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
 });
 
 // ──────────────────────────────────────────────────────────────
-// WebSocket voice sessions (/ws/voice) — record/send path kept
-// (now sends empty text so UI won't show user's transcript)
+// WebSocket voice sessions (/ws/voice) - latency-optimized, no web search
+// (legacy record/send style path; we keep it intact)
 // ──────────────────────────────────────────────────────────────
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/ws/voice" });
@@ -1085,7 +1028,7 @@ wss.on("connection", (ws, req) => {
         const b = Buffer.from(msg.audio, "base64");
         const fileForOpenAI = await toFile(b, `chunk.${mime.includes("webm") ? "webm" : "wav"}`);
         const tr = await client.audio.transcriptions.create({
-          model: "gpt-4o-mini-transcribe",
+          model: "whisper-1",
           file: fileForOpenAI,
           language: sessionLang,
         });
@@ -1100,8 +1043,6 @@ wss.on("connection", (ws, req) => {
         if (facts.length) await saveFacts(userId, facts, userText);
         if (emo) await saveEmotion(userId, emo, userText);
 
-        // Keep WS path simple and fast (no web search to minimize latency)
-        // NEW: if it's a searchy question, use personality fallback in WS mode
         let reply;
         if (looksLikeSearchQuery(userText)) {
           reply = ellieFallbackReply(userText);
@@ -1119,7 +1060,7 @@ wss.on("connection", (ws, req) => {
 
         ws.send(JSON.stringify({
           type: "reply",
-          text: "", // don't echo user's transcript to chat
+          text: userText,
           reply,
           language: sessionLang,
           audioMp3Base64: Buffer.from(ab).toString("base64"),
@@ -1150,241 +1091,165 @@ wss.on("connection", (ws, req) => {
 });
 
 // ──────────────────────────────────────────────────────────────
-// NEW: Phone-call WebSocket (/ws/phone) — true realtime audio
-// Keeps Ellie system prompt, DB facts, mood, language on server
-// Streams audio/text deltas back;
-// NOW ALSO saves facts/emotions from the USER transcript each turn
+// PHONE CALL WS (/ws/phone): full-duplex hands-free mode (Realtime API)
+// - Streams PCM16 to OpenAI Realtime with server VAD (turn detection)
+// - Streams PCM16 back to browser
+// - Saves facts/emotions from realtime input transcripts (no Whisper here)
 // ──────────────────────────────────────────────────────────────
 const wssPhone = new WebSocket.Server({ server, path: "/ws/phone" });
 
+async function buildRealtimeInstructions(userId) {
+  const prefLang = (await getPreferredLanguage(userId)) || "en";
+  const facts = await getFacts(userId);
+  const latestMood = await getLatestEmotion(userId);
+  const factsLines = facts.map(r => `- ${r.fact}`);
+  const moodLine = latestMood ? `\nRecent mood: ${latestMood.label}.` : "";
+  return `
+${ELLIE_SYSTEM_PROMPT}
+
+Language: ${SUPPORTED_LANGUAGES[prefLang]} (${prefLang}). Do not switch languages unless asked.
+Known facts:
+${factsLines.join("\n") || "none."}
+${moodLine}
+`.trim();
+}
+
+async function saveFromTranscript(userId, text) {
+  if (!text || !text.trim()) return;
+  try {
+    const [facts, emo] = await Promise.all([
+      extractFacts(text),
+      extractEmotionPoint(text),
+    ]);
+    if (facts?.length) await saveFacts(userId, facts, text);
+    if (emo) await saveEmotion(userId, emo, text);
+  } catch (e) {
+    console.error("realtime transcript save error:", e?.message || e);
+  }
+}
+
 wssPhone.on("connection", (ws, req) => {
   let userId = "default-user";
+  let sampleRate = 24000;
   let prefLang = "en";
-  let chosenVoice = DEFAULT_VOICE;
-  let upstream = null; // OpenAI Realtime WS
-  let sessionReady = false;
-  let partialText = "";
 
-  // buffer user mic PCM16 (base64) so we can transcribe & save facts/emotions from user speech
-  let userPcmChunks = [];
-  let userSampleRate = 24000; // default; frontend can send msg.sampleRate to override
+  let upstream = null;
+  let upstreamOpen = false;
 
-  async function composeInstructions(uId) {
-    const [storedFacts, latestMood, recentEmos] = await Promise.all([
-      getFacts(uId),
-      getLatestEmotion(uId),
-      getRecentEmotions(uId, 5),
-    ]);
-    const factsLines = storedFacts.map(r => `- ${r.fact}`).slice(0, 60);
-    const factsSummary = factsLines.length ? factsLines.join("\n") : "None yet.";
-    const agg = aggregateMood(recentEmos);
-    const moodStyle = moodToStyle(agg.label, agg.avgIntensity);
-    return buildRealtimeInstructions({
-      elliePrompt: ELLIE_SYSTEM_PROMPT,
-      factsSummary,
-      moodStyle,
-      languageCode: prefLang
-    });
-  }
-
-  async function openUpstream() {
-    const ins = await composeInstructions(userId);
-    return new Promise((resolve, reject) => {
-      const url = `wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview`;
-      const headers = {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "OpenAI-Beta": "realtime=v1"
-      };
-      upstream = new WebSocket(url, { headers });
-
-      upstream.on("open", () => {
-        const sessionUpdate = {
-          type: "session.update",
-          session: {
-            instructions: ins,
-            voice: chosenVoice,
-            modalities: ["audio", "text"]
-          }
-        };
-        upstream.send(JSON.stringify(sessionUpdate));
-        sessionReady = true;
-        try { ws.send(JSON.stringify({ type: "phone-ready", voice: chosenVoice, language: prefLang })); } catch {}
-        resolve();
-      });
-
-      upstream.on("message", async (buf) => {
-        let evt;
-        try { evt = JSON.parse(buf.toString("utf8")); } catch { return; }
-
-        if (evt.type === "response.audio.delta" && evt.audio) {
-          // base64 PCM16 → client plays via WebAudio
-          try { ws.send(JSON.stringify({ type: "audio.delta", audio: evt.audio })); } catch {}
-          return;
-        }
-
-        if (evt.type === "response.output_text.delta" && typeof evt.delta === "string") {
-          partialText += evt.delta;
-          try { ws.send(JSON.stringify({ type: "text.delta", delta: evt.delta })); } catch {}
-          return;
-        }
-
-        if (evt.type === "response.completed") {
-          const finalText = partialText.trim();
-          partialText = "";
-          if (finalText) {
-            try {
-              const [facts, emo] = await Promise.all([
-                extractFacts(finalText),
-                extractEmotionPoint(finalText)
-              ]);
-              if (facts?.length) await saveFacts(userId, facts, finalText);
-              if (emo) await saveEmotion(userId, emo, finalText);
-            } catch {}
-            try { ws.send(JSON.stringify({ type: "text.final", text: finalText })); } catch {}
-          }
-          return;
-        }
-
-        if (evt.type === "session.updated") {
-          try { ws.send(JSON.stringify({ type: "session.updated" })); } catch {}
-          return;
-        }
-
-        if (evt.type && evt.type.startsWith("error")) {
-          try { ws.send(JSON.stringify({ type: "error", detail: evt })); } catch {}
-          return;
-        }
-      });
-
-      upstream.on("close", () => {
-        sessionReady = false;
-        try { ws.send(JSON.stringify({ type: "phone-closed" })); } catch {}
-      });
-
-      upstream.on("error", (e) => {
-        sessionReady = false;
-        try { ws.send(JSON.stringify({ type: "error", message: String(e?.message || e) })); } catch {}
-        reject(e);
-      });
-    });
-  }
+  let incomingTranscriptBuf = "";
 
   ws.on("message", async (raw) => {
-    let msg;
-    try { msg = JSON.parse(raw.toString("utf8")); } catch {
-      try { ws.send(JSON.stringify({ type: "error", message: "Bad JSON" })); } catch {}
-      return;
-    }
+    try {
+      const msg = JSON.parse(raw.toString("utf8"));
 
-    if (msg.type === "hello") {
-      userId = msg.userId || userId;
-      if (typeof msg.voice === "string") chosenVoice = msg.voice;
-      const askedLang = (msg.language || "").toLowerCase();
-      if (askedLang && SUPPORTED_LANGUAGES[askedLang]) {
-        prefLang = askedLang; await setPreferredLanguage(userId, askedLang);
-      } else {
-        prefLang = (await getPreferredLanguage(userId)) || "en";
-      }
-      // optional: accept client-provided sample rate for PCM
-      if (typeof msg.sampleRate === "number" && msg.sampleRate > 0) {
-        userSampleRate = Math.round(msg.sampleRate);
-      }
+      if (msg.type === "hello") {
+        userId = msg.userId || userId;
+        sampleRate = Number(msg.sampleRate || 24000);
+        prefLang = (await getPreferredLanguage(userId)) || (msg.language || "en");
 
-      try { await openUpstream(); }
-      catch (e) {
-        try { ws.send(JSON.stringify({ type: "error", message: "Upstream connect failed" })); } catch {}
-      }
-      return;
-    }
+        const rtUrl = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_REALTIME_MODEL)}`;
+        upstream = new WebSocket(rtUrl, {
+          headers: {
+            "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+            "OpenAI-Beta": "realtime=v1",
+          },
+        });
 
-    // Stream mic audio chunks (base64 PCM16LE); also buffer locally for user STT
-    if (msg.type === "audio.append" && msg.audio) {
-      if (!sessionReady || !upstream) return;
-      upstream.send(JSON.stringify({
-        type: "input_audio_buffer.append",
-        audio: msg.audio
-      }));
-      // buffer locally for user transcript → facts/emotions
-      userPcmChunks.push(msg.audio);
-      return;
-    }
+        upstream.on("open", async () => {
+          upstreamOpen = true;
 
-    // Commit current input and request a response
-    if (msg.type === "audio.commit") {
-      if (!sessionReady || !upstream) return;
+          const chosenVoice = await getEffectiveVoiceForUser(userId, DEFAULT_VOICE);
+          const instructions = await buildRealtimeInstructions(userId);
 
-      // 1) Transcribe the user's buffered PCM locally (so we can save facts/emotions from user speech)
-      try {
-        if (userPcmChunks.length) {
-          const pcmBuffer = Buffer.concat(userPcmChunks.map(b64 => Buffer.from(b64, "base64")));
-          const wavBuffer = pcm16ToWav(pcmBuffer, userSampleRate, 1);
-          const fileForOpenAI = await toFile(wavBuffer, "turn.wav");
-          const tr = await client.audio.transcriptions.create({
-            model: "gpt-4o-mini-transcribe",
-            file: fileForOpenAI,
-            language: prefLang
-          });
-          const userText = (tr.text || "").trim();
-          if (userText) {
-            try {
-              const [facts, emo] = await Promise.all([extractFacts(userText), extractEmotionPoint(userText)]);
-              if (facts?.length) await saveFacts(userId, facts, userText);
-              if (emo) await saveEmotion(userId, emo, userText);
-            } catch {}
-            // optional: send user transcript to client if you ever want captions (we keep silent)
-            // ws.send(JSON.stringify({ type: "user.text.final", text: userText }));
+          upstream.send(JSON.stringify({
+            type: "session.update",
+            session: {
+              instructions,
+              modalities: ["audio", "text"],
+              input_audio_format:  { type: "pcm16", sample_rate_hz: sampleRate },
+              output_audio_format: { type: "pcm16", sample_rate_hz: 24000 },
+              voice: chosenVoice,
+              // hands-free
+              turn_detection: { type: "server" },
+              // ask Realtime to emit user input transcripts
+              input_audio_transcription: { enabled: true },
+            },
+          }));
+
+          ws.send(JSON.stringify({ type: "hello-ok", language: prefLang, voice: chosenVoice }));
+        });
+
+        upstream.on("message", async (data) => {
+          try {
+            const ev = JSON.parse(data.toString("utf8"));
+
+            if (ev.type === "response.output_audio.delta" && ev.delta) {
+              ws.send(JSON.stringify({ type: "audio.delta", audio: ev.delta }));
+            }
+
+            // Optional captions for Ellie's speech:
+            // if (ev.type === "response.output_text.delta" && ev.delta) {
+            //   ws.send(JSON.stringify({ type: "text.delta", text: ev.delta }));
+            // }
+
+            // collect user input transcripts emitted by Realtime
+            if (
+              typeof ev.type === "string" &&
+              ev.type.toLowerCase().includes("input") &&
+              (ev.type.toLowerCase().includes("transcription") || ev.type.toLowerCase().includes("input_text"))
+            ) {
+              const delta = ev.delta || ev.text || ev.transcript || "";
+              if (delta) incomingTranscriptBuf += String(delta);
+              if (ev.type.toLowerCase().endsWith("completed")) {
+                const finalText = incomingTranscriptBuf.trim();
+                incomingTranscriptBuf = "";
+                if (finalText) await saveFromTranscript(userId, finalText);
+              }
+            }
+
+            if (ev.type === "response.completed") {
+              ws.send(JSON.stringify({ type: "response.end" }));
+            }
+
+            if (ev.type === "response.error") {
+              ws.send(JSON.stringify({ type: "error", message: ev.error?.message || "Realtime response error" }));
+            }
+          } catch {
+            /* ignore non-JSON frames */
           }
-        }
-      } catch (e) {
-        // non-fatal
-        console.error("[/ws/phone] user STT failed:", e?.message || e);
-      } finally {
-        userPcmChunks = []; // clear buffer for next turn
+        });
+
+        upstream.on("error", (e) => {
+          ws.send(JSON.stringify({ type: "error", message: `OpenAI realtime error: ${String(e?.message || e)}` }));
+        });
+        upstream.on("close", () => {
+          upstreamOpen = false;
+          try { ws.close(); } catch {}
+        });
+
+        return;
       }
 
-      // 2) Ask the Realtime model to create a response (audio+text)
-      upstream.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-      upstream.send(JSON.stringify({
-        type: "response.create",
-        response: { modalities: ["audio", "text"] }
-      }));
-      return;
-    }
+      // Browser continuously streams mic as PCM16 base64 frames
+      if (msg.type === "audio.append" && msg.audio) {
+        if (upstreamOpen) {
+          upstream.send(JSON.stringify({ type: "input_audio_buffer.append", audio: msg.audio }));
+          // with server VAD, we don't need to commit per turn
+        }
+        return;
+      }
 
-    // Optional: text mid-call
-    if (msg.type === "input.text" && typeof msg.text === "string") {
-      if (!sessionReady || !upstream) return;
-      upstream.send(JSON.stringify({ type: "input_text", text: msg.text }));
-      upstream.send(JSON.stringify({
-        type: "response.create",
-        response: { modalities: ["audio", "text"] }
-      }));
-      return;
-    }
-
-    // Interrupt current response
-    if (msg.type === "interrupt") {
-      if (!sessionReady || !upstream) return;
-      upstream.send(JSON.stringify({ type: "response.cancel" }));
-      return;
-    }
-
-    // Refresh instructions (memory changed mid-call)
-    if (msg.type === "refresh.instructions") {
-      if (!sessionReady || !upstream) return;
-      const ins = await composeInstructions(userId);
-      upstream.send(JSON.stringify({ type: "session.update", session: { instructions: ins } }));
-      return;
-    }
-
-    if (msg.type === "ping") {
-      try { ws.send(JSON.stringify({ type: "pong", t: Date.now() })); } catch {}
-      return;
+      if (msg.type === "ping") {
+        ws.send(JSON.stringify({ type: "pong", t: Date.now() }));
+        return;
+      }
+    } catch (e) {
+      ws.send(JSON.stringify({ type: "error", message: `WS parse error: ${String(e?.message || e)}` }));
     }
   });
 
   ws.on("close", () => {
-    try { upstream && upstream.close(); } catch {}
+    try { upstream?.close(); } catch {}
   });
 });
 
