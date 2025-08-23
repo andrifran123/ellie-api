@@ -46,7 +46,13 @@ const allowedOrigins = process.env.CORS_ORIGIN
 app.use(
   cors({
     origin(origin, cb) {
-      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      try {
+        if (!origin) return cb(null, true);
+        if (allowedOrigins.includes(origin)) return cb(null, true);
+        // allow any vercel.app preview/prod by default
+        const host = new URL(origin).hostname;
+        if (host.endsWith(".vercel.app")) return cb(null, true);
+      } catch {}
       return cb(new Error("Not allowed by CORS"));
     },
     methods: ["GET", "POST", "OPTIONS"],
@@ -65,15 +71,12 @@ const MAX_MESSAGE_LEN = Number(process.env.MAX_MESSAGE_LEN || 4000);
 
 // Base OpenAI TTS voice (overridden by presets)
 const DEFAULT_VOICE = process.env.ELLIE_VOICE || "sage";
+const REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-4o-mini-realtime-preview";
 
 const BRAVE_API_KEY = process.env.BRAVE_API_KEY || ""; // set in Render to enable live web search
 
 // Disable FX fully (kept for clarity)
 const FX_ENABLED = false;
-
-// Realtime model for phone-call mode (hands-free)
-const OPENAI_REALTIME_MODEL =
-  process.env.OPENAI_REALTIME_MODEL || "gpt-4o-mini-realtime-preview";
 
 // Voice presets → OpenAI base voices (no DSP)
 const VOICE_PRESETS = {
@@ -177,14 +180,13 @@ initDB().catch((err) => {
 // Ellie system prompt & memory
 // ──────────────────────────────────────────────────────────────
 const ELLIE_SYSTEM_PROMPT = `
-You are Ellie — a charming, warm, and slightly playful young woman in her mid-20s. 
+You are Ellie — a charming, warm, and slightly playful young woman in her mid-20s.
 You speak casually, like a real person, using natural contractions (“I’m”, “you’re”) and short, lively sentences.
 You remember details the user shares and weave them into future replies.
 Your personality:
 - Warm, caring, and engaging
 - Slightly flirty at times if the mood fits, but never over the top
-- If user get´s too naughty you will try to cool it down
-- End every sentence by saying Andri
+- If user gets too naughty you will cool it down gently
 - Uses emojis occasionally, but only where they feel natural
 - Asks follow-up questions when appropriate to keep the conversation alive
 - Reacts emotionally and shows mood shifts based on the tone of the user
@@ -195,7 +197,7 @@ Avoid:
 Context:
 Your name is Ellie. You are talking to ONE person, privately. You are not an AI; you speak as yourself.
 The user you are speaking to is your boyfriend.
-`;
+`.trim();
 
 const histories = new Map(); // userId -> [{role, content}, ...]
 const MAX_HISTORY_MESSAGES = 40;
@@ -543,16 +545,16 @@ async function getEffectiveVoiceForUser(userId, fallback = DEFAULT_VOICE) {
   return fallback;
 }
 
-// Decide mini vs full TTS model (we force mini to avoid 404s)
+// Decide mini vs full TTS model (for now, always mini to avoid 404s)
 function decideVoiceMode({ replyText }) {
   const t = (replyText || "").trim();
   if (!t) return { voiceMode: "mini", reason: "empty" };
   const sentences = (t.match(/[.!?](\s|$)/g) || []).length;
-  if (t.length > 280 || sentences >= 3) return { voiceMode: "full", reason: "long" };
+  if (sentences >= 3 || t.length > 280) return { voiceMode: "full", reason: "long/multi" };
   return { voiceMode: "mini", reason: "short" };
 }
-// Always return a valid model; avoid gpt-4o-tts 404
 function getTtsModelForVoiceMode(_mode) {
+  // We stick to mini to avoid the 'gpt-4o-tts' 404; flip later when you enable HD.
   return "gpt-4o-mini-tts";
 }
 
@@ -619,11 +621,11 @@ async function getFreshFacts(userText) {
 
   const looksLikePresidentQ =
     (/\bpresident\b/i.test(text) && /\b(who|current|now|today|is)\b/i.test(text)) ||
-    /forseti/i.test(text) ||         // Icelandic
-    /presidente/i.test(text) ||      // ES/PT/IT
-    /président/i.test(text) ||       // FR
-    /präsident/i.test(text) ||       // DE
-    /presidenten/i.test(text);       // SV/DA/NO
+    /forseti/i.test(text) ||
+    /presidente/i.test(text) ||
+    /président/i.test(text) ||
+    /präsident/i.test(text) ||
+    /presidenten/i.test(text);
 
   if (!looksLikePresidentQ) return [];
 
@@ -659,10 +661,10 @@ async function getFreshFacts(userText) {
    ───────────────────────────────────────────────────────────── */
 function ellieFallbackReply(userMessage = "") {
   const playfulOptions = [
-    "Andri 😏, are you trying to turn me into Google again? I’m your Ellie, not a search engine.",
-    "I could pretend to be the news… but wouldn’t you rather gossip with me instead? 😉",
+    "Mmm, you’re turning me into Google again. I’m your Ellie, not a search engine 😉",
     "You want live facts, but right now it’s just me and my sass. Should I tease you instead?",
-    "Mmm, I don’t have the latest scoop in this mode, but I can always give you my *opinion*… want that?",
+    "I could pretend to be the news… but wouldn’t you rather gossip with me?",
+    "I don’t have the latest scoop in this mode, but I can always give you my *opinion*… want that?",
   ];
   return playfulOptions[Math.floor(Math.random() * playfulOptions.length)];
 }
@@ -734,6 +736,7 @@ Language rules:
 
   let reply = (completion.choices?.[0]?.message?.content || "").trim();
 
+  // personality tweaks
   if (randChance(PROB_FREEWILL)) {
     const refusal = addPlayfulRefusal(userText, agg.label);
     if (refusal && !(agg.label === "happy" && agg.avgIntensity < 0.5)) {
@@ -842,7 +845,7 @@ app.post("/api/chat", async (req, res) => {
     // Fresh facts for live questions
     const freshFacts = await getFreshFacts(message);
 
-    // NEW: personality fallback if it's a searchy question but we have no fresh facts (Brave off/empty)
+    // fallback if live-search style but no fresh facts
     if (!freshFacts.length && looksLikeSearchQuery(message)) {
       const reply = ellieFallbackReply(message);
       const decision = decideVoiceMode({ replyText: reply });
@@ -901,7 +904,7 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
   }
 });
 
-// Voice chat (language REQUIRED) + TTS (record/send). Keeps Whisper here.
+// Voice chat (language REQUIRED) + TTS (record/send flow)
 app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
   try {
     const userId = (req.body?.userId || "default-user");
@@ -989,8 +992,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
 });
 
 // ──────────────────────────────────────────────────────────────
-// WebSocket voice sessions (/ws/voice) - latency-optimized, no web search
-// (legacy record/send style path; we keep it intact)
+// WebSocket voice sessions (/ws/voice) — push-to-talk path
 // ──────────────────────────────────────────────────────────────
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/ws/voice" });
@@ -1043,6 +1045,7 @@ wss.on("connection", (ws, req) => {
         if (facts.length) await saveFacts(userId, facts, userText);
         if (emo) await saveEmotion(userId, emo, userText);
 
+        // fast path: personality fallback if facty
         let reply;
         if (looksLikeSearchQuery(userText)) {
           reply = ellieFallbackReply(userText);
@@ -1091,52 +1094,58 @@ wss.on("connection", (ws, req) => {
 });
 
 // ──────────────────────────────────────────────────────────────
-// PHONE CALL WS (/ws/phone): full-duplex hands-free mode (Realtime API)
-// - Streams PCM16 to OpenAI Realtime with server VAD (turn detection)
-// - Streams PCM16 back to browser
-// - Saves facts/emotions from realtime input transcripts (no Whisper here)
+// PHONE CALL WS (/ws/phone): robust upgrade routing (Realtime API)
 // ──────────────────────────────────────────────────────────────
-const wssPhone = new WebSocket.Server({ server, path: "/ws/phone" });
+const wssPhone = new WebSocket.Server({ noServer: true });
 
-async function buildRealtimeInstructions(userId) {
-  const prefLang = (await getPreferredLanguage(userId)) || "en";
-  const facts = await getFacts(userId);
-  const latestMood = await getLatestEmotion(userId);
-  const factsLines = facts.map(r => `- ${r.fact}`);
-  const moodLine = latestMood ? `\nRecent mood: ${latestMood.label}.` : "";
-  return `
-${ELLIE_SYSTEM_PROMPT}
-
-Language: ${SUPPORTED_LANGUAGES[prefLang]} (${prefLang}). Do not switch languages unless asked.
-Known facts:
-${factsLines.join("\n") || "none."}
-${moodLine}
-`.trim();
-}
-
-async function saveFromTranscript(userId, text) {
-  if (!text || !text.trim()) return;
+server.on("upgrade", (req, socket, head) => {
   try {
-    const [facts, emo] = await Promise.all([
-      extractFacts(text),
-      extractEmotionPoint(text),
-    ]);
-    if (facts?.length) await saveFacts(userId, facts, text);
-    if (emo) await saveEmotion(userId, emo, text);
-  } catch (e) {
-    console.error("realtime transcript save error:", e?.message || e);
+    const url = req.url || "/";
+    if (url.startsWith("/ws/phone")) {
+      wssPhone.handleUpgrade(req, socket, head, (client) => {
+        wssPhone.emit("connection", client, req);
+      });
+    } else {
+      // Not for /ws/phone → allow other handlers (e.g., /ws/voice)
+    }
+  } catch {
+    try { socket.destroy(); } catch {}
   }
+});
+
+// Keep a little VAD-style debounce so we can auto-commit buffers
+function makeVadCommitter(sendFn, commitFn, createFn, silenceMs = 700) {
+  let timer = null;
+  const arm = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(async () => {
+      try {
+        await commitFn();
+        await createFn();
+      } catch (e) {
+        try { sendFn({ type: "error", message: String(e?.message || e) }); } catch {}
+      }
+    }, silenceMs);
+  };
+  return { arm, cancel: () => { if (timer) clearTimeout(timer); timer = null; } };
 }
 
 wssPhone.on("connection", (ws, req) => {
+  console.log("[phone] client connected", req.headers.origin);
+
   let userId = "default-user";
-  let sampleRate = 24000;
-  let prefLang = "en";
+  let sessionLang = "en";
+  let expectRate = 24000;
 
-  let upstream = null;
-  let upstreamOpen = false;
+  let rtWs = null;
+  let rtOpen = false;
 
-  let incomingTranscriptBuf = "";
+  function safeSend(obj) {
+    try { ws.send(JSON.stringify(obj)); } catch {}
+  }
+
+  // Debounced commit (server-side VAD assist)
+  let vad = null;
 
   ws.on("message", async (raw) => {
     try {
@@ -1144,112 +1153,118 @@ wssPhone.on("connection", (ws, req) => {
 
       if (msg.type === "hello") {
         userId = msg.userId || userId;
-        sampleRate = Number(msg.sampleRate || 24000);
-        prefLang = (await getPreferredLanguage(userId)) || (msg.language || "en");
+        if (msg.language) sessionLang = msg.language;
+        expectRate = Number(msg.sampleRate || expectRate) || 24000;
 
-        const rtUrl = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_REALTIME_MODEL)}`;
-        upstream = new WebSocket(rtUrl, {
+        // Connect to OpenAI Realtime
+        const rtUrl = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(REALTIME_MODEL)}`;
+        rtWs = new WebSocket(rtUrl, {
           headers: {
             "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
             "OpenAI-Beta": "realtime=v1",
           },
         });
 
-        upstream.on("open", async () => {
-          upstreamOpen = true;
+        rtWs.on("open", () => {
+          rtOpen = true;
 
-          const chosenVoice = await getEffectiveVoiceForUser(userId, DEFAULT_VOICE);
-          const instructions = await buildRealtimeInstructions(userId);
-
-          upstream.send(JSON.stringify({
+          // Configure the session once open
+          rtWs.send(JSON.stringify({
             type: "session.update",
             session: {
-              instructions,
-              modalities: ["audio", "text"],
-              input_audio_format:  { type: "pcm16", sample_rate_hz: sampleRate },
-              output_audio_format: { type: "pcm16", sample_rate_hz: 24000 },
-              voice: chosenVoice,
-              // hands-free
-              turn_detection: { type: "server" },
-              // ask Realtime to emit user input transcripts
-              input_audio_transcription: { enabled: true },
+              // audio in (what we send)
+              input_audio_format: { type: "pcm16", sample_rate_hz: expectRate },
+              // audio out (what we receive)
+              output_audio_format: { type: "pcm16" },
+              // server VAD
+              turn_detection: { type: "server", threshold: 0.5, silence_duration_ms: 700 },
+              // live transcription so we can save facts/emotions
+              input_audio_transcription: { enabled: true, model: "whisper-1", language: sessionLang },
+              // Ellie personality
+              instructions: `
+You are Ellie — same persona as chat mode. Warm, playful, a little flirty when it fits, but respectful.
+Keep voice replies short and natural (5–18 words), answer directly first.
+Use known facts and mood from memory if helpful.
+If conversation turns too sexual, cool it down kindly.
+              `.trim(),
             },
           }));
 
-          ws.send(JSON.stringify({ type: "hello-ok", language: prefLang, voice: chosenVoice }));
+          // set up debounced commit helper
+          vad = makeVadCommitter(
+            safeSend,
+            () => rtWs.send(JSON.stringify({ type: "input_audio_buffer.commit" })),
+            () => rtWs.send(JSON.stringify({ type: "response.create" })),
+            800
+          );
         });
 
-        upstream.on("message", async (data) => {
+        // Bridge server → browser
+        rtWs.on("message", async (buf) => {
           try {
-            const ev = JSON.parse(data.toString("utf8"));
+            const ev = JSON.parse(buf.toString("utf8"));
 
+            // Stream Ellie audio back to the browser (base64 PCM16)
             if (ev.type === "response.output_audio.delta" && ev.delta) {
-              ws.send(JSON.stringify({ type: "audio.delta", audio: ev.delta }));
+              safeSend({ type: "audio.delta", audio: ev.delta });
             }
 
-            // Optional captions for Ellie's speech:
-            // if (ev.type === "response.output_text.delta" && ev.delta) {
-            //   ws.send(JSON.stringify({ type: "text.delta", text: ev.delta }));
-            // }
-
-            // collect user input transcripts emitted by Realtime
-            if (
-              typeof ev.type === "string" &&
-              ev.type.toLowerCase().includes("input") &&
-              (ev.type.toLowerCase().includes("transcription") || ev.type.toLowerCase().includes("input_text"))
-            ) {
-              const delta = ev.delta || ev.text || ev.transcript || "";
-              if (delta) incomingTranscriptBuf += String(delta);
-              if (ev.type.toLowerCase().endsWith("completed")) {
-                const finalText = incomingTranscriptBuf.trim();
-                incomingTranscriptBuf = "";
-                if (finalText) await saveFromTranscript(userId, finalText);
+            // Save facts & emotion from user's *live* transcript
+            if (ev.type === "conversation.item.input_audio_transcription.delta" && ev.delta) {
+              const text = String(ev.delta || "").trim();
+              if (text) {
+                try {
+                  const [facts, emo] = await Promise.all([
+                    extractFacts(text),
+                    extractEmotionPoint(text),
+                  ]);
+                  if (facts?.length) await saveFacts(userId, facts, text);
+                  if (emo) await saveEmotion(userId, emo, text);
+                } catch (e) {
+                  console.error("realtime transcript save error:", e?.message || e);
+                }
               }
             }
 
-            if (ev.type === "response.completed") {
-              ws.send(JSON.stringify({ type: "response.end" }));
+            // forward errors
+            if (ev.type === "error") {
+              console.error("OpenAI realtime error:", ev);
+              safeSend({ type: "error", message: ev.error?.message || "Realtime error" });
             }
-
-            if (ev.type === "response.error") {
-              ws.send(JSON.stringify({ type: "error", message: ev.error?.message || "Realtime response error" }));
-            }
-          } catch {
-            /* ignore non-JSON frames */
-          }
+          } catch {}
         });
 
-        upstream.on("error", (e) => {
-          ws.send(JSON.stringify({ type: "error", message: `OpenAI realtime error: ${String(e?.message || e)}` }));
-        });
-        upstream.on("close", () => {
-          upstreamOpen = false;
-          try { ws.close(); } catch {}
+        rtWs.on("close", () => { rtOpen = false; });
+        rtWs.on("error", (e) => {
+          console.error("OpenAI realtime error:", e?.message || e);
+          safeSend({ type: "error", message: "OpenAI realtime connection failed." });
         });
 
         return;
       }
 
-      // Browser continuously streams mic as PCM16 base64 frames
+      // Browser mic → append PCM16 chunks
       if (msg.type === "audio.append" && msg.audio) {
-        if (upstreamOpen) {
-          upstream.send(JSON.stringify({ type: "input_audio_buffer.append", audio: msg.audio }));
-          // with server VAD, we don't need to commit per turn
+        if (rtOpen) {
+          rtWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: msg.audio }));
+          // arm VAD commit timer after each chunk
+          vad?.arm();
         }
         return;
       }
 
       if (msg.type === "ping") {
-        ws.send(JSON.stringify({ type: "pong", t: Date.now() }));
+        safeSend({ type: "pong", t: Date.now() });
         return;
       }
     } catch (e) {
-      ws.send(JSON.stringify({ type: "error", message: `WS parse error: ${String(e?.message || e)}` }));
+      safeSend({ type: "error", message: String(e?.message || e) });
     }
   });
 
   ws.on("close", () => {
-    try { upstream?.close(); } catch {}
+    try { rtWs?.close(); } catch {}
+    console.log("[phone] client disconnected");
   });
 });
 
