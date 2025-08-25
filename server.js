@@ -6,6 +6,11 @@ const cors = require("cors");
 const path = require("path");
 const http = require("http");
 const WebSocket = require("ws");
+const jwt = require("jsonwebtoken");
+const cookie = require("cookie");
+const { Resend } = require("resend");
+const nodemailer = require("nodemailer");
+
 
 const multer = require("multer");
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -72,6 +77,74 @@ app.options("*", cors());
 // Config
 // ──────────────────────────────────────────────────────────────
 const CHAT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+// ──────────────────────────────────────────────────────────────
+// Auth config (passwordless login via email code)
+// ──────────────────────────────────────────────────────────────
+const SESSION_SECRET = process.env.SESSION_SECRET || "dev-secret-change-me";
+const SESSION_COOKIE_NAME = "ellie_session";
+const SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 90; // 90 days
+
+const resendKey = process.env.RESEND_API_KEY || "";
+const resend = resendKey ? new Resend(resendKey) : null;
+
+// Optional SMTP fallback
+const smtpHost = process.env.SMTP_HOST || "";
+const smtpPort = Number(process.env.SMTP_PORT || 587);
+const smtpUser = process.env.SMTP_USER || "";
+const smtpPass = process.env.SMTP_PASS || "";
+const smtpFrom = process.env.SMTP_FROM || ""; // e.g. "Ellie <no-reply@yourdomain.com>"
+
+// In-memory login codes: email -> { code, expiresAt }
+const codeStore = new Map();
+
+function signSession(payload) {
+  return jwt.sign(payload, SESSION_SECRET, { expiresIn: SESSION_MAX_AGE_SEC });
+}
+function verifySession(token) {
+  try { return jwt.verify(token, SESSION_SECRET); } catch { return null; }
+}
+function setSessionCookie(res, token) {
+  const c = cookie.serialize(SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "none",
+    path: "/",
+    maxAge: SESSION_MAX_AGE_SEC,
+  });
+  res.setHeader("Set-Cookie", c);
+}
+
+async function sendLoginCodeEmail({ to, code }) {
+  const subject = "Your Ellie login code";
+  const text = `Your sign-in code is: ${code}\nIt expires in 10 minutes.`;
+  const html = `<p>Your sign-in code is:</p><p style="font-size:28px;letter-spacing:6px;"><b>${code}</b></p><p>It expires in 10 minutes.</p>`;
+
+  if (resend) {
+    await resend.emails.send({
+      from: process.env.RESEND_FROM || "Ellie <no-reply@yourdomain.com>",
+      to,
+      subject,
+      text,
+      html,
+    });
+    return;
+  }
+
+  if (smtpHost && smtpUser && smtpPass && smtpFrom) {
+    const transport = nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpPort === 465,
+      auth: { user: smtpUser, pass: smtpPass },
+    });
+    await transport.sendMail({ from: smtpFrom, to, subject, text, html });
+    return;
+  }
+
+  // Dev fallback: print to logs
+  console.log(`[DEV] Login code for ${to}: ${code}`);
+}
+
 const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 15000);
 const MAX_MESSAGE_LEN = Number(process.env.MAX_MESSAGE_LEN || 4000);
 
@@ -220,6 +293,8 @@ async function initDB() {
       category TEXT,
       fact TEXT NOT NULL,
       sentiment TEXT,
+  email TEXT UNIQUE NOT NULL,
+    paid BOOLEAN DEFAULT FALSE,
       confidence REAL,
       source TEXT,
       source_ts TIMESTAMP,
@@ -574,6 +649,27 @@ Text: """${text}"""
     } catch {}
     return null;
   } finally { clearTimeout(to); }
+}
+
+// ──────────────────────────────────────────────────────────────
+// User helpers
+// ──────────────────────────────────────────────────────────────
+async function upsertUserEmail(email) {
+  const { rows } = await pool.query(
+    `INSERT INTO users (email) VALUES ($1)
+     ON CONFLICT (email) DO UPDATE SET updated_at = NOW()
+     RETURNING id, email, paid`,
+    [email.toLowerCase()]
+  );
+  return rows[0];
+}
+
+async function getUserByEmail(email) {
+  const { rows } = await pool.query(
+    `SELECT id, email, paid FROM users WHERE email=$1 LIMIT 1`,
+    [email.toLowerCase()]
+  );
+  return rows[0] || null;
 }
 
 async function upsertFact(userId, fObj, sourceText) {
@@ -1044,6 +1140,75 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+
+// ──────────────────────────────────────────────────────────────
+// AUTH ROUTES (passwordless: email + 6-digit code)
+// ──────────────────────────────────────────────────────────────
+
+// POST /api/auth/start  { email }
+app.post("/api/auth/start", async (req, res) => {
+  try {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return res.status(400).json({ ok: false, message: "Invalid email." });
+    }
+
+    // generate 6-digit code
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 min
+    codeStore.set(email, { code, expiresAt });
+
+    await sendLoginCodeEmail({ to: email, code });
+    await upsertUserEmail(email);
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("auth/start error:", e);
+    res.status(500).json({ ok: false, message: "Failed to send code." });
+  }
+});
+
+// POST /api/auth/verify  { email, code }
+app.post("/api/auth/verify", async (req, res) => {
+  try {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const code = String(req.body?.code || "").trim();
+
+    const entry = codeStore.get(email);
+    if (!entry || entry.code !== code || entry.expiresAt < Date.now()) {
+      return res.status(400).json({ ok: false, message: "Invalid or expired code." });
+    }
+    codeStore.delete(email);
+
+    const user = await upsertUserEmail(email);
+    const token = signSession({ email: user.email });
+
+    setSessionCookie(res, token);
+    res.json({ ok: true, paid: !!user.paid });
+  } catch (e) {
+    console.error("auth/verify error:", e);
+    res.status(500).json({ ok: false, message: "Verify failed." });
+  }
+});
+
+// GET /api/auth/me
+app.get("/api/auth/me", async (req, res) => {
+  try {
+    const raw = req.headers.cookie || "";
+    const cookies = cookie.parse(raw || "");
+    const token = cookies[SESSION_COOKIE_NAME];
+    const payload = token ? verifySession(token) : null;
+
+    if (!payload?.email) return res.json({ email: null, paid: false });
+
+    const user = await getUserByEmail(payload.email);
+    res.json({ email: user?.email || null, paid: !!user?.paid });
+  } catch {
+    res.json({ email: null, paid: false });
+  }
+});
+
 
 // ──────────────────────────────────────────────────────────────
 // Routes (Ellie)
