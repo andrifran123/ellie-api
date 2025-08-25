@@ -16,6 +16,13 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const { Pool } = require("pg");
 
+// NEW: auth/billing deps
+const cookieParser = require("cookie-parser");
+const jwt = require("jsonwebtoken");
+const nodemailer = require("nodemailer");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY || "");
+const bodyParser = require("body-parser");
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -31,7 +38,7 @@ app.get("/healthz", (_req, res) => res.type("text/plain").send("ok"));
 app.get("/api/healthz", (_req, res) => res.type("text/plain").send("ok"));
 
 // ──────────────────────────────────────────────────────────────
-/** CORS (keep your origins; add env override) */
+/** CORS */
 // ──────────────────────────────────────────────────────────────
 const defaultAllowed = [
   "https://ellie-web-ochre.vercel.app",
@@ -49,7 +56,6 @@ app.use(
       try {
         if (!origin) return cb(null, true);
         if (allowedOrigins.includes(origin)) return cb(null, true);
-        // allow any vercel.app preview/prod by default
         const host = new URL(origin).hostname;
         if (host.endsWith(".vercel.app")) return cb(null, true);
       } catch {}
@@ -73,7 +79,7 @@ const MAX_MESSAGE_LEN = Number(process.env.MAX_MESSAGE_LEN || 4000);
 const DEFAULT_VOICE = process.env.ELLIE_VOICE || "sage";
 const REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-4o-mini-realtime-preview";
 
-const BRAVE_API_KEY = process.env.BRAVE_API_KEY || ""; // set in Render to enable live web search
+const BRAVE_API_KEY = process.env.BRAVE_API_KEY || "";
 
 // Disable FX fully (kept for clarity)
 const FX_ENABLED = false;
@@ -98,7 +104,75 @@ const PROB_QUIRKS = Number(process.env.PROB_QUIRKS || 0.25);
 const PROB_IMPERFECTION = Number(process.env.PROB_IMPERFECTION || 0.2);
 const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
 
+// IMPORTANT: Stripe webhook BEFORE JSON parser (raw body)
+app.post(
+  "/api/stripe/webhook",
+  bodyParser.raw({ type: "application/json" }),
+  async (req, res) => {
+    const sig = req.headers["stripe-signature"];
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    try {
+      if (event.type === "checkout.session.completed") {
+        const session = event.data.object;
+        const customerId = session.customer;
+        const customer = await stripe.customers.retrieve(customerId);
+        const email = (customer.email || "").toLowerCase();
+        const subId = session.subscription;
+        const sub = await stripe.subscriptions.retrieve(subId);
+
+        await pool.query(
+          `
+          INSERT INTO subscriptions (email, stripe_customer_id, stripe_sub_id, status, current_period_end)
+          VALUES ($1,$2,$3,$4,$5)
+          ON CONFLICT (email)
+          DO UPDATE SET stripe_customer_id=EXCLUDED.stripe_customer_id,
+                        stripe_sub_id=EXCLUDED.stripe_sub_id,
+                        status=EXCLUDED.status,
+                        current_period_end=EXCLUDED.current_period_end,
+                        updated_at=NOW()
+        `,
+          [email, customerId, subId, sub.status, new Date(sub.current_period_end * 1000)]
+        );
+      }
+
+      if (
+        event.type === "customer.subscription.updated" ||
+        event.type === "customer.subscription.deleted"
+      ) {
+        const sub = event.data.object;
+        const customerId = sub.customer;
+        const customer = await stripe.customers.retrieve(customerId);
+        const email = (customer.email || "").toLowerCase();
+
+        await pool.query(
+          `
+          UPDATE subscriptions SET status=$2, current_period_end=$3, updated_at=NOW()
+           WHERE email=$1
+        `,
+          [email, sub.status, new Date(sub.current_period_end * 1000)]
+        );
+      }
+
+      res.json({ received: true });
+    } catch (e) {
+      res.status(500).json({ error: "webhook failure" });
+    }
+  }
+);
+
+// JSON + cookies for all other routes
 app.use(express.json());
+app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "public")));
 
 // Redundant health (kept)
@@ -169,7 +243,36 @@ async function initDB() {
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_updated_idx ON facts(user_id, updated_at DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_fact_trgm_idx ON facts USING gin (fact gin_trgm_ops);`);
 
-  console.log("✅ Facts & Emotions tables ready");
+  // NEW: auth/billing tables
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS login_codes (
+      id SERIAL PRIMARY KEY,
+      email TEXT NOT NULL,
+      code TEXT NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id SERIAL PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      stripe_customer_id TEXT,
+      stripe_sub_id TEXT,
+      status TEXT,
+      current_period_end TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  console.log("✅ Facts, Emotions, Users, Login codes, Subscriptions tables ready");
 }
 initDB().catch((err) => {
   console.error("DB Init Error:", err);
@@ -319,6 +422,49 @@ function moodToStyle(label, intensity) {
   return `${soft} ${intensifier}`;
 }
 
+// NEW: auth helpers
+const AUTH_SECRET = process.env.AUTH_SECRET || "devsecret";
+const mailer = (function(){
+  if (!process.env.SMTP_HOST) {
+    return { async sendMail({ to, subject, text }) { console.log(`[LOGIN CODE] to=${to}\n${text}`); } };
+  }
+  return nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: false,
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+  });
+})();
+function setSessionCookies(res, { email, paid, keep }) {
+  const maxAge = (keep ? 90 : 30) * 24 * 3600 * 1000;
+  const token = jwt.sign({ email }, AUTH_SECRET, { expiresIn: keep ? "90d" : "30d" });
+  // API-domain httpOnly session
+  res.cookie("session", token, { httpOnly: true, secure: true, sameSite: "none", maxAge });
+  // mirror paid flag for convenience
+  res.cookie("paid", paid ? "1" : "0", { httpOnly: false, secure: true, sameSite: "none", maxAge });
+}
+function clearSessionCookies(res) {
+  res.clearCookie("session", { sameSite: "none", secure: true });
+  res.clearCookie("paid", { sameSite: "none", secure: true });
+}
+function getAuthedEmail(req) {
+  try { const t = req.cookies?.session; if (!t) return null; return jwt.verify(t, AUTH_SECRET)?.email || null; }
+  catch { return null; }
+}
+async function getSubByEmail(email) {
+  const { rows } = await pool.query("SELECT * FROM subscriptions WHERE email=$1 LIMIT 1", [email]);
+  return rows[0] || null;
+}
+function isPaidStatus(status) { return ["active", "trialing", "past_due"].includes(String(status || "").toLowerCase()); }
+async function requirePaid(req, res, next) {
+  const email = getAuthedEmail(req);
+  if (!email) return res.status(401).json({ error: "UNAUTH" });
+  const sub = await getSubByEmail(email);
+  if (!isPaidStatus(sub?.status)) return res.status(402).json({ error: "PAYMENT_REQUIRED" });
+  req.userEmail = email;
+  next();
+}
+
 // ──────────────────────────────────────────────────────────────
 // Language support & storage (facts table used to store preference)
 // ──────────────────────────────────────────────────────────────
@@ -376,8 +522,7 @@ Return ONLY strict JSON array; each item:
   "sentiment": "happy|sad|angry|anxious|proud|hopeful|neutral",
   "confidence": 0.0-1.0
 }
-If nothing to save, return [].
-Text: """${text}"""
+If nothing to save, return []. Text: """${text}"""
   `.trim();
 
   const ac = new AbortController();
@@ -415,7 +560,7 @@ Text: """${text}"""
     const completion = await client.chat.completions.create(
       {
         model: CHAT_MODEL,
-      messages: [
+        messages: [
           { role: "system", content: "You are an emotion rater. Respond with strict JSON only." },
           { role: "user", content: prompt }
         ],
@@ -757,7 +902,151 @@ Language rules:
 }
 
 // ──────────────────────────────────────────────────────────────
-// Routes
+// AUTH ROUTES (email code)
+// ──────────────────────────────────────────────────────────────
+
+// Start login -> send code
+app.post("/api/auth/start", async (req, res) => {
+  try {
+    const email = String(req.body?.email || "").toLowerCase().trim();
+    const keep = !!req.body?.keep;
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return res.status(400).json({ message: "Invalid email" });
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const expires = new Date(Date.now() + 10 * 60 * 1000);
+
+    await pool.query(
+      "INSERT INTO login_codes (email, code, expires_at) VALUES ($1,$2,$3)",
+      [email, code, expires]
+    );
+    await pool.query(
+      "INSERT INTO users (email) VALUES ($1) ON CONFLICT (email) DO NOTHING",
+      [email]
+    );
+
+    await mailer.sendMail({
+      to: email,
+      subject: "Your Ellie login code",
+      text: `Your code is ${code}. It expires in 10 minutes.`,
+    });
+
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ message: "Could not start login" });
+  }
+});
+
+// Verify code -> set cookies
+app.post("/api/auth/verify", async (req, res) => {
+  try {
+    const email = String(req.body?.email || "").toLowerCase().trim();
+    const code = String(req.body?.code || "").trim();
+    const keep = !!req.body?.keep;
+
+    const { rows } = await pool.query(
+      "SELECT * FROM login_codes WHERE email=$1 AND code=$2 AND expires_at > NOW() ORDER BY id DESC LIMIT 1",
+      [email, code]
+    );
+    if (!rows.length) return res.status(401).json({ message: "Invalid or expired code" });
+
+    await pool.query("DELETE FROM login_codes WHERE email=$1", [email]);
+
+    const sub = await getSubByEmail(email);
+    const paid = isPaidStatus(sub?.status);
+
+    setSessionCookies(res, { email, paid, keep });
+    res.json({ ok: true, paid });
+  } catch {
+    res.status(500).json({ message: "Verification failed" });
+  }
+});
+
+// Me (used by frontend to sync paid flag after checkout)
+app.get("/api/auth/me", async (req, res) => {
+  try {
+    const email = getAuthedEmail(req);
+    if (!email) return res.json({ email: null, paid: false });
+    const sub = await getSubByEmail(email);
+    res.json({ email, paid: isPaidStatus(sub?.status) });
+  } catch {
+    res.json({ email: null, paid: false });
+  }
+});
+
+// Logout
+app.post("/api/auth/logout", (_req, res) => {
+  clearSessionCookies(res);
+  res.json({ ok: true });
+});
+
+// ──────────────────────────────────────────────────────────────
+// BILLING ROUTES (Stripe)
+// ──────────────────────────────────────────────────────────────
+app.post("/api/billing/checkout", async (req, res) => {
+  try {
+    const email = String(req.body?.email || "").toLowerCase().trim();
+    const redirect = String(req.body?.redirect || "/chat");
+    if (!email) return res.status(400).json({ message: "Email required" });
+
+    // ensure/create Stripe customer
+    let subRow = await getSubByEmail(email);
+    let customerId = subRow?.stripe_customer_id;
+    if (!customerId) {
+      const c = await stripe.customers.create({ email });
+      customerId = c.id;
+      await pool.query(`
+        INSERT INTO subscriptions (email, stripe_customer_id, status)
+        VALUES ($1,$2,$3)
+        ON CONFLICT (email) DO UPDATE SET stripe_customer_id=EXCLUDED.stripe_customer_id
+      `, [email, customerId, "incomplete"]);
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      customer: customerId,
+      line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
+      allow_promotion_codes: true,
+      success_url: `${req.headers.origin}/pricing?email=${encodeURIComponent(email)}&redirect=${encodeURIComponent(redirect)}&success=1`,
+      cancel_url: `${req.headers.origin}/pricing?email=${encodeURIComponent(email)}&redirect=${encodeURIComponent(redirect)}&canceled=1`,
+    });
+
+    res.json({ url: session.url });
+  } catch (e) {
+    res.status(500).json({ message: "Checkout failed" });
+  }
+});
+
+// Customer portal
+app.post("/api/billing/portal", async (req, res) => {
+  try {
+    const email = getAuthedEmail(req);
+    if (!email) return res.status(401).json({ message: "Not logged in" });
+    const sub = await getSubByEmail(email);
+    if (!sub?.stripe_customer_id) return res.status(400).json({ message: "No customer" });
+
+    const portal = await stripe.billingPortal.sessions.create({
+      customer: sub.stripe_customer_id,
+      return_url: `${req.headers.origin}/pricing`,
+    });
+    res.json({ url: portal.url });
+  } catch {
+    res.status(500).json({ message: "Portal failed" });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────
+/** PAYWALL GUARD for chat/voice APIs (keeps Ellie handlers untouched) */
+// ──────────────────────────────────────────────────────────────
+app.use((req, res, next) => {
+  if (req.method === "POST" && (req.path === "/api/chat" || req.path === "/api/voice-chat")) {
+    return requirePaid(req, res, next);
+  }
+  next();
+});
+
+// ──────────────────────────────────────────────────────────────
+// Routes (Ellie)
 // ──────────────────────────────────────────────────────────────
 
 // Reset conversation
@@ -1105,7 +1394,7 @@ server.on("upgrade", (req, socket, head) => {
       wssPhone.handleUpgrade(req, socket, head, (client) => {
         wssPhone.emit("connection", client, req);
       });
-    } else {
+ } else {
       // Not for /ws/phone → allow other handlers (e.g., /ws/voice)
     }
   } catch {
@@ -1292,3 +1581,4 @@ server.listen(PORT, () => {
     console.log("🌐 Live web search: DISABLED (set BRAVE_API_KEY to enable)");
   }
 });
+
