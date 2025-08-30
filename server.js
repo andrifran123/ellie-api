@@ -67,7 +67,13 @@ app.use(
       return cb(new Error("Not allowed by CORS"));
     },
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "Stripe-Signature"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "Stripe-Signature",
+      "X-CSRF",
+      "X-Requested-With",
+    ],
     credentials: true,
   })
 );
@@ -127,8 +133,7 @@ const smtpUser = process.env.SMTP_USER || "";
 const smtpPass = process.env.SMTP_PASS || "";
 const smtpFrom = process.env.SMTP_FROM || ""; // e.g. "Ellie <no-reply@yourdomain.com>"
 
-// In-memory login codes: email -> { code, expiresAt }
-const codeStore = new Map();
+// In-memory login codes REMOVED in favor of DB-backed storage
 
 function signSession(payload) {
   return jwt.sign(payload, SESSION_SECRET, { expiresIn: SESSION_MAX_AGE_SEC });
@@ -147,31 +152,72 @@ function setSessionCookie(res, token) {
   res.setHeader("Set-Cookie", c);
 }
 
+// CSRF: stateless token derived from session email
+function generateCsrfToken(email) {
+  try { return jwt.sign({ email, typ: "csrf" }, SESSION_SECRET, { expiresIn: SESSION_MAX_AGE_SEC }); }
+  catch { return null; }
+}
+function verifyCsrfToken(token, email) {
+  try {
+    const p = jwt.verify(token, SESSION_SECRET);
+    return p && p.typ === "csrf" && p.email === email;
+  } catch { return false; }
+}
+function requireCsrf(req, res, next) {
+  try {
+    const raw = req.headers.cookie || "";
+    const cookies = cookie.parse(raw || "");
+    const token = cookies[SESSION_COOKIE_NAME];
+    const payload = token ? verifySession(token) : null;
+    const email = payload?.email || null;
+    const headerToken = req.get("X-CSRF-Token") || "";
+    const isAjax = req.get("X-Requested-With") === "XMLHttpRequest";
+    if (!email || !headerToken || !isAjax || !verifyCsrfToken(headerToken, email)) {
+      return res.status(403).json({ error: "CSRF" });
+    }
+    next();
+  } catch {
+    return res.status(403).json({ error: "CSRF" });
+  }
+}
+
 async function sendLoginCodeEmail({ to, code }) {
   const subject = "Your Ellie login code";
   const text = `Your sign-in code is: ${code}\nIt expires in 10 minutes.`;
   const html = `<p>Your sign-in code is:</p><p style="font-size:28px;letter-spacing:6px;"><b>${code}</b></p><p>It expires in 10 minutes.</p>`;
 
+  // Try Resend first
   if (resend) {
-    await resend.emails.send({
-      from: process.env.RESEND_FROM || "Ellie <no-reply@yourdomain.com>",
-      to,
-      subject,
-      text,
-      html,
-    });
-    return;
+    try {
+      await resend.emails.send({
+        from: process.env.RESEND_FROM || "Ellie <no-reply@yourdomain.com>",
+        to,
+        subject,
+        text,
+        html,
+      });
+      return;
+    } catch (e) {
+      console.error("Resend error:", e?.message || e);
+      // fall through to SMTP if configured
+    }
   }
 
+  // SMTP fallback (if configured)
   if (smtpHost && smtpUser && smtpPass && smtpFrom) {
-    const transport = nodemailer.createTransport({
-      host: smtpHost,
-      port: smtpPort,
-      secure: smtpPort === 465,
-      auth: { user: smtpUser, pass: smtpPass },
-    });
-    await transport.sendMail({ from: smtpFrom, to, subject, text, html });
-    return;
+    try {
+      const transport = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465,
+        auth: { user: smtpUser, pass: smtpPass },
+      });
+      await transport.sendMail({ from: smtpFrom, to, subject, text, html });
+      return;
+    } catch (e) {
+      console.error("SMTP send error:", e?.message || e);
+      throw new Error("Email send failed");
+    }
   }
 
   // Dev fallback: print to logs
@@ -195,6 +241,20 @@ app.post(
       );
     } catch (err) {
       return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    // Idempotency: skip if we've already processed this event
+    try {
+      const { rows: already } = await pool.query(
+        `SELECT 1 FROM stripe_events WHERE id=$1 LIMIT 1`,
+        [event.id]
+      );
+      if (already.length) {
+        return res.json({ received: true });
+      }
+    } catch (e) {
+      console.error("stripe_events check failed:", e?.message || e);
+      // Continue anyway; better to be slightly at risk than to drop legit events.
     }
 
     try {
@@ -239,6 +299,13 @@ app.post(
         );
       }
 
+      // Mark processed
+      try {
+        await pool.query(`INSERT INTO stripe_events (id) VALUES ($1) ON CONFLICT DO NOTHING`, [event.id]);
+      } catch (e) {
+        console.error("stripe_events insert failed:", e?.message || e);
+      }
+
       res.json({ received: true });
     } catch (e) {
       res.status(500).json({ error: "webhook failure" });
@@ -256,6 +323,30 @@ app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 app.head("/healthz", (_req, res) => res.status(200).end());
 app.get("/api/healthz", (_req, res) => res.status(200).send("ok"));
 app.head("/api/healthz", (_req, res) => res.status(200).end());
+
+// ──────────────────────────────────────────────────────────────
+// Simple per-IP rate limiting (no extra deps) for auth endpoints
+// ──────────────────────────────────────────────────────────────
+function createSimpleRateLimiter({ windowMs = 10 * 60 * 1000, max = 20 } = {}) {
+  const hits = new Map(); // key -> [timestamps]
+  return (req, res, next) => {
+    try {
+      const key = `${req.ip || req.headers["x-forwarded-for"] || "unknown"}:${req.path}`;
+      const now = Date.now();
+      const arr = hits.get(key) || [];
+      const recent = arr.filter((t) => now - t < windowMs);
+      if (recent.length >= max) {
+        return res.status(429).json({ error: "RATE_LIMITED" });
+      }
+      recent.push(now);
+      hits.set(key, recent);
+      next();
+    } catch {
+      next();
+    }
+  };
+}
+const authLimiter = createSimpleRateLimiter({ windowMs: 10 * 60 * 1000, max: 20 });
 
 // ──────────────────────────────────────────────────────────────
 // DB (Supabase transaction pooler friendly)
@@ -351,7 +442,15 @@ async function initDB() {
     );
   `);
 
-  console.log("✅ Facts, Emotions, Users, Login codes, Subscriptions tables ready");
+  // Stripe idempotency table
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS stripe_events (
+      id TEXT PRIMARY KEY,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  console.log("✅ Facts, Emotions, Users, Login codes, Subscriptions, Stripe_events tables ready");
 }
 initDB().catch((err) => {
   console.error("DB Init Error:", err);
@@ -631,6 +730,24 @@ async function getUserByEmail(email) {
     [email.toLowerCase()]
   );
   return rows[0] || null;
+}
+
+// Login codes: DB-backed
+async function saveLoginCode(email, code, ttlMin = 10) {
+  await pool.query(`
+    INSERT INTO login_codes (email, code, expires_at)
+    VALUES ($1,$2, NOW() + ($3 || ' minutes')::interval)
+  `, [email.toLowerCase(), code, ttlMin]);
+}
+async function consumeLoginCode(email, code) {
+  const { rows } = await pool.query(`
+    DELETE FROM login_codes
+     WHERE email=$1
+       AND code=$2
+       AND expires_at > NOW()
+   RETURNING id
+  `, [email.toLowerCase(), code]);
+  return rows.length > 0;
 }
 
 async function upsertFact(userId, fObj, sourceText) {
@@ -956,7 +1073,7 @@ Language rules:
 // ──────────────────────────────────────────────────────────────
 
 // Start login -> send code
-app.post("/api/auth/start", async (req, res) => {
+app.post("/api/auth/start", authLimiter, async (req, res) => {
   try {
     const email = String(req.body?.email || "").toLowerCase().trim();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
@@ -965,10 +1082,13 @@ app.post("/api/auth/start", async (req, res) => {
 
     // generate 6-digit code
     const code = String(Math.floor(100000 + Math.random() * 900000));
-    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 min
-    codeStore.set(email, { code, expiresAt });
+    await saveLoginCode(email, code, 10);
 
-    await sendLoginCodeEmail({ to: email, code });
+    try {
+      await sendLoginCodeEmail({ to: email, code });
+    } catch (e) {
+      return res.status(502).json({ ok: false, message: "Failed to send code." });
+    }
     await upsertUserEmail(email);
 
     res.json({ ok: true });
@@ -979,27 +1099,27 @@ app.post("/api/auth/start", async (req, res) => {
 });
 
 // Verify code -> set httpOnly session cookie
-app.post("/api/auth/verify", async (req, res) => {
+app.post("/api/auth/verify", authLimiter, async (req, res) => {
   try {
     const email = String(req.body?.email || "").toLowerCase().trim();
     const code = String(req.body?.code || "").trim();
 
-    const entry = codeStore.get(email);
-    if (!entry || entry.code !== code || entry.expiresAt < Date.now()) {
+    const ok = await consumeLoginCode(email, code);
+    if (!ok) {
       return res.status(400).json({ ok: false, message: "Invalid or expired code." });
     }
-    codeStore.delete(email);
 
     const user = await upsertUserEmail(email);
     const token = signSession({ email: user.email });
-
     setSessionCookie(res, token);
 
     // Compute paid from subscriptions table
     const sub = await getSubByEmail(email);
     const paid = isPaidStatus(sub?.status);
 
-    res.json({ ok: true, paid });
+    const csrfToken = generateCsrfToken(email);
+
+    res.json({ ok: true, paid, csrfToken });
   } catch (e) {
     console.error("auth/verify error:", e);
     res.status(500).json({ ok: false, message: "Verify failed." });
@@ -1014,12 +1134,13 @@ app.get("/api/auth/me", async (req, res) => {
     const token = cookies[SESSION_COOKIE_NAME];
     const payload = token ? verifySession(token) : null;
 
-    if (!payload?.email) return res.json({ email: null, paid: false });
+    if (!payload?.email) return res.json({ email: null, paid: false, csrfToken: null });
 
     const sub = await getSubByEmail(payload.email);
-    res.json({ email: payload.email, paid: isPaidStatus(sub?.status) });
+    const csrfToken = generateCsrfToken(payload.email);
+    res.json({ email: payload.email, paid: isPaidStatus(sub?.status), csrfToken });
   } catch {
-    res.json({ email: null, paid: false });
+    res.json({ email: null, paid: false, csrfToken: null });
   }
 });
 
@@ -1065,7 +1186,7 @@ app.post("/api/billing/checkout", async (req, res) => {
       `, [email, customerId, "incomplete"]);
     }
 
-    const origin = req.headers.origin || "";
+    const origin = req.headers.origin || process.env.APP_BASE_URL || "https://ellie-web.vercel.app";
     const success = `${origin}/pricing?email=${encodeURIComponent(email)}&redirect=${encodeURIComponent(redirect)}&success=1`;
     const canceled = `${origin}/pricing?email=${encodeURIComponent(email)}&redirect=${encodeURIComponent(redirect)}&canceled=1`;
 
@@ -1085,7 +1206,7 @@ app.post("/api/billing/checkout", async (req, res) => {
   }
 });
 
-app.post("/api/billing/portal", async (req, res) => {
+app.post("/api/billing/portal", requireCsrf, async (req, res) => {
   try {
     // use httpOnly session cookie
     const raw = req.headers.cookie || "";
@@ -1098,9 +1219,10 @@ app.post("/api/billing/portal", async (req, res) => {
     const sub = await getSubByEmail(email);
     if (!sub?.stripe_customer_id) return res.status(400).json({ message: "No customer" });
 
+    const origin = req.headers.origin || process.env.APP_BASE_URL || "https://ellie-web.vercel.app";
     const portal = await stripe.billingPortal.sessions.create({
       customer: sub.stripe_customer_id,
-      return_url: `${req.headers.origin || ""}/pricing`,
+      return_url: `${origin}/pricing`,
     });
     res.json({ url: portal.url });
   } catch (e) {
@@ -1124,7 +1246,7 @@ async function requirePaidUsingSession(req, res, next) {
     const sub = await getSubByEmail(email);
     if (!isPaidStatus(sub?.status)) return res.status(402).json({ error: "PAYMENT_REQUIRED" });
 
-    req.userEmail = email;
+    req.userEmail = email; // bind for downstream handlers
     next();
   } catch {
     return res.status(401).json({ error: "UNAUTH" });
@@ -1207,9 +1329,10 @@ app.post("/api/apply-voice-preset", async (req, res) => {
 });
 
 // Chat (text → reply) + report voiceMode for UI
-app.post("/api/chat", async (req, res) => {
+app.post("/api/chat", requireCsrf, async (req, res) => {
   try {
-    const { message, userId = "default-user" } = req.body;
+    const { message } = req.body;
+    const userId = req.userEmail || "default-user"; // bind memory to session email when paid
 
     if (typeof message !== "string" || !message.trim() || message.length > MAX_MESSAGE_LEN) {
       return res.status(400).json({ error: "E_BAD_INPUT", message: "Invalid message" });
@@ -1286,9 +1409,9 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
 });
 
 // Voice chat (language REQUIRED) + TTS (record/send flow)
-app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
+app.post("/api/voice-chat", requireCsrf, upload.single("audio"), async (req, res) => {
   try {
-    const userId = (req.body?.userId || "default-user");
+    const userId = req.userEmail || (req.body?.userId || "default-user");
 
     if (!req.file || !isOkAudio(req.file.mimetype)) {
       return res.status(400).json({
