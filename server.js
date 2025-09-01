@@ -26,7 +26,6 @@ const { Resend } = require("resend");
 const nodemailer = require("nodemailer");
 const bodyParser = require("body-parser");
 const cookieParser = require("cookie-parser");
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY || "");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -67,13 +66,7 @@ app.use(
       return cb(new Error("Not allowed by CORS"));
     },
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "Stripe-Signature",
-      "X-CSRF",
-      "X-Requested-With",
-    ],
+    allowedHeaders: ["Content-Type", "Authorization", "X-CSRF", "X-Requested-With"],
     credentials: true,
   })
 );
@@ -133,7 +126,8 @@ const smtpUser = process.env.SMTP_USER || "";
 const smtpPass = process.env.SMTP_PASS || "";
 const smtpFrom = process.env.SMTP_FROM || ""; // e.g. "Ellie <no-reply@yourdomain.com>"
 
-// In-memory login codes REMOVED in favor of DB-backed storage
+// In-memory login codes: email -> { code, expiresAt }
+const codeStore = new Map();
 
 function signSession(payload) {
   return jwt.sign(payload, SESSION_SECRET, { expiresIn: SESSION_MAX_AGE_SEC });
@@ -152,72 +146,31 @@ function setSessionCookie(res, token) {
   res.setHeader("Set-Cookie", c);
 }
 
-// CSRF: stateless token derived from session email
-function generateCsrfToken(email) {
-  try { return jwt.sign({ email, typ: "csrf" }, SESSION_SECRET, { expiresIn: SESSION_MAX_AGE_SEC }); }
-  catch { return null; }
-}
-function verifyCsrfToken(token, email) {
-  try {
-    const p = jwt.verify(token, SESSION_SECRET);
-    return p && p.typ === "csrf" && p.email === email;
-  } catch { return false; }
-}
-function requireCsrf(req, res, next) {
-  try {
-    const raw = req.headers.cookie || "";
-    const cookies = cookie.parse(raw || "");
-    const token = cookies[SESSION_COOKIE_NAME];
-    const payload = token ? verifySession(token) : null;
-    const email = payload?.email || null;
-    const headerToken = req.get("X-CSRF-Token") || "";
-    const isAjax = req.get("X-Requested-With") === "XMLHttpRequest";
-    if (!email || !headerToken || !isAjax || !verifyCsrfToken(headerToken, email)) {
-      return res.status(403).json({ error: "CSRF" });
-    }
-    next();
-  } catch {
-    return res.status(403).json({ error: "CSRF" });
-  }
-}
-
 async function sendLoginCodeEmail({ to, code }) {
   const subject = "Your Ellie login code";
   const text = `Your sign-in code is: ${code}\nIt expires in 10 minutes.`;
   const html = `<p>Your sign-in code is:</p><p style="font-size:28px;letter-spacing:6px;"><b>${code}</b></p><p>It expires in 10 minutes.</p>`;
 
-  // Try Resend first
   if (resend) {
-    try {
-      await resend.emails.send({
-        from: process.env.RESEND_FROM || "Ellie <no-reply@yourdomain.com>",
-        to,
-        subject,
-        text,
-        html,
-      });
-      return;
-    } catch (e) {
-      console.error("Resend error:", e?.message || e);
-      // fall through to SMTP if configured
-    }
+    await resend.emails.send({
+      from: process.env.RESEND_FROM || "Ellie <no-reply@yourdomain.com>",
+      to,
+      subject,
+      text,
+      html,
+    });
+    return;
   }
 
-  // SMTP fallback (if configured)
   if (smtpHost && smtpUser && smtpPass && smtpFrom) {
-    try {
-      const transport = nodemailer.createTransport({
-        host: smtpHost,
-        port: smtpPort,
-        secure: smtpPort === 465,
-        auth: { user: smtpUser, pass: smtpPass },
-      });
-      await transport.sendMail({ from: smtpFrom, to, subject, text, html });
-      return;
-    } catch (e) {
-      console.error("SMTP send error:", e?.message || e);
-      throw new Error("Email send failed");
-    }
+    const transport = nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpPort === 465,
+      auth: { user: smtpUser, pass: smtpPass },
+    });
+    await transport.sendMail({ from: smtpFrom, to, subject, text, html });
+    return;
   }
 
   // Dev fallback: print to logs
@@ -225,95 +178,8 @@ async function sendLoginCodeEmail({ to, code }) {
 }
 
 // ──────────────────────────────────────────────────────────────
-// IMPORTANT: Stripe webhook BEFORE JSON parser (raw body)
-// ──────────────────────────────────────────────────────────────
-app.post(
-  "/api/stripe/webhook",
-  bodyParser.raw({ type: "application/json" }),
-  async (req, res) => {
-    const sig = req.headers["stripe-signature"];
-    let event;
-    try {
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        process.env.STRIPE_WEBHOOK_SECRET
-      );
-    } catch (err) {
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-
-    // Idempotency: skip if we've already processed this event
-    try {
-      const { rows: already } = await pool.query(
-        `SELECT 1 FROM stripe_events WHERE id=$1 LIMIT 1`,
-        [event.id]
-      );
-      if (already.length) {
-        return res.json({ received: true });
-      }
-    } catch (e) {
-      console.error("stripe_events check failed:", e?.message || e);
-      // Continue anyway; better to be slightly at risk than to drop legit events.
-    }
-
-    try {
-      if (event.type === "checkout.session.completed") {
-        const session = event.data.object;
-        const customerId = session.customer;
-        const customer = await stripe.customers.retrieve(customerId);
-        const email = (customer.email || "").toLowerCase();
-        const subId = session.subscription;
-        const sub = await stripe.subscriptions.retrieve(subId);
-
-        await pool.query(
-          `
-          INSERT INTO subscriptions (email, stripe_customer_id, stripe_sub_id, status, current_period_end)
-          VALUES ($1,$2,$3,$4,$5)
-          ON CONFLICT (email)
-          DO UPDATE SET stripe_customer_id=EXCLUDED.stripe_customer_id,
-                        stripe_sub_id=EXCLUDED.stripe_sub_id,
-                        status=EXCLUDED.status,
-                        current_period_end=EXCLUDED.current_period_end,
-                        updated_at=NOW()
-        `,
-          [email, customerId, subId, sub.status, new Date(sub.current_period_end * 1000)]
-        );
-      }
-
-      if (
-        event.type === "customer.subscription.updated" ||
-        event.type === "customer.subscription.deleted"
-      ) {
-        const sub = event.data.object;
-        const customerId = sub.customer;
-        const customer = await stripe.customers.retrieve(customerId);
-        const email = (customer.email || "").toLowerCase();
-
-        await pool.query(
-          `
-          UPDATE subscriptions SET status=$2, current_period_end=$3, updated_at=NOW()
-           WHERE email=$1
-        `,
-          [email, sub.status, new Date(sub.current_period_end * 1000)]
-        );
-      }
-
-      // Mark processed
-      try {
-        await pool.query(`INSERT INTO stripe_events (id) VALUES ($1) ON CONFLICT DO NOTHING`, [event.id]);
-      } catch (e) {
-        console.error("stripe_events insert failed:", e?.message || e);
-      }
-
-      res.json({ received: true });
-    } catch (e) {
-      res.status(500).json({ error: "webhook failure" });
-    }
-  }
-);
-
 // After webhook: JSON & cookies for all other routes
+// ──────────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "public")));
@@ -323,30 +189,6 @@ app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 app.head("/healthz", (_req, res) => res.status(200).end());
 app.get("/api/healthz", (_req, res) => res.status(200).send("ok"));
 app.head("/api/healthz", (_req, res) => res.status(200).end());
-
-// ──────────────────────────────────────────────────────────────
-// Simple per-IP rate limiting (no extra deps) for auth endpoints
-// ──────────────────────────────────────────────────────────────
-function createSimpleRateLimiter({ windowMs = 10 * 60 * 1000, max = 20 } = {}) {
-  const hits = new Map(); // key -> [timestamps]
-  return (req, res, next) => {
-    try {
-      const key = `${req.ip || req.headers["x-forwarded-for"] || "unknown"}:${req.path}`;
-      const now = Date.now();
-      const arr = hits.get(key) || [];
-      const recent = arr.filter((t) => now - t < windowMs);
-      if (recent.length >= max) {
-        return res.status(429).json({ error: "RATE_LIMITED" });
-      }
-      recent.push(now);
-      hits.set(key, recent);
-      next();
-    } catch {
-      next();
-    }
-  };
-}
-const authLimiter = createSimpleRateLimiter({ windowMs: 10 * 60 * 1000, max: 20 });
 
 // ──────────────────────────────────────────────────────────────
 // DB (Supabase transaction pooler friendly)
@@ -442,15 +284,7 @@ async function initDB() {
     );
   `);
 
-  // Stripe idempotency table
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS stripe_events (
-      id TEXT PRIMARY KEY,
-      created_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-
-  console.log("✅ Facts, Emotions, Users, Login codes, Subscriptions, Stripe_events tables ready");
+  console.log("✅ Facts, Emotions, Users, Login codes, Subscriptions tables ready");
 }
 initDB().catch((err) => {
   console.error("DB Init Error:", err);
@@ -730,24 +564,6 @@ async function getUserByEmail(email) {
     [email.toLowerCase()]
   );
   return rows[0] || null;
-}
-
-// Login codes: DB-backed
-async function saveLoginCode(email, code, ttlMin = 10) {
-  await pool.query(`
-    INSERT INTO login_codes (email, code, expires_at)
-    VALUES ($1,$2, NOW() + ($3 || ' minutes')::interval)
-  `, [email.toLowerCase(), code, ttlMin]);
-}
-async function consumeLoginCode(email, code) {
-  const { rows } = await pool.query(`
-    DELETE FROM login_codes
-     WHERE email=$1
-       AND code=$2
-       AND expires_at > NOW()
-   RETURNING id
-  `, [email.toLowerCase(), code]);
-  return rows.length > 0;
 }
 
 async function upsertFact(userId, fObj, sourceText) {
@@ -1073,7 +889,7 @@ Language rules:
 // ──────────────────────────────────────────────────────────────
 
 // Start login -> send code
-app.post("/api/auth/start", authLimiter, async (req, res) => {
+app.post("/api/auth/start", async (req, res) => {
   try {
     const email = String(req.body?.email || "").toLowerCase().trim();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
@@ -1082,13 +898,10 @@ app.post("/api/auth/start", authLimiter, async (req, res) => {
 
     // generate 6-digit code
     const code = String(Math.floor(100000 + Math.random() * 900000));
-    await saveLoginCode(email, code, 10);
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 min
+    codeStore.set(email, { code, expiresAt });
 
-    try {
-      await sendLoginCodeEmail({ to: email, code });
-    } catch (e) {
-      return res.status(502).json({ ok: false, message: "Failed to send code." });
-    }
+    await sendLoginCodeEmail({ to: email, code });
     await upsertUserEmail(email);
 
     res.json({ ok: true });
@@ -1099,27 +912,27 @@ app.post("/api/auth/start", authLimiter, async (req, res) => {
 });
 
 // Verify code -> set httpOnly session cookie
-app.post("/api/auth/verify", authLimiter, async (req, res) => {
+app.post("/api/auth/verify", async (req, res) => {
   try {
     const email = String(req.body?.email || "").toLowerCase().trim();
     const code = String(req.body?.code || "").trim();
 
-    const ok = await consumeLoginCode(email, code);
-    if (!ok) {
+    const entry = codeStore.get(email);
+    if (!entry || entry.code !== code || entry.expiresAt < Date.now()) {
       return res.status(400).json({ ok: false, message: "Invalid or expired code." });
     }
+    codeStore.delete(email);
 
     const user = await upsertUserEmail(email);
     const token = signSession({ email: user.email });
+
     setSessionCookie(res, token);
 
     // Compute paid from subscriptions table
     const sub = await getSubByEmail(email);
     const paid = isPaidStatus(sub?.status);
 
-    const csrfToken = generateCsrfToken(email);
-
-    res.json({ ok: true, paid, csrfToken });
+    res.json({ ok: true, paid });
   } catch (e) {
     console.error("auth/verify error:", e);
     res.status(500).json({ ok: false, message: "Verify failed." });
@@ -1134,13 +947,12 @@ app.get("/api/auth/me", async (req, res) => {
     const token = cookies[SESSION_COOKIE_NAME];
     const payload = token ? verifySession(token) : null;
 
-    if (!payload?.email) return res.json({ email: null, paid: false, csrfToken: null });
+    if (!payload?.email) return res.json({ email: null, paid: false });
 
     const sub = await getSubByEmail(payload.email);
-    const csrfToken = generateCsrfToken(payload.email);
-    res.json({ email: payload.email, paid: isPaidStatus(sub?.status), csrfToken });
+    res.json({ email: payload.email, paid: isPaidStatus(sub?.status) });
   } catch {
-    res.json({ email: null, paid: false, csrfToken: null });
+    res.json({ email: null, paid: false });
   }
 });
 
@@ -1159,7 +971,7 @@ app.post("/api/auth/logout", (_req, res) => {
 });
 
 // ──────────────────────────────────────────────────────────────
-// BILLING ROUTES (Stripe)
+// BILLING ROUTES (disabled placeholder — Stripe removed)
 // ──────────────────────────────────────────────────────────────
 async function getSubByEmail(email) {
   const { rows } = await pool.query("SELECT * FROM subscriptions WHERE email=$1 LIMIT 1", [email]);
@@ -1167,68 +979,14 @@ async function getSubByEmail(email) {
 }
 function isPaidStatus(status) { return ["active", "trialing", "past_due"].includes(String(status || "").toLowerCase()); }
 
-app.post("/api/billing/checkout", async (req, res) => {
-  try {
-    const email = String(req.body?.email || "").toLowerCase().trim();
-    const redirect = String(req.body?.redirect || "/chat");
-    if (!email) return res.status(400).json({ message: "Email required" });
-
-    // ensure/create Stripe customer
-    let subRow = await getSubByEmail(email);
-    let customerId = subRow?.stripe_customer_id;
-    if (!customerId) {
-      const c = await stripe.customers.create({ email });
-      customerId = c.id;
-      await pool.query(`
-        INSERT INTO subscriptions (email, stripe_customer_id, status)
-        VALUES ($1,$2,$3)
-        ON CONFLICT (email) DO UPDATE SET stripe_customer_id=EXCLUDED.stripe_customer_id
-      `, [email, customerId, "incomplete"]);
-    }
-
-    const origin = req.headers.origin || process.env.APP_BASE_URL || "https://ellie-web.vercel.app";
-    const success = `${origin}/pricing?email=${encodeURIComponent(email)}&redirect=${encodeURIComponent(redirect)}&success=1`;
-    const canceled = `${origin}/pricing?email=${encodeURIComponent(email)}&redirect=${encodeURIComponent(redirect)}&canceled=1`;
-
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer: customerId,
-      line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
-      allow_promotion_codes: true,
-      success_url: success,
-      cancel_url: canceled,
-    });
-
-    res.json({ url: session.url });
-  } catch (e) {
-    console.error("checkout error:", e?.message || e);
-    res.status(500).json({ message: "Checkout failed" });
-  }
+// Checkout placeholder
+app.post("/api/billing/checkout", async (_req, res) => {
+  return res.status(501).json({ message: "Billing disabled" });
 });
 
-app.post("/api/billing/portal", requireCsrf, async (req, res) => {
-  try {
-    // use httpOnly session cookie
-    const raw = req.headers.cookie || "";
-    const cookies = cookie.parse(raw || "");
-    const token = cookies[SESSION_COOKIE_NAME];
-    const payload = token ? verifySession(token) : null;
-    const email = payload?.email || null;
-    if (!email) return res.status(401).json({ message: "Not logged in" });
-
-    const sub = await getSubByEmail(email);
-    if (!sub?.stripe_customer_id) return res.status(400).json({ message: "No customer" });
-
-    const origin = req.headers.origin || process.env.APP_BASE_URL || "https://ellie-web.vercel.app";
-    const portal = await stripe.billingPortal.sessions.create({
-      customer: sub.stripe_customer_id,
-      return_url: `${origin}/pricing`,
-    });
-    res.json({ url: portal.url });
-  } catch (e) {
-    console.error("portal error:", e?.message || e);
-    res.status(500).json({ message: "Portal failed" });
-  }
+// Portal placeholder
+app.post("/api/billing/portal", async (_req, res) => {
+  return res.status(501).json({ message: "Billing disabled" });
 });
 
 // ──────────────────────────────────────────────────────────────
@@ -1246,7 +1004,7 @@ async function requirePaidUsingSession(req, res, next) {
     const sub = await getSubByEmail(email);
     if (!isPaidStatus(sub?.status)) return res.status(402).json({ error: "PAYMENT_REQUIRED" });
 
-    req.userEmail = email; // bind for downstream handlers
+    req.userEmail = email;
     next();
   } catch {
     return res.status(401).json({ error: "UNAUTH" });
@@ -1329,10 +1087,9 @@ app.post("/api/apply-voice-preset", async (req, res) => {
 });
 
 // Chat (text → reply) + report voiceMode for UI
-app.post("/api/chat", requireCsrf, async (req, res) => {
+app.post("/api/chat", async (req, res) => {
   try {
-    const { message } = req.body;
-    const userId = req.userEmail || "default-user"; // bind memory to session email when paid
+    const { message, userId = "default-user" } = req.body;
 
     if (typeof message !== "string" || !message.trim() || message.length > MAX_MESSAGE_LEN) {
       return res.status(400).json({ error: "E_BAD_INPUT", message: "Invalid message" });
@@ -1409,9 +1166,9 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
 });
 
 // Voice chat (language REQUIRED) + TTS (record/send flow)
-app.post("/api/voice-chat", requireCsrf, upload.single("audio"), async (req, res) => {
+app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
   try {
-    const userId = req.userEmail || (req.body?.userId || "default-user");
+    const userId = (req.body?.userId || "default-user");
 
     if (!req.file || !isOkAudio(req.file.mimetype)) {
       return res.status(400).json({
