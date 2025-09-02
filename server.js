@@ -286,10 +286,23 @@ async function initDB() {
 
   console.log("✅ Facts, Emotions, Users, Login codes, Subscriptions tables ready");
 }
-initDB().catch((err) => {
-  console.error("DB Init Error:", err);
-  process.exit(1);
-});
+async function initWithRetry({ attempts = 10, baseMs = 1000, maxMs = 30000 } = {}) {
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      await initDB();
+      console.log("✅ DB ready");
+      return true;
+    } catch (err) {
+      const delay = Math.min(maxMs, Math.floor(baseMs * Math.pow(1.7, i)));
+      console.error("DB init failed:", err?.code || err?.message || err);
+      console.log(`Retrying in ${Math.round(delay / 1000)}s (${i}/${attempts})...`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  console.warn("⚠️ DB init still failing after retries; continuing without fatal exit.");
+  return false;
+}
+
 
 // ──────────────────────────────────────────────────────────────
 // Ellie system prompt & memory
