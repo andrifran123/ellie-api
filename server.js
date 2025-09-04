@@ -26,6 +26,7 @@ const { Resend } = require("resend");
 const nodemailer = require("nodemailer");
 const bodyParser = require("body-parser");
 const cookieParser = require("cookie-parser");
+const crypto = require("crypto"); // <-- ADDED for CSRF tokens
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -66,7 +67,13 @@ app.use(
       return cb(new Error("Not allowed by CORS"));
     },
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-CSRF", "X-Requested-With"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-CSRF",
+      "X-CSRF-Token",        // <-- ADDED so your FE can send X-CSRF-Token
+      "X-Requested-With",
+    ],
     credentials: true,
   })
 );
@@ -579,6 +586,15 @@ async function getUserByEmail(email) {
   return rows[0] || null;
 }
 
+// <-- ADDED helper: read paid flag directly from users
+async function getUserPaidByEmail(email) {
+  const { rows } = await pool.query(
+    `SELECT paid FROM users WHERE lower(email) = lower($1) LIMIT 1`,
+    [email]
+  );
+  return rows?.[0]?.paid === true;
+}
+
 async function upsertFact(userId, fObj, sourceText) {
   const { category = null, fact, sentiment = null, confidence = null } = fObj;
   if (!fact) return;
@@ -941,11 +957,25 @@ app.post("/api/auth/verify", async (req, res) => {
 
     setSessionCookie(res, token);
 
-    // Compute paid from subscriptions table
-    const sub = await getSubByEmail(email);
-    const paid = isPaidStatus(sub?.status);
+    // Compute paid from users.paid; fall back to subscriptions table just in case
+    const userPaid = await getUserPaidByEmail(email);
+    let paid = userPaid;
+    if (!paid) {
+      const sub = await getSubByEmail(email);
+      paid = isPaidStatus(sub?.status);
+    }
 
-    res.json({ ok: true, paid });
+    // Also issue a CSRF token (handy for the FE)
+    const csrfToken = crypto.randomBytes(24).toString("hex");
+    res.cookie("csrf_token", csrfToken, {
+      httpOnly: false,
+      sameSite: "none",
+      secure: true,
+      path: "/",
+      maxAge: 60 * 60 * 24 * 7, // 7 days
+    });
+
+    res.json({ ok: true, paid, csrfToken });
   } catch (e) {
     console.error("auth/verify error:", e);
     res.status(500).json({ ok: false, message: "Verify failed." });
@@ -960,11 +990,30 @@ app.get("/api/auth/me", async (req, res) => {
     const token = cookies[SESSION_COOKIE_NAME];
     const payload = token ? verifySession(token) : null;
 
-    if (!payload?.email) return res.json({ email: null, paid: false });
+    // Always issue a CSRF token on /me
+    const csrfToken = crypto.randomBytes(24).toString("hex");
+    res.cookie("csrf_token", csrfToken, {
+      httpOnly: false,
+      sameSite: "none",
+      secure: true,
+      path: "/",
+      maxAge: 60 * 60 * 24 * 7,
+    });
 
-    const sub = await getSubByEmail(payload.email);
-    res.json({ email: payload.email, paid: isPaidStatus(sub?.status) });
-  } catch {
+    if (!payload?.email) return res.json({ email: null, paid: false, csrfToken });
+
+    // Read paid from users.paid; if missing, fall back to subscriptions
+    const email = payload.email;
+    const userPaid = await getUserPaidByEmail(email);
+    let paid = userPaid;
+    if (!paid) {
+      const sub = await getSubByEmail(email);
+      paid = isPaidStatus(sub?.status);
+    }
+
+    res.json({ email, paid, csrfToken });
+  } catch (e) {
+    console.error("auth/me error:", e?.message || e);
     res.json({ email: null, paid: false });
   }
 });
@@ -1014,8 +1063,13 @@ async function requirePaidUsingSession(req, res, next) {
     const email = payload?.email || null;
     if (!email) return res.status(401).json({ error: "UNAUTH" });
 
-    const sub = await getSubByEmail(email);
-    if (!isPaidStatus(sub?.status)) return res.status(402).json({ error: "PAYMENT_REQUIRED" });
+    // ADDED: accept users.paid OR subscription status
+    let paid = await getUserPaidByEmail(email);
+    if (!paid) {
+      const sub = await getSubByEmail(email);
+      paid = isPaidStatus(sub?.status);
+    }
+    if (!paid) return res.status(402).json({ error: "PAYMENT_REQUIRED" });
 
     req.userEmail = email;
     next();
