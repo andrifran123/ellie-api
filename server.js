@@ -66,7 +66,13 @@ app.use(
       return cb(new Error("Not allowed by CORS"));
     },
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-CSRF", "X-Requested-With"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-CSRF",
+      "X-CSRF-Token", // ← add this
+      "X-Requested-With",
+    ],
     credentials: true,
   })
 );
@@ -126,7 +132,7 @@ const smtpUser = process.env.SMTP_USER || "";
 const smtpPass = process.env.SMTP_PASS || "";
 const smtpFrom = process.env.SMTP_FROM || ""; // e.g. "Ellie <no-reply@yourdomain.com>"
 
-// In-memory login codes: email -> { code, expiresAt }
+// In-memory login codes (kept as fallback, but we now use DB)
 const codeStore = new Map();
 
 function signSession(payload) {
@@ -222,7 +228,6 @@ const pool = new Pool(pgConfig);
 async function initDB() {
   await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
 
-  // ✅ FIXED: facts table (removed stray email/paid columns)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS facts (
       id SERIAL PRIMARY KEY,
@@ -253,7 +258,6 @@ async function initDB() {
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_updated_idx ON facts(user_id, updated_at DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_fact_trgm_idx ON facts USING gin (fact gin_trgm_ops);`);
 
-  // ✅ Users / login codes / subscriptions
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
@@ -303,6 +307,8 @@ async function initWithRetry({ attempts = 10, baseMs = 1000, maxMs = 30000 } = {
   return false;
 }
 
+// start init (non-blocking)
+initWithRetry().catch((e) => console.error("DB Init Error:", e));
 
 // ──────────────────────────────────────────────────────────────
 // Ellie system prompt & memory
@@ -898,10 +904,10 @@ Language rules:
 }
 
 // ──────────────────────────────────────────────────────────────
-// AUTH ROUTES (email + 6-digit code) — SINGLE VERSION
+// AUTH ROUTES (email + 6-digit code) — now backed by DB
 // ──────────────────────────────────────────────────────────────
 
-// Start login -> send code
+// Start login -> send code (stores code in DB, expires in 10 min)
 app.post("/api/auth/start", async (req, res) => {
   try {
     const email = String(req.body?.email || "").toLowerCase().trim();
@@ -911,11 +917,20 @@ app.post("/api/auth/start", async (req, res) => {
 
     // generate 6-digit code
     const code = String(Math.floor(100000 + Math.random() * 900000));
-    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 min
-    codeStore.set(email, { code, expiresAt });
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
-    await sendLoginCodeEmail({ to: email, code });
+    // ensure user row exists (and update timestamp)
     await upsertUserEmail(email);
+
+    // one active code per email: delete old + insert new
+    await pool.query(`DELETE FROM login_codes WHERE email = $1`, [email]);
+    await pool.query(
+      `INSERT INTO login_codes (email, code, expires_at) VALUES ($1, $2, $3)`,
+      [email, code, expiresAt]
+    );
+
+    // email the code
+    await sendLoginCodeEmail({ to: email, code });
 
     res.json({ ok: true });
   } catch (e) {
@@ -924,25 +939,39 @@ app.post("/api/auth/start", async (req, res) => {
   }
 });
 
-// Verify code -> set httpOnly session cookie
+// Verify code -> set httpOnly session cookie (consumes DB code)
 app.post("/api/auth/verify", async (req, res) => {
   try {
     const email = String(req.body?.email || "").toLowerCase().trim();
     const code = String(req.body?.code || "").trim();
 
-    const entry = codeStore.get(email);
-    if (!entry || entry.code !== code || entry.expiresAt < Date.now()) {
+    if (!email || !code) {
+      return res.status(400).json({ ok: false, message: "Missing email or code." });
+    }
+
+    // Atomically consume a valid (non-expired) code
+    const { rows } = await pool.query(
+      `DELETE FROM login_codes
+        WHERE email = $1 AND code = $2 AND expires_at > NOW()
+        RETURNING id`,
+      [email, code]
+    );
+    if (!rows.length) {
       return res.status(400).json({ ok: false, message: "Invalid or expired code." });
     }
-    codeStore.delete(email);
 
+    // ensure user row exists
     const user = await upsertUserEmail(email);
-    const token = signSession({ email: user.email });
 
+    // set session cookie
+    const token = signSession({ email: user.email });
     setSessionCookie(res, token);
 
-    // Compute paid via subscriptions OR users.paid
-    const paid = await isEmailPaid(email);
+    // paid = subscriptions.status or users.paid
+    const sub = await getSubByEmail(email);
+    const paid =
+      isPaidStatus(sub?.status) ||
+      Boolean(user?.paid);
 
     res.json({ ok: true, paid });
   } catch (e) {
@@ -951,7 +980,7 @@ app.post("/api/auth/verify", async (req, res) => {
   }
 });
 
-// Me (read session cookie)
+// Me (read session cookie) + csrf token for convenience
 app.get("/api/auth/me", async (req, res) => {
   try {
     const raw = req.headers.cookie || "";
@@ -959,12 +988,18 @@ app.get("/api/auth/me", async (req, res) => {
     const token = cookies[SESSION_COOKIE_NAME];
     const payload = token ? verifySession(token) : null;
 
-    if (!payload?.email) return res.json({ email: null, paid: false });
+    if (!payload?.email) return res.json({ email: null, paid: false, csrfToken: null });
 
-    const paid = await isEmailPaid(payload.email);
-    res.json({ email: payload.email, paid });
+    const sub = await getSubByEmail(payload.email);
+    const user = await getUserByEmail(payload.email);
+    const paid = isPaidStatus(sub?.status) || Boolean(user?.paid);
+
+    // lightweight CSRF-ish token (not required anywhere)
+    const csrfToken = jwt.sign({ e: payload.email, ts: Date.now() }, SESSION_SECRET, { expiresIn: "2h" });
+
+    res.json({ email: payload.email, paid, csrfToken });
   } catch {
-    res.json({ email: null, paid: false });
+    res.json({ email: null, paid: false, csrfToken: null });
   }
 });
 
@@ -991,29 +1026,6 @@ async function getSubByEmail(email) {
 }
 function isPaidStatus(status) { return ["active", "trialing", "past_due"].includes(String(status || "").toLowerCase()); }
 
-// NEW: helpers to read session + compute paid across subs OR users.paid
-function getEmailFromReq(req) {
-  const raw = req.headers?.cookie || "";
-  const cookies = cookie.parse(raw || "");
-  const token = cookies[SESSION_COOKIE_NAME];
-  const payload = token ? verifySession(token) : null;
-  return payload?.email || null;
-}
-function getEmailFromHeaders(headers = {}) {
-  const raw = headers.cookie || "";
-  const cookies = cookie.parse(raw || "");
-  const token = cookies[SESSION_COOKIE_NAME];
-  const payload = token ? verifySession(token) : null;
-  return payload?.email || null;
-}
-async function isEmailPaid(email) {
-  if (!email) return false;
-  const sub = await getSubByEmail(email);
-  if (isPaidStatus(sub?.status)) return true;
-  const u = await getUserByEmail(email);
-  return !!u?.paid;
-}
-
 // Checkout placeholder
 app.post("/api/billing/checkout", async (_req, res) => {
   return res.status(501).json({ message: "Billing disabled" });
@@ -1029,10 +1041,16 @@ app.post("/api/billing/portal", async (_req, res) => {
 // ──────────────────────────────────────────────────────────────
 async function requirePaidUsingSession(req, res, next) {
   try {
-    const email = getEmailFromReq(req);
+    const raw = req.headers.cookie || "";
+    const cookies = cookie.parse(raw || "");
+    const token = cookies[SESSION_COOKIE_NAME];
+    const payload = token ? verifySession(token) : null;
+    const email = payload?.email || null;
     if (!email) return res.status(401).json({ error: "UNAUTH" });
 
-    const paid = await isEmailPaid(email);
+    const sub = await getSubByEmail(email);
+    const user = await getUserByEmail(email);
+    const paid = isPaidStatus(sub?.status) || Boolean(user?.paid);
     if (!paid) return res.status(402).json({ error: "PAYMENT_REQUIRED" });
 
     req.userEmail = email;
@@ -1156,14 +1174,8 @@ app.post("/api/chat", async (req, res) => {
 });
 
 // Upload audio → transcription (language REQUIRED)
-// >>> NEW: enforce session + paid here too <<<
 app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
   try {
-    // paywall guard for this endpoint
-    const email = getEmailFromReq(req);
-    if (!email) return res.status(401).json({ error: "UNAUTH" });
-    if (!(await isEmailPaid(email))) return res.status(402).json({ error: "PAYMENT_REQUIRED" });
-
     if (!req.file || !isOkAudio(req.file.mimetype)) {
       return res.status(400).json({
         error: "E_BAD_AUDIO",
@@ -1295,22 +1307,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/ws/voice" });
 
-wss.on("connection", async (ws, req) => {
-  // >>> NEW: gate WS by session + paid
-  const sessionEmail = getEmailFromHeaders(req.headers);
-  const sendWs = (obj) => { try { ws.send(JSON.stringify(obj)); } catch {} };
-
-  if (!sessionEmail) {
-    sendWs({ type: "error", code: "401", message: "Not logged in." });
-    try { ws.close(); } catch {}
-    return;
-  }
-  if (!(await isEmailPaid(sessionEmail))) {
-    sendWs({ type: "error", code: "402", message: "Payment required." });
-    try { ws.close(); } catch {}
-    return;
-  }
-
+wss.on("connection", (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let userId = url.searchParams.get("userId") || "default-user";
   let sessionLang = null;
@@ -1443,22 +1440,7 @@ function makeVadCommitter(sendFn, commitFn, createFn, silenceMs = 700) {
   return { arm, cancel: () => { if (timer) clearTimeout(timer); timer = null; } };
 }
 
-wssPhone.on("connection", async (ws, req) => {
-  // >>> NEW: gate WS by session + paid
-  const email = getEmailFromHeaders(req.headers);
-  const sendWs = (obj) => { try { ws.send(JSON.stringify(obj)); } catch {} };
-
-  if (!email) {
-    sendWs({ type: "error", code: "401", message: "Not logged in." });
-    try { ws.close(); } catch {}
-    return;
-  }
-  if (!(await isEmailPaid(email))) {
-    sendWs({ type: "error", code: "402", message: "Payment required." });
-    try { ws.close(); } catch {}
-    return;
-  }
-
+wssPhone.on("connection", (ws, req) => {
   console.log("[phone] client connected", req.headers.origin);
 
   let userId = "default-user";
