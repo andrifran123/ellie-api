@@ -26,7 +26,6 @@ const { Resend } = require("resend");
 const nodemailer = require("nodemailer");
 const bodyParser = require("body-parser");
 const cookieParser = require("cookie-parser");
-const crypto = require("crypto"); // <-- ADDED for CSRF tokens
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -67,13 +66,7 @@ app.use(
       return cb(new Error("Not allowed by CORS"));
     },
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "X-CSRF",
-      "X-CSRF-Token",        // <-- ADDED so your FE can send X-CSRF-Token
-      "X-Requested-With",
-    ],
+    allowedHeaders: ["Content-Type", "Authorization", "X-CSRF", "X-Requested-With"],
     credentials: true,
   })
 );
@@ -586,15 +579,6 @@ async function getUserByEmail(email) {
   return rows[0] || null;
 }
 
-// <-- ADDED helper: read paid flag directly from users
-async function getUserPaidByEmail(email) {
-  const { rows } = await pool.query(
-    `SELECT paid FROM users WHERE lower(email) = lower($1) LIMIT 1`,
-    [email]
-  );
-  return rows?.[0]?.paid === true;
-}
-
 async function upsertFact(userId, fObj, sourceText) {
   const { category = null, fact, sentiment = null, confidence = null } = fObj;
   if (!fact) return;
@@ -957,25 +941,10 @@ app.post("/api/auth/verify", async (req, res) => {
 
     setSessionCookie(res, token);
 
-    // Compute paid from users.paid; fall back to subscriptions table just in case
-    const userPaid = await getUserPaidByEmail(email);
-    let paid = userPaid;
-    if (!paid) {
-      const sub = await getSubByEmail(email);
-      paid = isPaidStatus(sub?.status);
-    }
+    // Compute paid via subscriptions OR users.paid
+    const paid = await isEmailPaid(email);
 
-    // Also issue a CSRF token (handy for the FE)
-    const csrfToken = crypto.randomBytes(24).toString("hex");
-    res.cookie("csrf_token", csrfToken, {
-      httpOnly: false,
-      sameSite: "none",
-      secure: true,
-      path: "/",
-      maxAge: 60 * 60 * 24 * 7, // 7 days
-    });
-
-    res.json({ ok: true, paid, csrfToken });
+    res.json({ ok: true, paid });
   } catch (e) {
     console.error("auth/verify error:", e);
     res.status(500).json({ ok: false, message: "Verify failed." });
@@ -990,30 +959,11 @@ app.get("/api/auth/me", async (req, res) => {
     const token = cookies[SESSION_COOKIE_NAME];
     const payload = token ? verifySession(token) : null;
 
-    // Always issue a CSRF token on /me
-    const csrfToken = crypto.randomBytes(24).toString("hex");
-    res.cookie("csrf_token", csrfToken, {
-      httpOnly: false,
-      sameSite: "none",
-      secure: true,
-      path: "/",
-      maxAge: 60 * 60 * 24 * 7,
-    });
+    if (!payload?.email) return res.json({ email: null, paid: false });
 
-    if (!payload?.email) return res.json({ email: null, paid: false, csrfToken });
-
-    // Read paid from users.paid; if missing, fall back to subscriptions
-    const email = payload.email;
-    const userPaid = await getUserPaidByEmail(email);
-    let paid = userPaid;
-    if (!paid) {
-      const sub = await getSubByEmail(email);
-      paid = isPaidStatus(sub?.status);
-    }
-
-    res.json({ email, paid, csrfToken });
-  } catch (e) {
-    console.error("auth/me error:", e?.message || e);
+    const paid = await isEmailPaid(payload.email);
+    res.json({ email: payload.email, paid });
+  } catch {
     res.json({ email: null, paid: false });
   }
 });
@@ -1041,6 +991,29 @@ async function getSubByEmail(email) {
 }
 function isPaidStatus(status) { return ["active", "trialing", "past_due"].includes(String(status || "").toLowerCase()); }
 
+// NEW: helpers to read session + compute paid across subs OR users.paid
+function getEmailFromReq(req) {
+  const raw = req.headers?.cookie || "";
+  const cookies = cookie.parse(raw || "");
+  const token = cookies[SESSION_COOKIE_NAME];
+  const payload = token ? verifySession(token) : null;
+  return payload?.email || null;
+}
+function getEmailFromHeaders(headers = {}) {
+  const raw = headers.cookie || "";
+  const cookies = cookie.parse(raw || "");
+  const token = cookies[SESSION_COOKIE_NAME];
+  const payload = token ? verifySession(token) : null;
+  return payload?.email || null;
+}
+async function isEmailPaid(email) {
+  if (!email) return false;
+  const sub = await getSubByEmail(email);
+  if (isPaidStatus(sub?.status)) return true;
+  const u = await getUserByEmail(email);
+  return !!u?.paid;
+}
+
 // Checkout placeholder
 app.post("/api/billing/checkout", async (_req, res) => {
   return res.status(501).json({ message: "Billing disabled" });
@@ -1056,19 +1029,10 @@ app.post("/api/billing/portal", async (_req, res) => {
 // ──────────────────────────────────────────────────────────────
 async function requirePaidUsingSession(req, res, next) {
   try {
-    const raw = req.headers.cookie || "";
-    const cookies = cookie.parse(raw || "");
-    const token = cookies[SESSION_COOKIE_NAME];
-    const payload = token ? verifySession(token) : null;
-    const email = payload?.email || null;
+    const email = getEmailFromReq(req);
     if (!email) return res.status(401).json({ error: "UNAUTH" });
 
-    // ADDED: accept users.paid OR subscription status
-    let paid = await getUserPaidByEmail(email);
-    if (!paid) {
-      const sub = await getSubByEmail(email);
-      paid = isPaidStatus(sub?.status);
-    }
+    const paid = await isEmailPaid(email);
     if (!paid) return res.status(402).json({ error: "PAYMENT_REQUIRED" });
 
     req.userEmail = email;
@@ -1192,8 +1156,14 @@ app.post("/api/chat", async (req, res) => {
 });
 
 // Upload audio → transcription (language REQUIRED)
+// >>> NEW: enforce session + paid here too <<<
 app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
   try {
+    // paywall guard for this endpoint
+    const email = getEmailFromReq(req);
+    if (!email) return res.status(401).json({ error: "UNAUTH" });
+    if (!(await isEmailPaid(email))) return res.status(402).json({ error: "PAYMENT_REQUIRED" });
+
     if (!req.file || !isOkAudio(req.file.mimetype)) {
       return res.status(400).json({
         error: "E_BAD_AUDIO",
@@ -1325,7 +1295,22 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/ws/voice" });
 
-wss.on("connection", (ws, req) => {
+wss.on("connection", async (ws, req) => {
+  // >>> NEW: gate WS by session + paid
+  const sessionEmail = getEmailFromHeaders(req.headers);
+  const sendWs = (obj) => { try { ws.send(JSON.stringify(obj)); } catch {} };
+
+  if (!sessionEmail) {
+    sendWs({ type: "error", code: "401", message: "Not logged in." });
+    try { ws.close(); } catch {}
+    return;
+  }
+  if (!(await isEmailPaid(sessionEmail))) {
+    sendWs({ type: "error", code: "402", message: "Payment required." });
+    try { ws.close(); } catch {}
+    return;
+  }
+
   const url = new URL(req.url, `http://${req.headers.host}`);
   let userId = url.searchParams.get("userId") || "default-user";
   let sessionLang = null;
@@ -1458,7 +1443,22 @@ function makeVadCommitter(sendFn, commitFn, createFn, silenceMs = 700) {
   return { arm, cancel: () => { if (timer) clearTimeout(timer); timer = null; } };
 }
 
-wssPhone.on("connection", (ws, req) => {
+wssPhone.on("connection", async (ws, req) => {
+  // >>> NEW: gate WS by session + paid
+  const email = getEmailFromHeaders(req.headers);
+  const sendWs = (obj) => { try { ws.send(JSON.stringify(obj)); } catch {} };
+
+  if (!email) {
+    sendWs({ type: "error", code: "401", message: "Not logged in." });
+    try { ws.close(); } catch {}
+    return;
+  }
+  if (!(await isEmailPaid(email))) {
+    sendWs({ type: "error", code: "402", message: "Payment required." });
+    try { ws.close(); } catch {}
+    return;
+  }
+
   console.log("[phone] client connected", req.headers.origin);
 
   let userId = "default-user";
