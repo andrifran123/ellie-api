@@ -130,7 +130,7 @@ const EMAIL_FROM =
   process.env.EMAIL_FROM ||
   process.env.RESEND_FROM ||
   process.env.SMTP_FROM ||
-  "Ellie <no-reply@your-verified-domain.com>";
+  "Ellie <no-reply@ellie-elite.com>";
 
 // Optional SMTP fallback (if no Resend)
 const smtpHost = process.env.SMTP_HOST || "";
@@ -161,29 +161,53 @@ function setSessionCookie(res, token) {
 
 async function sendLoginCodeEmail({ to, code }) {
   const subject = "Your Ellie login code";
-  const text = `Your sign-in code is: ${code}\nIt expires in 10 minutes.`;
-  const html = `<p>Your sign-in code is:</p><p style="font-size:28px;letter-spacing:6px;"><b>${code}</b></p><p>It expires in 10 minutes.</p>`;
+  const preheader = "Use this one-time code to sign in. It expires in 10 minutes.";
+  const text = [
+    "You requested this code to sign in to Ellie.",
+    `Your one-time code is: ${code}`,
+    "It expires in 10 minutes. If you didn’t request this, you can ignore this email.",
+  ].join("\n");
 
-  // Try Resend first (uses unified EMAIL_FROM which must be a verified sender)
+  const html = `
+    <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; max-width:520px">
+      <!-- preheader (hidden in most clients) -->
+      <span style="display:none!important;visibility:hidden;opacity:0;height:0;width:0;overflow:hidden;">
+        ${preheader}
+      </span>
+      <h2 style="margin:0 0 8px">Your Ellie sign-in code</h2>
+      <p style="margin:0 0 10px;color:#444">You requested this code to sign in to Ellie.</p>
+      <div style="font-size:32px;letter-spacing:6px;font-weight:700;margin:8px 0 12px">${code}</div>
+      <p style="margin:0 0 6px;color:#444">It expires in 10 minutes.</p>
+      <p style="margin:12px 0 0;color:#667">If you didn’t request this, you can safely ignore this email.</p>
+    </div>
+  `;
+
+  const replyTo = process.env.SUPPORT_EMAIL || `support@${(process.env.EMAIL_FROM || "").split("@").pop()?.replace(">", "").trim() || "yourdomain.com"}`;
+
+  // Try Resend first
   if (resend) {
     try {
       const r = await resend.emails.send({
-        from: EMAIL_FROM,
+        from: EMAIL_FROM,           // verified sender
         to,
         subject,
         text,
         html,
+        replyTo,                    // <-- real mailbox helps deliverability
+        headers: {
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+          // harmless hint headers; can help reputation a bit over time
+          "X-Entity-Ref-ID": `ellie-${Date.now()}`,
+        },
       });
-      const id = r?.data?.id || r?.id || "(no-id)";
-      console.log("[email] Resend OK id:", id);
+      console.log("[email] Resend OK id:", r?.data?.id || r?.id);
       return;
     } catch (e) {
-      console.warn("[email] Resend failed, falling back to SMTP:", e?.message || e);
-      // fall through to SMTP if configured
+      console.warn("[email] Resend failed, trying SMTP:", e?.message || e);
     }
   }
 
-  // SMTP fallback
+  // SMTP fallback (if configured)
   if (smtpHost && smtpUser && smtpPass && EMAIL_FROM) {
     const transport = nodemailer.createTransport({
       host: smtpHost,
@@ -191,14 +215,26 @@ async function sendLoginCodeEmail({ to, code }) {
       secure: smtpPort === 465,
       auth: { user: smtpUser, pass: smtpPass },
     });
-    const info = await transport.sendMail({ from: EMAIL_FROM, to, subject, text, html });
-    console.log("[email] SMTP OK id:", info?.messageId || "(no-id)");
+    const info = await transport.sendMail({
+      from: EMAIL_FROM,
+      to,
+      subject,
+      text,
+      html,
+      replyTo,                      // <-- keep it here too
+      headers: {
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        "X-Entity-Ref-ID": `ellie-${Date.now()}`,
+      },
+    });
+    console.log("[email] SMTP OK id:", info?.messageId);
     return;
   }
 
-  // Dev fallback: print to logs
+  // Dev fallback
   console.log(`[DEV] Login code for ${to}: ${code}`);
 }
+
 
 // ──────────────────────────────────────────────────────────────
 // After webhook: JSON & cookies for all other routes
