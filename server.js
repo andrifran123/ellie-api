@@ -125,12 +125,19 @@ const SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 90; // 90 days
 const resendKey = process.env.RESEND_API_KEY || "";
 const resend = resendKey ? new Resend(resendKey) : null;
 
+// 🔧 NEW: single source of truth for “From” address (unifies RESEND_FROM/SMTP_FROM/EMAIL_FROM)
+const EMAIL_FROM =
+  process.env.EMAIL_FROM ||
+  process.env.RESEND_FROM ||
+  process.env.SMTP_FROM ||
+  "Ellie <no-reply@your-verified-domain.com>";
+
 // Optional SMTP fallback (if no Resend)
 const smtpHost = process.env.SMTP_HOST || "";
 const smtpPort = Number(process.env.SMTP_PORT || 587);
 const smtpUser = process.env.SMTP_USER || "";
 const smtpPass = process.env.SMTP_PASS || "";
-const smtpFrom = process.env.SMTP_FROM || ""; // e.g. "Ellie <no-reply@yourdomain.com>"
+const smtpFrom = process.env.SMTP_FROM || ""; // e.g. "Ellie <no-reply@yourdomain.com>" (kept for compatibility)
 
 // In-memory login codes (kept as fallback, but we now use DB)
 const codeStore = new Map();
@@ -157,25 +164,35 @@ async function sendLoginCodeEmail({ to, code }) {
   const text = `Your sign-in code is: ${code}\nIt expires in 10 minutes.`;
   const html = `<p>Your sign-in code is:</p><p style="font-size:28px;letter-spacing:6px;"><b>${code}</b></p><p>It expires in 10 minutes.</p>`;
 
+  // Try Resend first (uses unified EMAIL_FROM which must be a verified sender)
   if (resend) {
-    await resend.emails.send({
-      from: process.env.RESEND_FROM || "Ellie <no-reply@yourdomain.com>",
-      to,
-      subject,
-      text,
-      html,
-    });
-    return;
+    try {
+      const r = await resend.emails.send({
+        from: EMAIL_FROM,
+        to,
+        subject,
+        text,
+        html,
+      });
+      const id = r?.data?.id || r?.id || "(no-id)";
+      console.log("[email] Resend OK id:", id);
+      return;
+    } catch (e) {
+      console.warn("[email] Resend failed, falling back to SMTP:", e?.message || e);
+      // fall through to SMTP if configured
+    }
   }
 
-  if (smtpHost && smtpUser && smtpPass && smtpFrom) {
+  // SMTP fallback
+  if (smtpHost && smtpUser && smtpPass && EMAIL_FROM) {
     const transport = nodemailer.createTransport({
       host: smtpHost,
       port: smtpPort,
       secure: smtpPort === 465,
       auth: { user: smtpUser, pass: smtpPass },
     });
-    await transport.sendMail({ from: smtpFrom, to, subject, text, html });
+    const info = await transport.sendMail({ from: EMAIL_FROM, to, subject, text, html });
+    console.log("[email] SMTP OK id:", info?.messageId || "(no-id)");
     return;
   }
 
@@ -929,7 +946,7 @@ app.post("/api/auth/start", async (req, res) => {
       [email, code, expiresAt]
     );
 
-    // email the code
+    // email the code (bubble errors for visibility)
     await sendLoginCodeEmail({ to: email, code });
 
     res.json({ ok: true });
