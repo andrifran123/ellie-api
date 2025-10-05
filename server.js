@@ -26,6 +26,8 @@ const { Resend } = require("resend");
 const nodemailer = require("nodemailer");
 const bodyParser = require("body-parser");
 const cookieParser = require("cookie-parser");
+// NEW: for hashing passwords during signup
+const bcrypt = require("bcryptjs");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -224,7 +226,7 @@ async function sendLoginCodeEmail({ to, code }) {
       replyTo,                      // <-- keep it here too
       headers: {
         "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-        "X-Entity-Ref-ID": `ellie-${Date.now()}`,
+        "X-Entity-Ref-ID": `ellie-${Date.now()}`
       },
     });
     console.log("[email] SMTP OK id:", info?.messageId);
@@ -320,6 +322,11 @@ async function initDB() {
       updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
+
+  // NEW: add columns for signup details if they don't exist
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS login_codes (
       id SERIAL PRIMARY KEY,
@@ -811,7 +818,7 @@ function extractUSPresident(braveJson) {
       }
       if (/wikipedia/i.test(item.url || "") && /president of the united states/i.test(item.title || "")) {
         const snip = (item.description || "").replace(/\s+/g, " ");
-        const m2 = snip.match(/The\s+current\s+president\s+.*?\s+is\s+([A-Z][A-Za-z\.\- ]+)/i);
+        const m2 = snip.match(/The\s+current\s+president\s+.*?\s+is\s+([A-Z][A-Za-z\.\- ]]+)/i);
         if (m2 && m2[1]) return { value: m2[1].trim(), source: item.url };
       }
     }
@@ -1068,6 +1075,47 @@ app.post("/api/auth/logout", (_req, res) => {
     }),
   ]);
   res.json({ ok: true });
+});
+
+// ──────────────────────────────────────────────────────────────
+// NEW: SIGNUP ROUTE (name/email/password) → store user + password hash
+// DOES NOT create a session; your sign-in flow stays via email code.
+// ──────────────────────────────────────────────────────────────
+app.post("/api/auth/signup", async (req, res) => {
+  try {
+    const name = String(req.body?.name || "").trim();
+    const email = String(req.body?.email || "").toLowerCase().trim();
+    const password = String(req.body?.password || "").trim();
+
+    if (!name)  return res.status(400).json({ ok: false, message: "Missing name." });
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return res.status(400).json({ ok: false, message: "Enter a valid email." });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({ ok: false, message: "Password must be at least 8 characters." });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // Insert or update user row; paid remains false by default.
+    await pool.query(
+      `
+      INSERT INTO users (email, name, password_hash, paid, updated_at)
+      VALUES ($1, $2, $3, FALSE, NOW())
+      ON CONFLICT (email) DO UPDATE
+        SET name = EXCLUDED.name,
+            password_hash = EXCLUDED.password_hash,
+            updated_at = NOW()
+      `,
+      [email, name, passwordHash]
+    );
+
+    // We don't start a session here; frontend will redirect to /pricing then user can sign in via code.
+    return res.json({ ok: true, paid: false });
+  } catch (e) {
+    console.error("auth/signup error:", e);
+    return res.status(500).json({ ok: false, message: "Could not create account." });
+  }
 });
 
 // ──────────────────────────────────────────────────────────────
@@ -1380,7 +1428,7 @@ wss.on("connection", (ws, req) => {
           ws.send(JSON.stringify({ type: "error", code: "E_LANGUAGE_REQUIRED", message: "Please choose a language first." }));
           return;
         }
-        ws.send(JSON.stringify({ type: "hello-ok", userId, language: sessionLang, voice: sessionVoice }));
+         ws.send(JSON.stringify({ type: "hello-ok", userId, language: sessionLang, voice: sessionVoice }));
         return;
       }
 
@@ -1655,3 +1703,4 @@ server.listen(PORT, () => {
     console.log("🌐 Live web search: DISABLED (set BRAVE_API_KEY to enable)");
   }
 });
+
