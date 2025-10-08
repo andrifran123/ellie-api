@@ -311,8 +311,8 @@ app.post(
       console.error("[lemon] webhook error:", e);
       return res.status(400).send("error");
     }
-  }
-);	
+  
+});	
 
 // ──────────────────────────────────────────────────────────────
 // After webhook: JSON & cookies for all other routes
