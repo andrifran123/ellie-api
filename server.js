@@ -245,14 +245,9 @@ app.post(
   async (req, res) => {
     try {
       const secret = process.env.LEMON_SIGNING_SECRET || "";
-      if (!secret) {
-        console.error("[lemon] missing LEMON_SIGNING_SECRET");
-        return res.status(500).end();
-      }
+      if (!secret) return res.status(500).end();
 
-      const raw = Buffer.isBuffer(req.body)
-        ? req.body
-        : Buffer.from(req.body || "", "utf8");
+      const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || "", "utf8");
 
       const sigHeader =
         req.get("X-Signature") ||
@@ -261,13 +256,10 @@ app.post(
         "";
 
       const expected = crypto.createHmac("sha256", secret).update(raw).digest("hex");
-
-      if (!sigHeader || sigHeader !== expected) {
-        console.warn("[lemon] bad signature");
-        return res.status(400).send("bad signature");
-      }
+      if (!sigHeader || sigHeader !== expected) return res.status(400).send("bad signature");
 
       const evt = JSON.parse(raw.toString("utf8"));
+
       const type = evt?.meta?.event_name || evt?.event;
       const email =
         evt?.data?.attributes?.user_email ||
@@ -277,9 +269,7 @@ app.post(
 
       const status = evt?.data?.attributes?.status || null;
       const currentPeriodEnd =
-        evt?.data?.attributes?.renews_at ||
-        evt?.data?.attributes?.ends_at ||
-        null;
+        evt?.data?.attributes?.renews_at || evt?.data?.attributes?.ends_at || null;
 
       if (email) {
         await pool.query(
@@ -311,8 +301,8 @@ app.post(
       console.error("[lemon] webhook error:", e);
       return res.status(400).send("error");
     }
-  
-});	
+  }
+); // <-- ONLY THIS ONE CLOSER
 
 // ──────────────────────────────────────────────────────────────
 // After webhook: JSON & cookies for all other routes
