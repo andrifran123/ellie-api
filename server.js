@@ -238,7 +238,13 @@ async function sendLoginCodeEmail({ to, code }) {
   console.log(`[DEV] Login code for ${to}: ${code}`);
 }
  
-// ✅ Add the Lemon webhook route BEFORE express.json()
+// put these near the top with other requires (only once!)
+const crypto = require("crypto");
+const bodyParser = require("body-parser");
+
+// ──────────────────────────────────────────────────────────────
+// LEMON WEBHOOK (must be BEFORE express.json())
+// ──────────────────────────────────────────────────────────────
 app.post(
   "/api/webhooks/lemon",
   bodyParser.raw({ type: "application/json" }),
@@ -247,6 +253,7 @@ app.post(
       const secret = process.env.LEMON_SIGNING_SECRET || "";
       if (!secret) return res.status(500).end();
 
+      // Raw bytes (Buffer), NOT a parsed object
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || "", "utf8");
 
       const sigHeader =
@@ -302,7 +309,7 @@ app.post(
       return res.status(400).send("error");
     }
   }
-); // <-- ONLY THIS ONE CLOSER
+); // ← exactly one closer here
 
 // ──────────────────────────────────────────────────────────────
 // After webhook: JSON & cookies for all other routes
@@ -310,6 +317,7 @@ app.post(
 app.use(express.json());
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "public")));
+
 
 // Redundant health (kept)
 app.get("/healthz", (_req, res) => res.status(200).send("ok"));
