@@ -1678,6 +1678,88 @@ If conversation turns too sexual, cool it down kindly.
     console.log("[phone] client disconnected");
   });
 });
+ // ──────────────────────────────────────────────────────────────
+// Lemon Squeezy Webhook → updates subscriptions & paid flag
+// ──────────────────────────────────────────────────────────────
+const crypto = require("crypto");
+const rawBodyParser = require("body-parser").raw;
+
+// IMPORTANT: use a raw body parser ONLY for this route so we can verify the signature
+app.post("/api/webhooks/lemon", rawBodyParser({ type: "application/json" }), async (req, res) => {
+  try {
+    const signingSecret = process.env.LEMON_SIGNING_SECRET || "";
+    if (!signingSecret) {
+      console.error("[lemon] Missing LEMON_SIGNING_SECRET");
+      return res.status(500).send("No signing secret");
+    }
+
+    const signature = req.header("X-Signature") || req.header("x-signature") || "";
+    const payload = req.body; // Buffer (because of raw parser)
+    const computed = crypto.createHmac("sha256", signingSecret).update(payload).digest("hex");
+
+    if (!signature || signature !== computed) {
+      console.warn("[lemon] Bad signature");
+      return res.status(400).send("Bad signature");
+    }
+
+    const event = JSON.parse(payload.toString("utf8"));
+    const evtName = event?.meta?.event_name || "";
+    const obj = event?.data?.attributes || {};
+    const rel = event?.data?.relationships || {};
+
+    // Try to get customer email from relationships.customer or customer_email field
+    const email =
+      obj.customer_email ||
+      event?.meta?.custom?.email || // if you pass custom meta
+      event?.included?.find(x => x.type === "customers")?.attributes?.email ||
+      rel?.customer?.data?.attributes?.email ||
+      rel?.customer?.data?.attributes?.user_email || // older
+      null;
+
+    // Handle subscription-like statuses
+    const status = (obj.status || obj.state || "").toLowerCase();
+    const isPaid = ["active", "trialing", "past_due"].includes(status);
+
+    // Prefer subscription id / customer id for traceability
+    const subId = event?.data?.id || obj?.subscription_id || null;
+    const customerId = rel?.customer?.data?.id || obj?.customer_id || null;
+    const currentPeriodEnd = obj.renews_at || obj.current_period_end || obj.trial_ends_at || null;
+
+    if (!email) {
+      console.warn("[lemon] No email on event:", evtName);
+      // We still acknowledge to avoid retries; but nothing to update.
+      return res.status(200).send("ok");
+    }
+
+    // Upsert subscriptions table
+    await pool.query(
+      `
+      INSERT INTO subscriptions (email, stripe_customer_id, stripe_sub_id, status, current_period_end, updated_at)
+      VALUES ($1, $2, $3, $4, $5, NOW())
+      ON CONFLICT (email)
+      DO UPDATE SET
+        stripe_customer_id = EXCLUDED.stripe_customer_id,
+        stripe_sub_id      = EXCLUDED.stripe_sub_id,
+        status             = EXCLUDED.status,
+        current_period_end = EXCLUDED.current_period_end,
+        updated_at         = NOW()
+      `,
+      [email.toLowerCase(), customerId || null, subId || null, status || null, currentPeriodEnd ? new Date(currentPeriodEnd) : null]
+    );
+
+    // Mirror to users.paid for quick checks
+    await pool.query(
+      `UPDATE users SET paid = $2, updated_at = NOW() WHERE email = $1`,
+      [email.toLowerCase(), isPaid]
+    );
+
+    console.log(`[lemon] ${evtName} → ${email} → status=${status} paid=${isPaid}`);
+    return res.status(200).send("ok");
+  } catch (e) {
+    console.error("[lemon] webhook error:", e);
+    return res.status(500).send("err");
+  }
+});
 
 // ──────────────────────────────────────────────────────────────
 // Graceful shutdown
