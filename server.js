@@ -238,9 +238,6 @@ async function sendLoginCodeEmail({ to, code }) {
   console.log(`[DEV] Login code for ${to}: ${code}`);
 }
  
-// put these near the top with other requires (only once!)
-const crypto = require("crypto");
-const bodyParser = require("body-parser");
 
 // ──────────────────────────────────────────────────────────────
 // LEMON WEBHOOK (must be BEFORE express.json())
@@ -1754,7 +1751,6 @@ If conversation turns too sexual, cool it down kindly.
 });
 
 
-);
 
 // ──────────────────────────────────────────────────────────────
 // Graceful shutdown
