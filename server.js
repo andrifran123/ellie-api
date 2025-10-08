@@ -5,7 +5,6 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const crypto = require("crypto");
-const bodyParser = require("body-parser");
 const http = require("http");
 const WebSocket = require("ws");
 
@@ -1755,9 +1754,7 @@ If conversation turns too sexual, cool it down kindly.
     console.log("[phone] client disconnected");
   });
 });
-// put these near the top with other requires
-const crypto = require("crypto");
-const bodyParser = require("body-parser");
+
 
 );
 
