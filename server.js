@@ -119,7 +119,7 @@ const PROB_IMPERFECTION = Number(process.env.PROB_IMPERFECTION || 0.2);
 const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
 
 // ──────────────────────────────────────────────────────────────
-// Auth config (passwordless login via email code) — SINGLE SOURCE
+/** Auth config (passwordless login via email code) — SINGLE SOURCE */
 // ──────────────────────────────────────────────────────────────
 const SESSION_SECRET = process.env.SESSION_SECRET || "dev-secret-change-me";
 const SESSION_COOKIE_NAME = "ellie_session";
@@ -1112,35 +1112,35 @@ app.post("/api/auth/verify", async (req, res) => {
   }
 });
 
-// Me (read session cookie) + csrf token for convenience
+// ✅ Authoritative me (returns 401 when not logged in; Supabase is source of truth)
 app.get("/api/auth/me", async (req, res) => {
   try {
-    const raw = req.headers.cookie || "";
-    const cookies = cookie.parse(raw || "");
-    const token = cookies[SESSION_COOKIE_NAME];
+    const token = req.cookies?.[SESSION_COOKIE_NAME] || null;
     const payload = token ? verifySession(token) : null;
 
-    if (!payload?.email) return res.json({ email: null, paid: false, csrfToken: null });
+    if (!payload?.email) {
+      return res.status(401).json({ ok: false, loggedIn: false });
+    }
 
-    const sub = await getSubByEmail(payload.email);
-    const user = await getUserByEmail(payload.email);
+    const email = String(payload.email).toLowerCase();
+    const sub = await getSubByEmail(email);
+    const user = await getUserByEmail(email);
+
+    // Source of truth = Supabase (users.paid) + subscriptions.status
     const paid = isPaidStatus(sub?.status) || Boolean(user?.paid);
 
-    // lightweight CSRF-ish token (not required anywhere)
-    const csrfToken = jwt.sign({ e: payload.email, ts: Date.now() }, SESSION_SECRET, { expiresIn: "2h" });
-
-    res.json({ email: payload.email, paid, csrfToken });
+    return res.json({ ok: true, loggedIn: true, email, paid });
   } catch {
-    res.json({ email: null, paid: false, csrfToken: null });
+    return res.status(500).json({ ok: false, error: "me_failed" });
   }
 });
 
-// Optional logout
+// Optional logout (now clears cookie in dev too)
 app.post("/api/auth/logout", (_req, res) => {
   res.setHeader("Set-Cookie", [
     cookie.serialize(SESSION_COOKIE_NAME, "", {
       httpOnly: true,
-      secure: true,
+      secure: process.env.NODE_ENV === "production", // ← changed
       sameSite: "none",
       path: "/",
       expires: new Date(0),
@@ -1214,9 +1214,7 @@ app.post("/api/billing/portal", async (_req, res) => {
 // ──────────────────────────────────────────────────────────────
 async function requirePaidUsingSession(req, res, next) {
   try {
-    const raw = req.headers.cookie || "";
-    const cookies = cookie.parse(raw || "");
-    const token = cookies[SESSION_COOKIE_NAME];
+    const token = req.cookies?.[SESSION_COOKIE_NAME] || null; // ← use cookieParser result
     const payload = token ? verifySession(token) : null;
     const email = payload?.email || null;
     if (!email) return res.status(401).json({ error: "UNAUTH" });
@@ -1777,4 +1775,3 @@ server.listen(PORT, () => {
     console.log("🌐 Live web search: DISABLED (set BRAVE_API_KEY to enable)");
   }
 });
-
