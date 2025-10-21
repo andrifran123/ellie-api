@@ -1150,8 +1150,7 @@ app.post("/api/auth/logout", (_req, res) => {
 });
 
 // ──────────────────────────────────────────────────────────────
-// NEW: SIGNUP ROUTE (name/email/password) → store user + password hash
-// DOES NOT create a session; your sign-in flow stays via email code.
+// NEW: SIGNUP ROUTE (name/email/password) → create user + start session
 // ──────────────────────────────────────────────────────────────
 app.post("/api/auth/signup", async (req, res) => {
   try {
@@ -1182,7 +1181,10 @@ app.post("/api/auth/signup", async (req, res) => {
       [email, name, passwordHash]
     );
 
-    // We don't start a session here; frontend will redirect to /pricing then user can sign in via code.
+    // ✅ Immediately start a session so /auth/me works on Pricing without bouncing to /login
+    const token = signSession({ email });
+    setSessionCookie(res, token);
+
     return res.json({ ok: true, paid: false });
   } catch (e) {
     console.error("auth/signup error:", e);
