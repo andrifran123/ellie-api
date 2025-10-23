@@ -1581,17 +1581,25 @@ wss.on("connection", (ws, req) => {
 // ──────────────────────────────────────────────────────────────
 const wssPhone = new WebSocket.Server({ noServer: true });
 
+// ──────────────────────────────────────────────────────────────
+// WebSocket upgrade handler (PHONE)
+// ──────────────────────────────────────────────────────────────
 server.on("upgrade", (req, socket, head) => {
+  console.log("[upgrade attempt]", req.url); // 👈 added log
+
   try {
     const url = req.url || "/";
     if (url.startsWith("/ws/phone")) {
+      console.log("[upgrade accepted] /ws/phone"); // 👈 added log
       wssPhone.handleUpgrade(req, socket, head, (client) => {
         wssPhone.emit("connection", client, req);
       });
     } else {
+      console.log("[upgrade ignored]", url); // 👈 added log
       // Not for /ws/phone → allow other handlers (e.g., /ws/voice)
     }
-  } catch {
+  } catch (e) {
+    console.error("[upgrade error]", e); // 👈 added log
     try { socket.destroy(); } catch {}
   }
 });
@@ -1615,6 +1623,13 @@ function makeVadCommitter(sendFn, commitFn, createFn, silenceMs = 700) {
 
 wssPhone.on("connection", (ws, req) => {
   console.log("[phone] client connected", req.headers.origin);
+
+  // 👇 Optional handshake message for instant feedback in browser
+  try {
+    ws.send(JSON.stringify({ type: "hello-server", message: "✅ phone WS connected" }));
+  } catch (e) {
+    console.error("handshake send error", e);
+  }
 
   let userId = "default-user";
   let sessionLang = "en";
