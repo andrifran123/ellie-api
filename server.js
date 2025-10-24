@@ -1585,21 +1585,19 @@ const wssPhone = new WebSocket.Server({ noServer: true });
 // WebSocket upgrade handler (PHONE)
 // ──────────────────────────────────────────────────────────────
 server.on("upgrade", (req, socket, head) => {
-  console.log("[upgrade attempt]", req.url); // 👈 added log
-
   try {
     const url = req.url || "/";
     if (url.startsWith("/ws/phone")) {
-      console.log("[upgrade accepted] /ws/phone"); // 👈 added log
+      console.log("[upgrade attempt]", url);
       wssPhone.handleUpgrade(req, socket, head, (client) => {
+        console.log("[upgrade accepted]", url);
         wssPhone.emit("connection", client, req);
       });
     } else {
-      console.log("[upgrade ignored]", url); // 👈 added log
-      // Not for /ws/phone → allow other handlers (e.g., /ws/voice)
+      socket.destroy();
     }
   } catch (e) {
-    console.error("[upgrade error]", e); // 👈 added log
+    console.error("[upgrade error]", e?.message || e);
     try { socket.destroy(); } catch {}
   }
 });
@@ -1623,6 +1621,32 @@ function makeVadCommitter(sendFn, commitFn, createFn, silenceMs = 700) {
 
 wssPhone.on("connection", (ws, req) => {
   console.log("[phone] client connected", req.headers.origin);
+
+  // --- keepalive and greet ---
+  ws.on("error", (e) => console.error("[phone ws error]", e?.message || e));
+
+  const hb = setInterval(() => {
+    try { ws.ping(); } catch {}
+  }, 25000);
+
+  ws.on("close", (code, reason) => {
+    clearInterval(hb);
+    console.log("[phone ws closed]", code, reason?.toString?.() || "");
+  });
+
+  try {
+    ws.send(JSON.stringify({ type: "hello-server", message: "✅ phone WS connected" }));
+  } catch (e) {
+    console.error("handshake send error", e);
+  }
+
+  // log whatever browser sends so we can debug handshake
+  ws.on("message", (raw) => {
+    let s = "";
+    try { s = raw.toString("utf8"); } catch {}
+    console.log("[phone<-browser]", s.slice(0, 200));
+  });
+
 
   // 👇 Optional handshake message for instant feedback in browser
   try {
