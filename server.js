@@ -1579,32 +1579,36 @@ wss.on("connection", (ws, req) => {
 // ──────────────────────────────────────────────────────────────
 // PHONE CALL WS (/ws/phone): robust upgrade routing (Realtime API)
 // ──────────────────────────────────────────────────────────────
-const wssPhone = new WebSocket.Server({ noServer: true });
+// PHONE CALL WS (/ws/phone): bind directly to server (proxy-friendly)
+const wssPhone = new WebSocket.Server({
+  server,
+  path: "/ws/phone",
+  perMessageDeflate: false, // avoids proxy issues
+});
 
-// ──────────────────────────────────────────────────────────────
-// WebSocket upgrade handler (PHONE)
-// ──────────────────────────────────────────────────────────────
-server.on("upgrade", (req, socket, head) => {
-  const url = req.url || "/";
+wssPhone.on("connection", (ws, req) => {
+  console.log("[phone] client connected", req?.headers?.origin);
+
+  // keepalive to prevent Render timeout
+  const hb = setInterval(() => {
+    try { ws.ping(); } catch {}
+  }, 25000);
+
+  ws.on("close", (code, reason) => {
+    clearInterval(hb);
+    console.log("[phone ws closed]", code, reason?.toString?.() || "");
+  });
+
+  ws.on("error", (e) => console.error("[phone ws error]", e?.message || e));
+
+  // Send hello handshake immediately to the browser
   try {
-    if (url.startsWith("/ws/phone")) {
-      console.log("[upgrade attempt]", url);
-      try {
-        wssPhone.handleUpgrade(req, socket, head, (client) => {
-          console.log("[upgrade accepted]", url);
-          wssPhone.emit("connection", client, req);
-        });
-      } catch (e) {
-        console.error("[handleUpgrade error]", e?.message || e);
-        try { socket.destroy(); } catch {}
-      }
-    } else {
-      socket.destroy();
-    }
+    ws.send(JSON.stringify({ type: "hello-server", message: "✅ phone WS connected" }));
   } catch (e) {
-    console.error("[upgrade error]", e?.message || e);
-    try { socket.destroy(); } catch {}
+    console.error("[phone ws send error]", e);
   }
+
+  // Your existing message handling code (OpenAI bridging) goes below here
 });
 
 // Keep a little VAD-style debounce so we can auto-commit buffers
