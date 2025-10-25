@@ -1738,18 +1738,18 @@ If conversation turns too sexual, cool it down kindly.
           rtWs.send(JSON.stringify(sessionConfig));
 
           // set up debounced commit helper
-          vad = makeVadCommitter(
-            safeSend,
-            () => {
-              console.log("[phone->OpenAI] Committing audio buffer");
-              rtWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-            },
-            () => {
-              console.log("[phone->OpenAI] Creating response");
-              rtWs.send(JSON.stringify({ type: "response.create" }));
-            },
-            800
-          );
+        //  vad = makeVadCommitter(
+          //  safeSend,
+            // () => {
+             // console.log("[phone->OpenAI] Committing audio buffer");
+            //  rtWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          //  },
+           // () => {
+             // console.log("[phone->OpenAI] Creating response");
+             // rtWs.send(JSON.stringify({ type: "response.create" }));
+          //  },
+          //  800
+         // );
 
           safeSend({ type: "session-ready" });
         });
@@ -1758,11 +1758,26 @@ If conversation turns too sexual, cool it down kindly.
         rtWs.on("message", async (buf) => {
           try {
             const ev = JSON.parse(buf.toString("utf8"));
+	
+		console.log("[phone<-OpenAI] Event type:", ev.type); // ← ADD THIS LINE
+
 
             // Stream Ellie audio back to the browser (base64 PCM16)
-            if (ev.type === "response.output_audio.delta" && ev.delta) {
-              safeSend({ type: "audio.delta", audio: ev.delta });
-            }
+            // Stream Ellie audio back to the browser (base64 PCM16)
+if (ev.type === "response.output_audio.delta" && ev.delta) {
+  console.log("[phone<-OpenAI] 🔊 Got audio delta, length:", ev.delta?.length || 0); // ← ADD THIS
+  safeSend({ type: "audio.delta", audio: ev.delta });
+}
+
+//
+if (ev.type === "response.done") {
+  console.log("[phone<-OpenAI] ✅ Response complete");
+}
+
+
+if (ev.type === "conversation.item.created") {
+  console.log("[phone<-OpenAI] 💬 Conversation item created");
+}
 
             // Save facts & emotion from user's *live* transcript
             if (ev.type === "conversation.item.input_audio_transcription.delta" && ev.delta) {
@@ -1809,7 +1824,7 @@ If conversation turns too sexual, cool it down kindly.
         if (rtOpen) {
           rtWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: msg.audio }));
           // arm VAD commit timer after each chunk
-          vad?.arm();
+        //  vad?.arm();
         } else {
           console.warn("[phone] Received audio but rtWs not open");
         }
