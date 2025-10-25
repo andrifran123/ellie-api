@@ -1582,7 +1582,7 @@ wss.on("connection", (ws, req) => {
 // ────────────────────────────────────────────────────────────────────────────
 
 // ---- WS: /ws/phone ---------------------------------------------------------------
-const wsPhone = new WebSocketServer({ noServer: true });
+const wsPhone = new WebSocket.Server({ noServer: true });
 
 // 🔍 DIAGNOSTIC: Upgrade handler
 server.on("upgrade", (req, socket, head) => {
