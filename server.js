@@ -7,6 +7,7 @@ const path = require("path");
 const crypto = require("crypto");
 const http = require("http");
 const WebSocket = require("ws");
+const { WebSocketServer } = require("ws");
 
 // file uploads (voice)
 const multer = require("multer");
@@ -1577,38 +1578,28 @@ wss.on("connection", (ws, req) => {
 });
 
 // ──────────────────────────────────────────────────────────────
-// PHONE CALL WS (/ws/phone): robust upgrade routing (Realtime API)
+// PHONE CALL WS (/ws/phone) — upgrade handler + single connection handler
 // ──────────────────────────────────────────────────────────────
-// PHONE CALL WS (/ws/phone): bind directly to server (proxy-friendly)
-const wssPhone = new WebSocket.Server({
-  server,
-  path: "/ws/phone",
-  perMessageDeflate: false, // avoids proxy issues
-});
 
-wssPhone.on("connection", (ws, req) => {
-  console.log("[phone] client connected", req?.headers?.origin);
+// ---- WS: /ws/phone ---------------------------------------------------------
+const wsPhone = new WebSocketServer({ noServer: true });
 
-  // keepalive to prevent Render timeout
-  const hb = setInterval(() => {
-    try { ws.ping(); } catch {}
-  }, 25000);
-
-  ws.on("close", (code, reason) => {
-    clearInterval(hb);
-    console.log("[phone ws closed]", code, reason?.toString?.() || "");
-  });
-
-  ws.on("error", (e) => console.error("[phone ws error]", e?.message || e));
-
-  // Send hello handshake immediately to the browser
+server.on("upgrade", (req, socket, head) => {
+  const url = req.url || "/";
   try {
-    ws.send(JSON.stringify({ type: "hello-server", message: "✅ phone WS connected" }));
+    if (url.startsWith("/ws/phone")) {
+      console.log("[upgrade attempt]", url);
+      wsPhone.handleUpgrade(req, socket, head, (client) => {
+        console.log("[upgrade accepted]", url);
+        wsPhone.emit("connection", client, req);
+      });
+    } else {
+      socket.destroy();
+    }
   } catch (e) {
-    console.error("[phone ws send error]", e);
+    console.error("[upgrade error]", e?.message || e);
+    try { socket.destroy(); } catch {}
   }
-
-  // Your existing message handling code (OpenAI bridging) goes below here
 });
 
 // Keep a little VAD-style debounce so we can auto-commit buffers
@@ -1628,37 +1619,28 @@ function makeVadCommitter(sendFn, commitFn, createFn, silenceMs = 700) {
   return { arm, cancel: () => { if (timer) clearTimeout(timer); timer = null; } };
 }
 
-wssPhone.on("connection", (ws, req) => {
-  console.log("[phone] client connected", req.headers.origin);
+wsPhone.on("connection", (ws, req) => {
+  console.log("[phone] client connected", req?.headers?.origin);
 
-// keepalive + close logging
-ws.on("error", (e) => console.error("[phone ws error]", e?.message || e));
-const hb = setInterval(() => { try { ws.ping(); } catch {} }, 25000);
-ws.on("close", (code, reason) => {
-  clearInterval(hb);
-  console.log("[phone ws closed]", code, reason?.toString?.() || "");
-});
+  // keepalive + close logging
+  ws.on("error", (e) => console.error("[phone ws error]", e?.message || e));
+  const hb = setInterval(() => { try { ws.ping(); } catch {} }, 25000);
+  ws.on("close", (code, reason) => {
+    clearInterval(hb);
+    console.log("[phone ws closed]", code, reason?.toString?.() || "");
+  });
 
-// say hello immediately so browser sees a frame
-try {
-  ws.send(JSON.stringify({ type: "hello-server", message: "✅ phone WS connected" }));
-} catch (e) {}
-
-// (optional) log first messages to debug
-ws.on("message", (raw) => {
-  let s = "";
-  try { s = raw.toString("utf8"); } catch {}
-  console.log("[phone<-browser]", s.slice(0, 200));
-});
-
-
-
-  // 👇 Optional handshake message for instant feedback in browser
+  // greet immediately so the browser sees something
   try {
     ws.send(JSON.stringify({ type: "hello-server", message: "✅ phone WS connected" }));
-  } catch (e) {
-    console.error("handshake send error", e);
-  }
+  } catch {}
+
+  // (optional) log first messages to debug
+  ws.on("message", (raw) => {
+    let s = "";
+    try { s = raw.toString("utf8"); } catch {}
+    console.log("[phone<-browser]", s.slice(0, 200));
+  });
 
   let userId = "default-user";
   let sessionLang = "en";
@@ -1794,8 +1776,6 @@ If conversation turns too sexual, cool it down kindly.
     console.log("[phone] client disconnected");
   });
 });
-
-
 
 // ──────────────────────────────────────────────────────────────
 // Graceful shutdown
