@@ -8,6 +8,8 @@ const crypto = require("crypto");
 const http = require("http");
 const WebSocket = require("ws");
 const { WebSocketServer } = require("ws");
+console.log("WebSocket.Server available:", typeof WebSocket.Server); // ← ADD THIS DEBUG LINE
+console.log("ws module:", Object.keys(WebSocket)); // ← AND THIS
 
 // file uploads (voice)
 const multer = require("multer");
@@ -1479,7 +1481,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
 // WebSocket voice sessions (/ws/voice) — push-to-talk path
 // ──────────────────────────────────────────────────────────────
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server, path: "/ws/voice" });
+const wss = new WebSocket.Server({ noServer: true });
 
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -1594,7 +1596,13 @@ server.on("upgrade", (req, socket, head) => {
   console.log("================================");
   
   try {
-    if (url.startsWith("/ws/phone")) {
+    if (url.startsWith("/ws/voice")) {
+      console.log("[upgrade accepted]", url);
+      wss.handleUpgrade(req, socket, head, (client) => {
+        console.log("[voice] Upgrade complete, emitting connection");
+        wss.emit("connection", client, req);
+      });
+    } else if (url.startsWith("/ws/phone")) {
       console.log("[upgrade accepted]", url);
       wsPhone.handleUpgrade(req, socket, head, (client) => {
         console.log("[phone] Upgrade complete, emitting connection");
