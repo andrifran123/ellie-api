@@ -1724,7 +1724,7 @@ wsPhone.on("connection", (ws, req) => {
               input_audio_format: "pcm16",
 		output_audio_format: "pcm16",
               turn_detection: { type: "server_vad", threshold: 0.5, silence_duration_ms: 700 },
-              input_audio_transcription: { enabled: true, model: "whisper-1", language: sessionLang },
+    
               instructions: `
 You are Ellie – same persona as chat mode. Warm, playful, a little flirty when it fits, but respectful.
 Keep voice replies short and natural (5–18 words), answer directly first.
