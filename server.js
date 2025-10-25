@@ -1723,7 +1723,7 @@ wsPhone.on("connection", (ws, req) => {
             session: {
               input_audio_format: { type: "pcm16", sample_rate_hz: expectRate },
               output_audio_format: { type: "pcm16" },
-              turn_detection: { type: "server", threshold: 0.5, silence_duration_ms: 700 },
+              turn_detection: { type: "server_vad", threshold: 0.5, silence_duration_ms: 700 },
               input_audio_transcription: { enabled: true, model: "whisper-1", language: sessionLang },
               instructions: `
 You are Ellie – same persona as chat mode. Warm, playful, a little flirty when it fits, but respectful.
