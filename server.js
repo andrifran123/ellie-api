@@ -1764,7 +1764,7 @@ If conversation turns too sexual, cool it down kindly.
 
             // Stream Ellie audio back to the browser (base64 PCM16)
             // Stream Ellie audio back to the browser (base64 PCM16)
-if (ev.type === "response.output_audio.delta" && ev.delta) {
+if (ev.type === "response.audio.delta" && ev.delta) {
   console.log("[phone<-OpenAI] 🔊 Got audio delta, length:", ev.delta?.length || 0); // ← ADD THIS
   safeSend({ type: "audio.delta", audio: ev.delta });
 }
