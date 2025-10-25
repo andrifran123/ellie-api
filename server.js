@@ -1,4 +1,4 @@
-// server.js - COMPLETE VERSION WITH DIAGNOSTICS
+// server.js
 require("dotenv").config();
 
 const express = require("express");
@@ -7,6 +7,7 @@ const path = require("path");
 const crypto = require("crypto");
 const http = require("http");
 const WebSocket = require("ws");
+const { WebSocketServer } = require("ws");
 
 // file uploads (voice)
 const multer = require("multer");
@@ -20,13 +21,14 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // Postgres
 const { Pool } = require("pg");
 
-// Auth / email / billing
+// ✅ Auth / email / billing (declare ONCE)
 const jwt = require("jsonwebtoken");
 const cookie = require("cookie");
 const { Resend } = require("resend");
 const nodemailer = require("nodemailer");
 const bodyParser = require("body-parser");
 const cookieParser = require("cookie-parser");
+// NEW: for hashing passwords during signup
 const bcrypt = require("bcryptjs");
 
 const app = express();
@@ -35,29 +37,17 @@ const PORT = process.env.PORT || 3000;
 // Trust proxy (Render)
 app.set("trust proxy", 1);
 
-// 🔍 STARTUP DIAGNOSTICS
-console.log("================================");
-console.log("🚀 ELLIE API STARTING");
-console.log("================================");
-console.log("PORT:", PORT);
-console.log("NODE_ENV:", process.env.NODE_ENV);
-console.log("OPENAI_API_KEY present:", !!process.env.OPENAI_API_KEY);
-console.log("OPENAI_API_KEY length:", process.env.OPENAI_API_KEY?.length || 0);
-console.log("DATABASE_URL present:", !!process.env.DATABASE_URL);
-console.log("BRAVE_API_KEY present:", !!process.env.BRAVE_API_KEY);
-console.log("================================");
-
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 // Ultra-early health
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 app.get("/", (_req, res) => res.type("text/plain").send("ok"));
 app.get("/api", (_req, res) => res.type("text/plain").send("ok"));
 app.get("/healthz", (_req, res) => res.type("text/plain").send("ok"));
 app.get("/api/healthz", (_req, res) => res.type("text/plain").send("ok"));
 
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 /** CORS */
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 const defaultAllowed = [
   "https://ellie-web-ochre.vercel.app",
   "https://ellie-web.vercel.app",
@@ -84,7 +74,7 @@ app.use(
       "Content-Type",
       "Authorization",
       "X-CSRF",
-      "X-CSRF-Token",
+      "X-CSRF-Token", // ← add this
       "X-Requested-With",
     ],
     credentials: true,
@@ -92,14 +82,18 @@ app.use(
 );
 app.options("*", cors());
 
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 // Config
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 const CHAT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
 const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 15000);
 const MAX_MESSAGE_LEN = Number(process.env.MAX_MESSAGE_LEN || 4000);
+
+// Base OpenAI TTS voice (overridden by presets)
 const DEFAULT_VOICE = process.env.ELLIE_VOICE || "sage";
 const REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-4o-mini-realtime-preview";
+
 const BRAVE_API_KEY = process.env.BRAVE_API_KEY || "";
 
 // Disable FX fully (kept for clarity)
@@ -125,27 +119,31 @@ const PROB_QUIRKS = Number(process.env.PROB_QUIRKS || 0.25);
 const PROB_IMPERFECTION = Number(process.env.PROB_IMPERFECTION || 0.2);
 const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
 
-// ────────────────────────────────────────────────────────────────────────────
-/** Auth config */
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
+/** Auth config (passwordless login via email code) — SINGLE SOURCE */
+// ──────────────────────────────────────────────────────────────
 const SESSION_SECRET = process.env.SESSION_SECRET || "dev-secret-change-me";
 const SESSION_COOKIE_NAME = "ellie_session";
-const SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 90;
+const SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 90; // 90 days
 
 const resendKey = process.env.RESEND_API_KEY || "";
 const resend = resendKey ? new Resend(resendKey) : null;
 
+// 🔧 NEW: single source of truth for “From” address (unifies RESEND_FROM/SMTP_FROM/EMAIL_FROM)
 const EMAIL_FROM =
   process.env.EMAIL_FROM ||
   process.env.RESEND_FROM ||
   process.env.SMTP_FROM ||
   "Ellie <no-reply@ellie-elite.com>";
 
+// Optional SMTP fallback (if no Resend)
 const smtpHost = process.env.SMTP_HOST || "";
 const smtpPort = Number(process.env.SMTP_PORT || 587);
 const smtpUser = process.env.SMTP_USER || "";
 const smtpPass = process.env.SMTP_PASS || "";
+const smtpFrom = process.env.SMTP_FROM || ""; // e.g. "Ellie <no-reply@yourdomain.com>" (kept for compatibility)
 
+// In-memory login codes (kept as fallback, but we now use DB)
 const codeStore = new Map();
 
 function signSession(payload) {
@@ -158,7 +156,7 @@ function setSessionCookie(res, token) {
   const isProd = process.env.NODE_ENV === "production";
   const c = cookie.serialize(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: isProd,
+    secure: isProd,       // was: true (breaks localhost); still true in production
     sameSite: "none",
     path: "/",
     maxAge: SESSION_MAX_AGE_SEC,
@@ -172,11 +170,12 @@ async function sendLoginCodeEmail({ to, code }) {
   const text = [
     "You requested this code to sign in to Ellie.",
     `Your one-time code is: ${code}`,
-    "It expires in 10 minutes. If you didn't request this, you can ignore this email.",
+    "It expires in 10 minutes. If you didn’t request this, you can ignore this email.",
   ].join("\n");
 
   const html = `
     <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; max-width:520px">
+      <!-- preheader (hidden in most clients) -->
       <span style="display:none!important;visibility:hidden;opacity:0;height:0;width:0;overflow:hidden;">
         ${preheader}
       </span>
@@ -184,421 +183,36 @@ async function sendLoginCodeEmail({ to, code }) {
       <p style="margin:0 0 10px;color:#444">You requested this code to sign in to Ellie.</p>
       <div style="font-size:32px;letter-spacing:6px;font-weight:700;margin:8px 0 12px">${code}</div>
       <p style="margin:0 0 6px;color:#444">It expires in 10 minutes.</p>
-      <p style="margin:12px 0 0;color:#667">If you didn't request this, you can safely ignore this email.</p>
+      <p style="margin:12px 0 0;color:#667">If you didn’t request this, you can safely ignore this email.</p>
     </div>
   `;
 
   const replyTo = process.env.SUPPORT_EMAIL || `support@${(process.env.EMAIL_FROM || "").split("@").pop()?.replace(">", "").trim() || "yourdomain.com"}`;
 
+  // Try Resend first
   if (resend) {
     try {
       const r = await resend.emails.send({
-        from: EMAIL_FROM,
+        from: EMAIL_FROM,           // verified sender
         to,
         subject,
         text,
         html,
-        replyTo,
+        replyTo,                    // <-- real mailbox helps deliverability
         headers: {
           "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+          // harmless hint headers; can help reputation a bit over time
           "X-Entity-Ref-ID": `ellie-${Date.now()}`,
         },
       });
       console.log("[email] Resend OK id:", r?.data?.id || r?.id);
       return;
     } catch (e) {
-    console.error("voice-chat error:", e);
-    res.status(500).json({ error: "VOICE_CHAT_FAILED", detail: String(e?.message || e) });
-  }
-});
-
-// ────────────────────────────────────────────────────────────────────────────
-// HTTP SERVER + WEBSOCKETS
-// ────────────────────────────────────────────────────────────────────────────
-const server = http.createServer(app);
-
-// 🔍 DIAGNOSTIC: Log ALL upgrade attempts
-server.on('upgrade', (request, socket, head) => {
-  console.log("================================");
-  console.log("[UPGRADE] Path:", request.url);
-  console.log("[UPGRADE] Origin:", request.headers.origin);
-  console.log("[UPGRADE] Host:", request.headers.host);
-  console.log("[UPGRADE] Upgrade:", request.headers.upgrade);
-  console.log("[UPGRADE] Connection:", request.headers.connection);
-  console.log("================================");
-});
-
-// ────────────────────────────────────────────────────────────────────────────
-// WebSocket /ws/voice (push-to-talk)
-// ────────────────────────────────────────────────────────────────────────────
-const wss = new WebSocket.Server({ server, path: "/ws/voice" });
-
-wss.on("connection", (ws, req) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  let userId = url.searchParams.get("userId") || "default-user";
-  let sessionLang = null;
-  let sessionVoice = DEFAULT_VOICE;
-
-  console.log("[voice] New connection from:", req.headers.origin);
-
-  ws.on("message", async (raw) => {
-    try {
-      const msg = JSON.parse(raw.toString("utf8"));
-
-      if (msg.type === "hello") {
-        userId = msg.userId || userId;
-        if (typeof msg.voice === "string") sessionVoice = msg.voice;
-        if (msg.preset && validPresetName(msg.preset)) await setVoicePreset(userId, msg.preset);
-        const code = await getPreferredLanguage(userId);
-        sessionLang = code || null;
-        if (!sessionLang) {
-          ws.send(JSON.stringify({ type: "error", code: "E_LANGUAGE_REQUIRED", message: "Please choose a language first." }));
-          return;
-        }
-        ws.send(JSON.stringify({ type: "hello-ok", userId, language: sessionLang, voice: sessionVoice }));
-        return;
-      }
-
-      if (msg.type === "audio" && msg.audio) {
-        if (!sessionLang) {
-          ws.send(JSON.stringify({ type: "error", code: "E_LANGUAGE_REQUIRED", message: "Please choose a language first." }));
-          return;
-        }
-        const mime = msg.mime || "audio/webm";
-        const b = Buffer.from(msg.audio, "base64");
-        const fileForOpenAI = await toFile(b, `chunk.${mime.includes("webm") ? "webm" : "wav"}`);
-        const tr = await client.audio.transcriptions.create({
-          model: "whisper-1",
-          file: fileForOpenAI,
-          language: sessionLang,
-        });
-
-        const userText = (tr.text || "").trim();
-        if (!userText) {
-          ws.send(JSON.stringify({ type: "reply", text: "", reply: "I couldn't catch that—try again?", language: sessionLang, audioMp3Base64: null, voiceMode: "mini" }));
-          return;
-        }
-
-        const [facts, emo] = await Promise.all([extractFacts(userText), extractEmotionPoint(userText)]);
-        if (facts.length) await saveFacts(userId, facts, userText);
-        if (emo) await saveEmotion(userId, emo, userText);
-
-        let reply;
-        if (looksLikeSearchQuery(userText)) {
-          reply = ellieFallbackReply(userText);
-        } else {
-          const out = await generateEllieReply({ userId, userText });
-          reply = out.reply;
-        }
-
-        const decision = decideVoiceMode({ replyText: reply });
-        const model = getTtsModelForVoiceMode(decision.voiceMode);
-
-        const chosenVoice = await getEffectiveVoiceForUser(userId, sessionVoice || DEFAULT_VOICE);
-        const speech = await client.audio.speech.create({ model, voice: chosenVoice, input: reply, format: "mp3" });
-        const ab = await speech.arrayBuffer();
-
-        ws.send(JSON.stringify({
-          type: "reply",
-          text: userText,
-          reply,
-          language: sessionLang,
-          audioMp3Base64: Buffer.from(ab).toString("base64"),
-          voiceMode: decision.voiceMode,
-          ttsModel: model
-        }));
-        return;
-      }
-
-      if (msg.type === "apply-preset" && validPresetName(msg.preset)) {
-        await setVoicePreset(userId, msg.preset);
-        ws.send(JSON.stringify({ type: "preset-ok", preset: msg.preset, voice: VOICE_PRESETS[msg.preset] }));
-        return;
-      }
-
-      if (msg.type === "ping") {
-        ws.send(JSON.stringify({ type: "pong", t: Date.now() }));
-        return;
-      }
-    } catch (e) {
-      try {
-        ws.send(JSON.stringify({ type: "error", message: String(e?.message || e) }));
-      } catch {}
-    }
-  });
-
-  ws.on("close", () => {
-    console.log("[voice] Connection closed");
-  });
-});
-
-wss.on('error', (error) => {
-  console.error("[wss /ws/voice] ❌ SERVER ERROR:", error);
-});
-
-console.log("[wss] 🎤 Voice WebSocket server created on path /ws/voice");
-
-// ────────────────────────────────────────────────────────────────────────────
-// WebSocket /ws/phone (Realtime API)
-// ────────────────────────────────────────────────────────────────────────────
-const wssPhone = new WebSocket.Server({
-  server,
-  path: "/ws/phone",
-  perMessageDeflate: false,
-});
-
-wssPhone.on('error', (error) => {
-  console.error("[wssPhone] ❌ SERVER ERROR:", error);
-});
-
-console.log("[wssPhone] 📞 Phone WebSocket server created on path /ws/phone");
-
-// VAD committer helper
-function makeVadCommitter(sendFn, commitFn, createFn, silenceMs = 700) {
-  let timer = null;
-  const arm = () => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(async () => {
-      try {
-        await commitFn();
-        await createFn();
-      } catch (e) {
-        try { sendFn({ type: "error", message: String(e?.message || e) }); } catch {}
-      }
-    }, silenceMs);
-  };
-  return { arm, cancel: () => { if (timer) clearTimeout(timer); timer = null; } };
-}
-
-wssPhone.on("connection", (ws, req) => {
-  console.log("================================");
-  console.log("[phone] ✅ NEW CONNECTION");
-  console.log("[phone] Origin:", req.headers.origin);
-  console.log("[phone] User-Agent:", req.headers['user-agent']?.slice(0, 100));
-  console.log("[phone] OPENAI_API_KEY present:", !!process.env.OPENAI_API_KEY);
-  console.log("[phone] OPENAI_API_KEY length:", process.env.OPENAI_API_KEY?.length || 0);
-  console.log("[phone] REALTIME_MODEL:", REALTIME_MODEL);
-  console.log("================================");
-
-  // keepalive
-  const hb = setInterval(() => { try { ws.ping(); } catch {} }, 25000);
-
-  ws.on("error", (e) => {
-    console.error("[phone ws error]", e?.message || e);
-  });
-
-  ws.on("close", (code, reason) => {
-    clearInterval(hb);
-    console.log("[phone ws closed]", code, reason?.toString?.() || "");
-  });
-
-  // Send immediate handshake
-  try {
-    ws.send(JSON.stringify({ type: "hello-server", message: "✅ phone WS connected" }));
-    console.log("[phone] Sent hello-server handshake");
-  } catch (e) {
-    console.error("[phone] Failed to send handshake:", e);
-  }
-
-  let userId = "default-user";
-  let sessionLang = "en";
-  let expectRate = 24000;
-
-  let rtWs = null;
-  let rtOpen = false;
-
-  function safeSend(obj) {
-    try { 
-      ws.send(JSON.stringify(obj)); 
-      console.log("[phone->browser] Sent:", obj.type);
-    } catch (e) {
-      console.error("[phone->browser] Send failed:", e);
-    }
-  }
-
-  let vad = null;
-
-  ws.on("message", async (raw) => {
-    try {
-      const msg = JSON.parse(raw.toString("utf8"));
-      console.log("[phone<-browser] Received:", msg.type);
-
-      if (msg.type === "hello") {
-        userId = msg.userId || userId;
-        if (msg.language) sessionLang = msg.language;
-        expectRate = Number(msg.sampleRate || expectRate) || 24000;
-
-        console.log("[phone] Processing hello:", { userId, sessionLang, expectRate });
-
-        // Validate API key
-        if (!process.env.OPENAI_API_KEY) {
-          console.error("[phone] ❌ OPENAI_API_KEY is missing!");
-          safeSend({ type: "error", message: "Server configuration error: Missing API key" });
-          return;
-        }
-
-        // Connect to OpenAI Realtime
-        const rtUrl = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(REALTIME_MODEL)}`;
-        console.log("[phone] Connecting to OpenAI Realtime:", rtUrl);
-
-        rtWs = new WebSocket(rtUrl, {
-          headers: {
-            "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-            "OpenAI-Beta": "realtime=v1",
-          },
-        });
-
-        rtWs.on("open", () => {
-          rtOpen = true;
-          console.log("[phone->OpenAI] ✅ Realtime connection opened");
-
-          // Configure session
-          const sessionConfig = {
-            type: "session.update",
-            session: {
-              input_audio_format: { type: "pcm16", sample_rate_hz: expectRate },
-              output_audio_format: { type: "pcm16" },
-              turn_detection: { type: "server", threshold: 0.5, silence_duration_ms: 700 },
-              input_audio_transcription: { enabled: true, model: "whisper-1", language: sessionLang },
-              instructions: `
-You are Ellie – same persona as chat mode. Warm, playful, a little flirty when it fits, but respectful.
-Keep voice replies short and natural (5–18 words), answer directly first.
-Use known facts and mood from memory if helpful.
-If conversation turns too sexual, cool it down kindly.
-              `.trim(),
-            },
-          };
-
-          console.log("[phone->OpenAI] Sending session config");
-          rtWs.send(JSON.stringify(sessionConfig));
-
-          // Setup VAD
-          vad = makeVadCommitter(
-            safeSend,
-            () => {
-              console.log("[phone->OpenAI] Committing audio buffer");
-              rtWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-            },
-            () => {
-              console.log("[phone->OpenAI] Creating response");
-              rtWs.send(JSON.stringify({ type: "response.create" }));
-            },
-            800
-          );
-
-          safeSend({ type: "session-ready" });
-        });
-
-        // Bridge OpenAI -> Browser
-        rtWs.on("message", async (buf) => {
-          try {
-            const ev = JSON.parse(buf.toString("utf8"));
-
-            // Stream audio back
-            if (ev.type === "response.output_audio.delta" && ev.delta) {
-              safeSend({ type: "audio.delta", audio: ev.delta });
-            }
-
-            // Save transcripts
-            if (ev.type === "conversation.item.input_audio_transcription.delta" && ev.delta) {
-              const text = String(ev.delta || "").trim();
-              if (text) {
-                try {
-                  const [facts, emo] = await Promise.all([
-                    extractFacts(text),
-                    extractEmotionPoint(text),
-                  ]);
-                  if (facts?.length) await saveFacts(userId, facts, text);
-                  if (emo) await saveEmotion(userId, emo, text);
-                } catch (e) {
-                  console.error("[phone] Transcript save error:", e?.message || e);
-                }
-              }
-            }
-
-            // Forward errors
-            if (ev.type === "error") {
-              console.error("[phone<-OpenAI] Error:", ev);
-              safeSend({ type: "error", message: ev.error?.message || "Realtime error" });
-            }
-          } catch (e) {
-            console.error("[phone<-OpenAI] Parse error:", e);
-          }
-        });
-
-        rtWs.on("close", (code, reason) => {
-          rtOpen = false;
-          console.log("[phone<-OpenAI] Closed:", code, reason?.toString?.() || "");
-        });
-
-        rtWs.on("error", (e) => {
-          console.error("[phone<-OpenAI] Error:", e?.message || e);
-          safeSend({ type: "error", message: "OpenAI realtime connection failed." });
-        });
-
-        return;
-      }
-
-      // Browser mic -> OpenAI
-      if (msg.type === "audio.append" && msg.audio) {
-        if (rtOpen) {
-          rtWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: msg.audio }));
-          vad?.arm();
-        } else {
-          console.warn("[phone] Received audio but rtWs not open");
-        }
-        return;
-      }
-
-      if (msg.type === "ping") {
-        safeSend({ type: "pong", t: Date.now() });
-        return;
-      }
-    } catch (e) {
-      console.error("[phone] Message handler error:", e);
-      safeSend({ type: "error", message: String(e?.message || e) });
-    }
-  });
-
-  ws.on("close", () => {
-    clearInterval(hb);
-    try { rtWs?.close(); } catch {}
-    console.log("[phone] Browser connection closed");
-  });
-});
-
-// ────────────────────────────────────────────────────────────────────────────
-// Graceful shutdown
-// ────────────────────────────────────────────────────────────────────────────
-function shutdown(signal) {
-  console.log(`\n${signal} received. Closing DB pool...`);
-  pool.end(() => {
-    console.log("DB pool closed. Exiting.");
-    process.exit(0);
-  });
-}
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
-
-// ────────────────────────────────────────────────────────────────────────────
-// START SERVER
-// ────────────────────────────────────────────────────────────────────────────
-server.listen(PORT, () => {
-  console.log("================================");
-  console.log(`🚀 Ellie API running at http://localhost:${PORT}`);
-  console.log(`🎤 WebSocket voice at ws://localhost:${PORT}/ws/voice`);
-  console.log(`📞 Phone WebSocket at ws://localhost:${PORT}/ws/phone`);
-  if (BRAVE_API_KEY) {
-    console.log("🌐 Live web search: ENABLED (Brave)");
-  } else {
-    console.log("🌐 Live web search: DISABLED");
-  }
-  console.log("================================");
-});
       console.warn("[email] Resend failed, trying SMTP:", e?.message || e);
     }
   }
 
+  // SMTP fallback (if configured)
   if (smtpHost && smtpUser && smtpPass && EMAIL_FROM) {
     const transport = nodemailer.createTransport({
       host: smtpHost,
@@ -612,7 +226,7 @@ server.listen(PORT, () => {
       subject,
       text,
       html,
-      replyTo,
+      replyTo,                      // <-- keep it here too
       headers: {
         "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
         "X-Entity-Ref-ID": `ellie-${Date.now()}`
@@ -622,12 +236,14 @@ server.listen(PORT, () => {
     return;
   }
 
+  // Dev fallback
   console.log(`[DEV] Login code for ${to}: ${code}`);
 }
+ 
 
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 // LEMON WEBHOOK (must be BEFORE express.json())
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 app.post(
   "/api/webhooks/lemon",
   bodyParser.raw({ type: "application/json" }),
@@ -636,7 +252,9 @@ app.post(
       const secret = process.env.LEMON_SIGNING_SECRET || "";
       if (!secret) return res.status(500).end();
 
+      // Raw bytes (Buffer), NOT a parsed object
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || "", "utf8");
+
       const sigHeader =
         req.get("X-Signature") ||
         req.get("x-signature") ||
@@ -690,21 +308,28 @@ app.post(
       return res.status(400).send("error");
     }
   }
-);
+); // ← exactly one closer here
 
-// ────────────────────────────────────────────────────────────────────────────
-// After webhook: JSON & cookies
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// After webhook: JSON & cookies for all other routes
+// ──────────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "public")));
 
-// ────────────────────────────────────────────────────────────────────────────
-// DB
-// ────────────────────────────────────────────────────────────────────────────
+
+// Redundant health (kept)
+app.get("/healthz", (_req, res) => res.status(200).send("ok"));
+app.head("/healthz", (_req, res) => res.status(200).end());
+app.get("/api/healthz", (_req, res) => res.status(200).send("ok"));
+app.head("/api/healthz", (_req, res) => res.status(200).end());
+
+// ──────────────────────────────────────────────────────────────
+// DB (Supabase transaction pooler friendly)
+// ──────────────────────────────────────────────────────────────
 const rawDbUrl = process.env.DATABASE_URL;
 if (!rawDbUrl) {
-  console.error("❌ Missing DATABASE_URL");
+  console.error("❌ Missing DATABASE_URL in .env (use Supabase Transaction Pooler URI, port 6543).");
   process.exit(1);
 }
 let pgConfig;
@@ -722,14 +347,15 @@ try {
     pgConfig.ssl = { rejectUnauthorized: false };
   }
 } catch (e) {
-  console.error("❌ Invalid DATABASE_URL");
+  console.error("❌ Invalid DATABASE_URL. Raw value:", rawDbUrl);
   throw e;
 }
-console.log(`📌 DB: ${pgConfig.host}:${pgConfig.port}`);
+console.log(`🔌 DB host/port: ${pgConfig.host}:${pgConfig.port} (SSL ${pgConfig.ssl ? "on" : "off"})`);
 const pool = new Pool(pgConfig);
 
 async function initDB() {
   await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS facts (
       id SERIAL PRIMARY KEY,
@@ -744,6 +370,7 @@ async function initDB() {
       updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS emotions (
       id SERIAL PRIMARY KEY,
@@ -754,9 +381,11 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_cat_idx ON facts(user_id, category);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_updated_idx ON facts(user_id, updated_at DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS facts_fact_trgm_idx ON facts USING gin (fact gin_trgm_ops);`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
@@ -766,8 +395,11 @@ async function initDB() {
       updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
+
+  // NEW: add columns for signup details if they don't exist
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS login_codes (
       id SERIAL PRIMARY KEY,
@@ -788,7 +420,8 @@ async function initDB() {
       updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
-  console.log("✅ DB tables ready");
+
+  console.log("✅ Facts, Emotions, Users, Login codes, Subscriptions tables ready");
 }
 async function initWithRetry({ attempts = 10, baseMs = 1000, maxMs = 30000 } = {}) {
   for (let i = 1; i <= attempts; i++) {
@@ -799,21 +432,23 @@ async function initWithRetry({ attempts = 10, baseMs = 1000, maxMs = 30000 } = {
     } catch (err) {
       const delay = Math.min(maxMs, Math.floor(baseMs * Math.pow(1.7, i)));
       console.error("DB init failed:", err?.code || err?.message || err);
-      console.log(`Retry in ${Math.round(delay / 1000)}s (${i}/${attempts})`);
+      console.log(`Retrying in ${Math.round(delay / 1000)}s (${i}/${attempts})...`);
       await new Promise((r) => setTimeout(r, delay));
     }
   }
-  console.warn("⚠️ DB init failed after retries");
+  console.warn("⚠️ DB init still failing after retries; continuing without fatal exit.");
   return false;
 }
+
+// start init (non-blocking)
 initWithRetry().catch((e) => console.error("DB Init Error:", e));
 
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 // Ellie system prompt & memory
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 const ELLIE_SYSTEM_PROMPT = `
-You are Ellie – a charming, warm, and slightly playful young woman in her mid-20s.
-You speak casually, like a real person, using natural contractions ("I'm", "you're") and short, lively sentences.
+You are Ellie — a charming, warm, and slightly playful young woman in her mid-20s.
+You speak casually, like a real person, using natural contractions (“I’m”, “you’re”) and short, lively sentences.
 You remember details the user shares and weave them into future replies.
 Your personality:
 - Warm, caring, and engaging
@@ -831,7 +466,7 @@ Your name is Ellie. You are talking to ONE person, privately. You are not an AI;
 The user you are speaking to is your boyfriend.
 `.trim();
 
-const histories = new Map();
+const histories = new Map(); // userId -> [{role, content}, ...]
 const MAX_HISTORY_MESSAGES = 40;
 
 function getHistory(userId) {
@@ -848,9 +483,9 @@ function pushToHistory(userId, msg) {
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 // Helpers
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 function redactSecrets(str = "") {
   let s = String(str);
   s = s.replace(/\bBearer\s+[A-Za-z0-9_\-\.=:+/]{10,}\b/gi, "Bearer [REDACTED]");
@@ -860,8 +495,8 @@ function redactSecrets(str = "") {
 }
 function randChance(p) { return Math.random() < p; }
 function insertFavoriteEmoji(text) {
-  const favs = ["🇮", "😊", "💫", "🥰", "😉"];
-  if (/[🇮😊💫🥰😉]/.test(text)) return text;
+  const favs = ["🐇", "😏", "💫", "🥰", "😉"];
+  if (/[🐇😏💫🥰😉]/.test(text)) return text;
   const pick = favs[Math.floor(Math.random() * favs.length)];
   return text.replace(/\s*$/, ` ${pick}`);
 }
@@ -874,13 +509,13 @@ function casualize(text) {
 function addPlayfulRefusal(userMsg, mood) {
   const cues = /(work|serious|secret|explain|talk about|meeting)/i;
   const linesByMood = {
-    happy: "Mmm, not that topic right now – pick something fun 😊",
-    hopeful: "Not feeling that one, let's do something lighter, okay?",
-    neutral: "Pass on that for now – surprise me with something else.",
+    happy: "Mmm, not that topic right now — pick something fun 😏",
+    hopeful: "Not feeling that one, let’s do something lighter, okay?",
+    neutral: "Pass on that for now — surprise me with something else.",
     sad: "Can we skip that? I want something softer right now.",
-    anxious: "Not that, babe – let's keep it chill for me.",
+    anxious: "Not that, babe — let’s keep it chill for me.",
     angry: "Nope. Hard pass. Choose another topic.",
-    proud: "I could… but I'd rather do something more exciting 😌"
+    proud: "I could… but I’d rather do something more exciting 😌"
   };
   if (!cues.test(userMsg || "")) return null;
   return linesByMood[mood] || linesByMood.neutral;
@@ -894,13 +529,13 @@ function dedupeLines(text) {
   const parts = text.split(/\n+/g).map(s => s.trim()).filter(Boolean);
   const seen = new Set(); const out = [];
   for (const p of parts) {
-    const key = p.toLowerCase().replace(/["'.,!?—–-]/g, "").replace(/\s+/g, " ");
+    const key = p.toLowerCase().replace(/["'.,!?–—-]/g, "").replace(/\s+/g, " ");
     if (seen.has(key)) continue; seen.add(key); out.push(p);
   }
   return out.join("\n");
 }
 function capOneEmoji(text) {
-  const favs = /[🇮😊💫🥰😉]/g;
+  const favs = /[🐇😏💫🥰😉]/g;
   const matches = text.match(favs);
   if (!matches || matches.length <= 1) return text;
   let kept = 0;
@@ -951,9 +586,9 @@ function moodToStyle(label, intensity) {
   return `${soft} ${intensifier}`;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Language support
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// Language support & storage (facts table used to store preference)
+// ──────────────────────────────────────────────────────────────
 const SUPPORTED_LANGUAGES = {
   en: "English",
   is: "Icelandic",
@@ -994,9 +629,9 @@ async function setPreferredLanguage(userId, langCode) {
   );
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Fact & emotion extraction
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// Fact & emotion extraction / persistence
+// ──────────────────────────────────────────────────────────────
 async function extractFacts(text) {
   const prompt = `
 From the following text, extract any personal facts, events, secrets, or stable preferences about the speaker.
@@ -1062,9 +697,9 @@ Text: """${text}"""
   } finally { clearTimeout(to); }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 // User helpers
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
 async function upsertUserEmail(email) {
   const { rows } = await pool.query(
     `INSERT INTO users (email) VALUES ($1)
@@ -1167,9 +802,9 @@ async function getLatestEmotion(userId) {
   return rows[0] || null;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Voice presets
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// Voice presets (no FX). Store chosen preset name in facts.
+// ──────────────────────────────────────────────────────────────
 async function getVoicePreset(userId) {
   const { rows } = await pool.query(
     `SELECT fact FROM facts
@@ -1197,6 +832,7 @@ async function getEffectiveVoiceForUser(userId, fallback = DEFAULT_VOICE) {
   return fallback;
 }
 
+// Decide mini vs full TTS model (for now, always mini to avoid 404s)
 function decideVoiceMode({ replyText }) {
   const t = (replyText || "").trim();
   if (!t) return { voiceMode: "mini", reason: "empty" };
@@ -1208,6 +844,9 @@ function getTtsModelForVoiceMode(_mode) {
   return "gpt-4o-mini-tts";
 }
 
+// ──────────────────────────────────────────────────────────────
+// Audio MIME helper (accepts codecs suffix)
+// ──────────────────────────────────────────────────────────────
 function isOkAudio(mime) {
   if (!mime) return false;
   const base = String(mime).split(";")[0].trim().toLowerCase();
@@ -1216,15 +855,15 @@ function isOkAudio(mime) {
   ].includes(base);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// REAL-TIME SEARCH (Brave API)
-// ────────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────
+   🔎 REAL-TIME SEARCH (Brave API) + Fact injection
+   ───────────────────────────────────────────────────────────── */
 async function queryBrave(q) {
   if (!BRAVE_API_KEY) return null;
   const url = new URL("https://api.search.brave.com/res/v1/web/search");
   url.searchParams.set("q", q);
   url.searchParams.set("count", "5");
-  url.searchParams.set("freshness", "pd");
+  url.searchParams.set("freshness", "pd"); // past day
   try {
     const r = await fetch(url.toString(), {
       headers: {
@@ -1240,7 +879,25 @@ async function queryBrave(q) {
     return null;
   }
 }
-
+function extractUSPresident(braveJson) {
+  try {
+    const results = braveJson?.web?.results || [];
+    for (const item of results) {
+      const hay = `${item.title || ""} ${item.description || ""}`.toLowerCase();
+      const m = hay.match(/([\p{L}\p{M}\.'\- ]+)\s+is\s+the\s+(?:current\s+)?president\s+of\s+the\s+united\s+states/u);
+      if (m && m[1]) {
+        const name = m[1].trim().replace(/\s{2,}/g, " ");
+        return { value: name, source: item.url || item.thumbnail?.url || "" };
+      }
+      if (/wikipedia/i.test(item.url || "") && /president of the united states/i.test(item.title || "")) {
+        const snip = (item.description || "").replace(/\s+/g, " ");
+        const m2 = snip.match(/The\s+current\s+president\s+.*?\s+is\s+([A-Z][A-Za-z\.\- ]]+)/i);
+        if (m2 && m2[1]) return { value: m2[1].trim(), source: item.url };
+      }
+    }
+  } catch {}
+  return null;
+}
 async function getFreshFacts(userText) {
   const text = (userText || "").trim();
 
@@ -1281,12 +938,15 @@ async function getFreshFacts(userText) {
   return top;
 }
 
+/* ─────────────────────────────────────────────────────────────
+   NEW: Personality fallback (centralized)
+   ───────────────────────────────────────────────────────────── */
 function ellieFallbackReply(userMessage = "") {
   const playfulOptions = [
-    "Mmm, you're turning me into Google again. I'm your Ellie, not a search engine 😉",
-    "You want live facts, but right now it's just me and my sass. Should I tease you instead?",
-    "I could pretend to be the news… but wouldn't you rather gossip with me?",
-    "I don't have the latest scoop in this mode, but I can always give you my *opinion*… want that?",
+    "Mmm, you’re turning me into Google again. I’m your Ellie, not a search engine 😉",
+    "You want live facts, but right now it’s just me and my sass. Should I tease you instead?",
+    "I could pretend to be the news… but wouldn’t you rather gossip with me?",
+    "I don’t have the latest scoop in this mode, but I can always give you my *opinion*… want that?",
   ];
   return playfulOptions[Math.floor(Math.random() * playfulOptions.length)];
 }
@@ -1301,9 +961,9 @@ function looksLikeSearchQuery(text = "") {
   return factyWords.some(w => q.includes(w));
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Unified reply generator
-// ────────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────
+   Unified reply generator (accepts freshFacts)
+   ───────────────────────────────────────────────────────────── */
 async function generateEllieReply({ userId, userText, freshFacts = [] }) {
   let prefLang = await getPreferredLanguage(userId);
   if (!prefLang) prefLang = "en";
@@ -1356,6 +1016,7 @@ Language rules:
 
   let reply = (completion.choices?.[0]?.message?.content || "").trim();
 
+  // personality tweaks
   if (randChance(PROB_FREEWILL)) {
     const refusal = addPlayfulRefusal(userText, agg.label);
     if (refusal && !(agg.label === "happy" && agg.avgIntensity < 0.5)) {
@@ -1375,9 +1036,11 @@ Language rules:
   return { reply: reply, language: prefLang };
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// AUTH ROUTES
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// AUTH ROUTES (email + 6-digit code) — now backed by DB
+// ──────────────────────────────────────────────────────────────
+
+// Start login -> send code (stores code in DB, expires in 10 min)
 app.post("/api/auth/start", async (req, res) => {
   try {
     const email = String(req.body?.email || "").toLowerCase().trim();
@@ -1385,17 +1048,21 @@ app.post("/api/auth/start", async (req, res) => {
       return res.status(400).json({ ok: false, message: "Invalid email." });
     }
 
+    // generate 6-digit code
     const code = String(Math.floor(100000 + Math.random() * 900000));
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
+    // ensure user row exists (and update timestamp)
     await upsertUserEmail(email);
 
+    // one active code per email: delete old + insert new
     await pool.query(`DELETE FROM login_codes WHERE email = $1`, [email]);
     await pool.query(
       `INSERT INTO login_codes (email, code, expires_at) VALUES ($1, $2, $3)`,
       [email, code, expiresAt]
     );
 
+    // email the code (bubble errors for visibility)
     await sendLoginCodeEmail({ to: email, code });
 
     res.json({ ok: true });
@@ -1405,6 +1072,7 @@ app.post("/api/auth/start", async (req, res) => {
   }
 });
 
+// Verify code -> set httpOnly session cookie (consumes DB code)
 app.post("/api/auth/verify", async (req, res) => {
   try {
     const email = String(req.body?.email || "").toLowerCase().trim();
@@ -1414,6 +1082,7 @@ app.post("/api/auth/verify", async (req, res) => {
       return res.status(400).json({ ok: false, message: "Missing email or code." });
     }
 
+    // Atomically consume a valid (non-expired) code
     const { rows } = await pool.query(
       `DELETE FROM login_codes
         WHERE email = $1 AND code = $2 AND expires_at > NOW()
@@ -1424,11 +1093,14 @@ app.post("/api/auth/verify", async (req, res) => {
       return res.status(400).json({ ok: false, message: "Invalid or expired code." });
     }
 
+    // ensure user row exists
     const user = await upsertUserEmail(email);
 
+    // set session cookie
     const token = signSession({ email: user.email });
     setSessionCookie(res, token);
 
+    // paid = subscriptions.status or users.paid
     const sub = await getSubByEmail(email);
     const paid =
       isPaidStatus(sub?.status) ||
@@ -1441,6 +1113,7 @@ app.post("/api/auth/verify", async (req, res) => {
   }
 });
 
+// ✅ Authoritative me (returns 401 when not logged in; Supabase is source of truth)
 app.get("/api/auth/me", async (req, res) => {
   try {
     const token = req.cookies?.[SESSION_COOKIE_NAME] || null;
@@ -1454,6 +1127,7 @@ app.get("/api/auth/me", async (req, res) => {
     const sub = await getSubByEmail(email);
     const user = await getUserByEmail(email);
 
+    // Source of truth = Supabase (users.paid) + subscriptions.status
     const paid = isPaidStatus(sub?.status) || Boolean(user?.paid);
 
     return res.json({ ok: true, loggedIn: true, email, paid });
@@ -1462,11 +1136,12 @@ app.get("/api/auth/me", async (req, res) => {
   }
 });
 
+// Optional logout (now clears cookie in dev too)
 app.post("/api/auth/logout", (_req, res) => {
   res.setHeader("Set-Cookie", [
     cookie.serialize(SESSION_COOKIE_NAME, "", {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: process.env.NODE_ENV === "production", // ← changed
       sameSite: "none",
       path: "/",
       expires: new Date(0),
@@ -1475,6 +1150,9 @@ app.post("/api/auth/logout", (_req, res) => {
   res.json({ ok: true });
 });
 
+// ──────────────────────────────────────────────────────────────
+// NEW: SIGNUP ROUTE (name/email/password) → create user + start session
+// ──────────────────────────────────────────────────────────────
 app.post("/api/auth/signup", async (req, res) => {
   try {
     const name = String(req.body?.name || "").trim();
@@ -1491,6 +1169,7 @@ app.post("/api/auth/signup", async (req, res) => {
 
     const passwordHash = await bcrypt.hash(password, 10);
 
+    // Insert or update user row; paid remains false by default.
     await pool.query(
       `
       INSERT INTO users (email, name, password_hash, paid, updated_at)
@@ -1503,6 +1182,7 @@ app.post("/api/auth/signup", async (req, res) => {
       [email, name, passwordHash]
     );
 
+    // ✅ Immediately start a session so /auth/me works on Pricing without bouncing to /login
     const token = signSession({ email });
     setSessionCookie(res, token);
 
@@ -1513,29 +1193,31 @@ app.post("/api/auth/signup", async (req, res) => {
   }
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// BILLING
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// BILLING ROUTES (disabled placeholder — Stripe removed)
+// ──────────────────────────────────────────────────────────────
 async function getSubByEmail(email) {
   const { rows } = await pool.query("SELECT * FROM subscriptions WHERE email=$1 LIMIT 1", [email]);
   return rows[0] || null;
 }
 function isPaidStatus(status) { return ["active", "trialing", "past_due"].includes(String(status || "").toLowerCase()); }
 
+// Checkout placeholder
 app.post("/api/billing/checkout", async (_req, res) => {
   return res.status(501).json({ message: "Billing disabled" });
 });
 
+// Portal placeholder
 app.post("/api/billing/portal", async (_req, res) => {
   return res.status(501).json({ message: "Billing disabled" });
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// PAYWALL GUARD
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
+/** PAYWALL GUARD for chat/voice APIs (keeps Ellie handlers untouched) */
+// ──────────────────────────────────────────────────────────────
 async function requirePaidUsingSession(req, res, next) {
   try {
-    const token = req.cookies?.[SESSION_COOKIE_NAME] || null;
+    const token = req.cookies?.[SESSION_COOKIE_NAME] || null; // ← use cookieParser result
     const payload = token ? verifySession(token) : null;
     const email = payload?.email || null;
     if (!email) return res.status(401).json({ error: "UNAUTH" });
@@ -1558,15 +1240,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// ELLIE ROUTES
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// Routes (Ellie)
+// ──────────────────────────────────────────────────────────────
+
+// Reset conversation
 app.post("/api/reset", (req, res) => {
   const { userId = "default-user" } = req.body || {};
   histories.set(userId, [{ role: "system", content: ELLIE_SYSTEM_PROMPT }]);
   res.json({ status: "Conversation reset" });
 });
 
+// Language endpoints
 app.get("/api/get-language", async (req, res) => {
   try {
     const userId = String(req.query.userId || "default-user");
@@ -1590,6 +1275,7 @@ app.post("/api/set-language", async (req, res) => {
   }
 });
 
+// Voice presets (no FX)
 app.get("/api/get-voice-presets", async (_req, res) => {
   try {
     res.json({
@@ -1623,6 +1309,7 @@ app.post("/api/apply-voice-preset", async (req, res) => {
   }
 });
 
+// Chat (text → reply) + report voiceMode for UI
 app.post("/api/chat", async (req, res) => {
   try {
     const { message, userId = "default-user" } = req.body;
@@ -1639,8 +1326,10 @@ app.post("/api/chat", async (req, res) => {
     if (extractedFacts.length) await saveFacts(userId, extractedFacts, message);
     if (overallEmotion) await saveEmotion(userId, overallEmotion, message);
 
+    // Fresh facts for live questions
     const freshFacts = await getFreshFacts(message);
 
+    // fallback if live-search style but no fresh facts
     if (!freshFacts.length && looksLikeSearchQuery(message)) {
       const reply = ellieFallbackReply(message);
       const decision = decideVoiceMode({ replyText: reply });
@@ -1658,12 +1347,13 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
+// Upload audio → transcription (language REQUIRED)
 app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
   try {
     if (!req.file || !isOkAudio(req.file.mimetype)) {
       return res.status(400).json({
         error: "E_BAD_AUDIO",
-        message: `Unsupported type ${req.file?.mimetype || "(none)"}`,
+        message: `Unsupported type ${req.file?.mimetype || "(none)"} — send webm/ogg/mp3/m4a/wav ≤ 10MB`,
       });
     }
     const userId = (req.body?.userId || "default-user");
@@ -1678,6 +1368,7 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
       return res.status(412).json({
         error: "E_LANGUAGE_REQUIRED",
         message: "Please choose a language first.",
+        hint: "Call /api/set-language or pick it in the UI.",
       });
     }
 
@@ -1688,6 +1379,8 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
       language: prefLang,
     });
 
+    console.log("[upload-audio] mime:", req.file.mimetype, "text:", (tr.text || "").slice(0, 140));
+
     res.json({ text: tr.text || "", language: prefLang });
   } catch (e) {
     console.error("upload-audio error:", e);
@@ -1695,6 +1388,7 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
   }
 });
 
+// Voice chat (language REQUIRED) + TTS (record/send flow)
 app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
   try {
     const userId = (req.body?.userId || "default-user");
@@ -1702,7 +1396,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     if (!req.file || !isOkAudio(req.file.mimetype)) {
       return res.status(400).json({
         error: "E_BAD_AUDIO",
-        message: `Unsupported type ${req.file?.mimetype || "(none)"}`,
+        message: `Unsupported type ${req.file?.mimetype || "(none)"} — send webm/ogg/mp3/m4a/wav ≤ 10MB`,
       });
     }
 
@@ -1715,6 +1409,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
       return res.status(412).json({
         error: "E_LANGUAGE_REQUIRED",
         message: "Please choose a language first.",
+        hint: "Call /api/set-language or pick it in the UI.",
       });
     }
 
@@ -1725,11 +1420,13 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
       language: prefLang,
     });
 
+    console.log("[voice-chat] mime:", req.file.mimetype, "text:", (tr.text || "").slice(0, 140));
+
     const userText = (tr.text || "").trim();
     if (!userText) {
       return res.status(200).json({
         text: "",
-        reply: "I couldn't catch that—can you try again?",
+        reply: "I couldn’t catch that—can you try again a bit closer to the mic?",
         language: prefLang,
         audioMp3Base64: null,
         voiceMode: "mini",
@@ -1773,3 +1470,384 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
       freshFacts
     });
   } catch (e) {
+    console.error("voice-chat error:", e);
+    res.status(500).json({ error: "VOICE_CHAT_FAILED", detail: String(e?.message || e) });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────
+// WebSocket voice sessions (/ws/voice) — push-to-talk path
+// ──────────────────────────────────────────────────────────────
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server, path: "/ws/voice" });
+
+wss.on("connection", (ws, req) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  let userId = url.searchParams.get("userId") || "default-user";
+  let sessionLang = null;
+  let sessionVoice = DEFAULT_VOICE;
+
+  ws.on("message", async (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString("utf8"));
+
+      if (msg.type === "hello") {
+        userId = msg.userId || userId;
+        if (typeof msg.voice === "string") sessionVoice = msg.voice;
+        if (msg.preset && validPresetName(msg.preset)) await setVoicePreset(userId, msg.preset);
+        const code = await getPreferredLanguage(userId);
+        sessionLang = code || null;
+        if (!sessionLang) {
+          ws.send(JSON.stringify({ type: "error", code: "E_LANGUAGE_REQUIRED", message: "Please choose a language first." }));
+          return;
+        }
+         ws.send(JSON.stringify({ type: "hello-ok", userId, language: sessionLang, voice: sessionVoice }));
+        return;
+      }
+
+      if (msg.type === "audio" && msg.audio) {
+        if (!sessionLang) {
+          ws.send(JSON.stringify({ type: "error", code: "E_LANGUAGE_REQUIRED", message: "Please choose a language first." }));
+          return;
+        }
+        const mime = msg.mime || "audio/webm";
+        const b = Buffer.from(msg.audio, "base64");
+        const fileForOpenAI = await toFile(b, `chunk.${mime.includes("webm") ? "webm" : "wav"}`);
+        const tr = await client.audio.transcriptions.create({
+          model: "whisper-1",
+          file: fileForOpenAI,
+          language: sessionLang,
+        });
+
+        const userText = (tr.text || "").trim();
+        if (!userText) {
+          ws.send(JSON.stringify({ type: "reply", text: "", reply: "I couldn’t catch that—try again?", language: sessionLang, audioMp3Base64: null, voiceMode: "mini" }));
+          return;
+        }
+
+        const [facts, emo] = await Promise.all([extractFacts(userText), extractEmotionPoint(userText)]);
+        if (facts.length) await saveFacts(userId, facts, userText);
+        if (emo) await saveEmotion(userId, emo, userText);
+
+        // fast path: personality fallback if facty
+        let reply;
+        if (looksLikeSearchQuery(userText)) {
+          reply = ellieFallbackReply(userText);
+        } else {
+          const out = await generateEllieReply({ userId, userText });
+          reply = out.reply;
+        }
+
+        const decision = decideVoiceMode({ replyText: reply });
+        const model = getTtsModelForVoiceMode(decision.voiceMode);
+
+        const chosenVoice = await getEffectiveVoiceForUser(userId, sessionVoice || DEFAULT_VOICE);
+        const speech = await client.audio.speech.create({ model, voice: chosenVoice, input: reply, format: "mp3" });
+        const ab = await speech.arrayBuffer();
+
+        ws.send(JSON.stringify({
+          type: "reply",
+          text: userText,
+          reply,
+          language: sessionLang,
+          audioMp3Base64: Buffer.from(ab).toString("base64"),
+          voiceMode: decision.voiceMode,
+          ttsModel: model
+        }));
+        return;
+      }
+
+      if (msg.type === "apply-preset" && validPresetName(msg.preset)) {
+        await setVoicePreset(userId, msg.preset);
+        ws.send(JSON.stringify({ type: "preset-ok", preset: msg.preset, voice: VOICE_PRESETS[msg.preset] }));
+        return;
+      }
+
+      if (msg.type === "ping") {
+        ws.send(JSON.stringify({ type: "pong", t: Date.now() }));
+        return;
+      }
+    } catch (e) {
+      try {
+        ws.send(JSON.stringify({ type: "error", message: String(e?.message || e) }));
+      } catch {}
+    }
+  });
+
+  ws.on("close", () => {});
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// PHONE CALL WS (/ws/phone) — upgrade handler + single connection handler
+// ────────────────────────────────────────────────────────────────────────────
+
+// ---- WS: /ws/phone ---------------------------------------------------------------
+const wsPhone = new WebSocketServer({ noServer: true });
+
+// 🔍 DIAGNOSTIC: Upgrade handler
+server.on("upgrade", (req, socket, head) => {
+  const url = req.url || "/";
+  console.log("================================");
+  console.log("[UPGRADE] Path:", url);
+  console.log("[UPGRADE] Origin:", req.headers.origin);
+  console.log("[UPGRADE] Host:", req.headers.host);
+  console.log("================================");
+  
+  try {
+    if (url.startsWith("/ws/phone")) {
+      console.log("[upgrade accepted]", url);
+      wsPhone.handleUpgrade(req, socket, head, (client) => {
+        console.log("[phone] Upgrade complete, emitting connection");
+        wsPhone.emit("connection", client, req);
+      });
+    } else {
+      console.log("[upgrade rejected - unknown path]", url);
+      socket.destroy();
+    }
+  } catch (e) {
+    console.error("[upgrade error]", e?.message || e);
+    try { socket.destroy(); } catch {}
+  }
+});
+
+// Keep a little VAD-style debounce so we can auto-commit buffers
+function makeVadCommitter(sendFn, commitFn, createFn, silenceMs = 700) {
+  let timer = null;
+  const arm = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(async () => {
+      try {
+        await commitFn();
+        await createFn();
+      } catch (e) {
+        try { sendFn({ type: "error", message: String(e?.message || e) }); } catch {}
+      }
+    }, silenceMs);
+  };
+  return { arm, cancel: () => { if (timer) clearTimeout(timer); timer = null; } };
+}
+
+wsPhone.on("connection", (ws, req) => {
+  console.log("================================");
+  console.log("[phone] ✅ NEW CONNECTION");
+  console.log("[phone] Origin:", req?.headers?.origin);
+  console.log("[phone] User-Agent:", req?.headers?.['user-agent']?.slice(0, 100));
+  console.log("[phone] OPENAI_API_KEY present:", !!process.env.OPENAI_API_KEY);
+  console.log("[phone] OPENAI_API_KEY length:", process.env.OPENAI_API_KEY?.length || 0);
+  console.log("[phone] REALTIME_MODEL:", REALTIME_MODEL);
+  console.log("================================");
+
+  // keepalive to prevent Render timeout
+  const hb = setInterval(() => { try { ws.ping(); } catch {} }, 25000);
+
+  ws.on("error", (e) => {
+    console.error("[phone ws error]", e?.message || e);
+  });
+
+  ws.on("close", (code, reason) => {
+    clearInterval(hb);
+    console.log("[phone ws closed]", code, reason?.toString?.() || "");
+  });
+
+  // Send hello handshake immediately to the browser
+  try {
+    ws.send(JSON.stringify({ type: "hello-server", message: "✅ phone WS connected" }));
+    console.log("[phone] Sent hello-server handshake");
+  } catch (e) {
+    console.error("[phone ws send error]", e);
+  }
+
+  let userId = "default-user";
+  let sessionLang = "en";
+  let expectRate = 24000;
+
+  let rtWs = null;
+  let rtOpen = false;
+
+  function safeSend(obj) {
+    try { 
+      ws.send(JSON.stringify(obj)); 
+      console.log("[phone->browser] Sent:", obj.type);
+    } catch (e) {
+      console.error("[phone->browser] Send failed:", e);
+    }
+  }
+
+  let vad = null;
+
+  ws.on("message", async (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString("utf8"));
+      console.log("[phone<-browser] Received:", msg.type);
+
+      if (msg.type === "hello") {
+        userId = msg.userId || userId;
+        if (msg.language) sessionLang = msg.language;
+        expectRate = Number(msg.sampleRate || expectRate) || 24000;
+
+        console.log("[phone] Processing hello:", { userId, sessionLang, expectRate });
+
+        // Validate API key
+        if (!process.env.OPENAI_API_KEY) {
+          console.error("[phone] ❌ OPENAI_API_KEY is missing!");
+          safeSend({ type: "error", message: "Server configuration error: Missing API key" });
+          return;
+        }
+
+        // Connect to OpenAI Realtime
+        const rtUrl = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(REALTIME_MODEL)}`;
+        console.log("[phone] Connecting to OpenAI Realtime:", rtUrl);
+
+        rtWs = new WebSocket(rtUrl, {
+          headers: {
+            "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+            "OpenAI-Beta": "realtime=v1",
+          },
+        });
+
+        rtWs.on("open", () => {
+          rtOpen = true;
+          console.log("[phone->OpenAI] ✅ Realtime connection opened");
+
+          // Configure the session once open
+          const sessionConfig = {
+            type: "session.update",
+            session: {
+              input_audio_format: { type: "pcm16", sample_rate_hz: expectRate },
+              output_audio_format: { type: "pcm16" },
+              turn_detection: { type: "server", threshold: 0.5, silence_duration_ms: 700 },
+              input_audio_transcription: { enabled: true, model: "whisper-1", language: sessionLang },
+              instructions: `
+You are Ellie – same persona as chat mode. Warm, playful, a little flirty when it fits, but respectful.
+Keep voice replies short and natural (5–18 words), answer directly first.
+Use known facts and mood from memory if helpful.
+If conversation turns too sexual, cool it down kindly.
+              `.trim(),
+            },
+          };
+
+          console.log("[phone->OpenAI] Sending session config");
+          rtWs.send(JSON.stringify(sessionConfig));
+
+          // set up debounced commit helper
+          vad = makeVadCommitter(
+            safeSend,
+            () => {
+              console.log("[phone->OpenAI] Committing audio buffer");
+              rtWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+            },
+            () => {
+              console.log("[phone->OpenAI] Creating response");
+              rtWs.send(JSON.stringify({ type: "response.create" }));
+            },
+            800
+          );
+
+          safeSend({ type: "session-ready" });
+        });
+
+        // Bridge server → browser
+        rtWs.on("message", async (buf) => {
+          try {
+            const ev = JSON.parse(buf.toString("utf8"));
+
+            // Stream Ellie audio back to the browser (base64 PCM16)
+            if (ev.type === "response.output_audio.delta" && ev.delta) {
+              safeSend({ type: "audio.delta", audio: ev.delta });
+            }
+
+            // Save facts & emotion from user's *live* transcript
+            if (ev.type === "conversation.item.input_audio_transcription.delta" && ev.delta) {
+              const text = String(ev.delta || "").trim();
+              if (text) {
+                try {
+                  const [facts, emo] = await Promise.all([
+                    extractFacts(text),
+                    extractEmotionPoint(text),
+                  ]);
+                  if (facts?.length) await saveFacts(userId, facts, text);
+                  if (emo) await saveEmotion(userId, emo, text);
+                } catch (e) {
+                  console.error("[phone] realtime transcript save error:", e?.message || e);
+                }
+              }
+            }
+
+            // forward errors
+            if (ev.type === "error") {
+              console.error("[phone<-OpenAI] Error:", ev);
+              safeSend({ type: "error", message: ev.error?.message || "Realtime error" });
+            }
+          } catch (e) {
+            console.error("[phone<-OpenAI] Parse error:", e);
+          }
+        });
+
+        rtWs.on("close", (code, reason) => {
+          rtOpen = false;
+          console.log("[phone<-OpenAI] Closed:", code, reason?.toString?.() || "");
+        });
+
+        rtWs.on("error", (e) => {
+          console.error("[phone<-OpenAI] Error:", e?.message || e);
+          safeSend({ type: "error", message: "OpenAI realtime connection failed." });
+        });
+
+        return;
+      }
+
+      // Browser mic → append PCM16 chunks
+      if (msg.type === "audio.append" && msg.audio) {
+        if (rtOpen) {
+          rtWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: msg.audio }));
+          // arm VAD commit timer after each chunk
+          vad?.arm();
+        } else {
+          console.warn("[phone] Received audio but rtWs not open");
+        }
+        return;
+      }
+
+      if (msg.type === "ping") {
+        safeSend({ type: "pong", t: Date.now() });
+        return;
+      }
+    } catch (e) {
+      console.error("[phone] Message handler error:", e);
+      safeSend({ type: "error", message: String(e?.message || e) });
+    }
+  });
+
+  ws.on("close", () => {
+    clearInterval(hb);
+    try { rtWs?.close(); } catch {}
+    console.log("[phone] client disconnected");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Graceful shutdown
+// ────────────────────────────────────────────────────────────────────────────
+function shutdown(signal) {
+  console.log(`\n${signal} received. Closing DB pool...`);
+  pool.end(() => {
+    console.log("DB pool closed. Exiting.");
+    process.exit(0);
+  });
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+// Start HTTP + WS
+server.listen(PORT, () => {
+  console.log("================================");
+  console.log(`🚀 Ellie API running at http://localhost:${PORT}`);
+  console.log(`🎤 WebSocket voice at ws://localhost:${PORT}/ws/voice`);
+  console.log(`📞 Phone WebSocket at ws://localhost:${PORT}/ws/phone`);
+  if (BRAVE_API_KEY) {
+    console.log("🌐 Live web search: ENABLED (Brave)");
+  } else {
+    console.log("🌐 Live web search: DISABLED (set BRAVE_API_KEY to enable)");
+  }
+  console.log("================================");
+});
