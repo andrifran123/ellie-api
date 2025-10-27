@@ -421,6 +421,7 @@ app.post(
 // ------------------------------------------------------------
 // After webhook: JSON & cookies for all other routes
 // ------------------------------------------------------------
+app.use(express.json());
 app.use(cookieParser());
 
 app.use(extractUserId); // Extract userId from session for all routes
