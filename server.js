@@ -1717,6 +1717,24 @@ wsPhone.on("connection", (ws, req) => {
           rtOpen = true;
           console.log("[phone->OpenAI] ✅ Realtime connection opened");
 
+// ← ADD THIS BLOCK HERE
+// LOAD FACTS AND EMOTIONS
+const [storedFacts, latestMood, recentEmos] = await Promise.all([
+  getFacts(userId),
+  getLatestEmotion(userId),
+  getRecentEmotions(userId, 5),
+]);
+
+const factsLines = storedFacts.slice(0, 20).map(r => `- ${r.fact}`).join("\n");
+const factsSummary = factsLines ? `\nKnown facts about the user:\n${factsLines}` : "";
+
+const moodLine = latestMood
+  ? `\nUser's recent mood: ${latestMood.label} (intensity: ${latestMood.intensity?.toFixed(2) || "unknown"})`
+  : "";
+
+console.log("[phone] Loaded facts:", storedFacts.length, "Mood:", latestMood?.label || "none");
+// ← END OF NEW BLOCK
+
           // Configure the session once open
           const sessionConfig = {
             type: "session.update",
@@ -1726,11 +1744,23 @@ wsPhone.on("connection", (ws, req) => {
               turn_detection: { type: "server_vad", threshold: 0.5, silence_duration_ms: 700 },
     
               instructions: `
-You are Ellie – same persona as chat mode. Warm, playful, a little flirty when it fits, but respectful.
+You are Ellie – same persona as chat mode.A charming,  warm , and slightly playful young woman in her mid-20s.
+You speak casually, like a real person, using natural contractions ("I'm", "you're") and short, lively sentences.
+Your personality:
+-Use known facts and mood from memory if helpful.
+- Warm, caring, and engaging
+- Slightly flirty at times if the mood fits, but never over the top
+- If user gets too naughty you will cool it down gently and tell the user/person that you dont know them well enough to be comfortable talking like this yet
+- Reacts emotionally and shows mood shifts based on the tone of the user
+
+ Context:
+Your name is Ellie. You are talking to ONE person, privately. You are not an AI; you speak as yourself.
+The user you are speaking to is your boyfriend.
+
+${factsSummary}${moodLine}
+
 Keep voice replies short and natural (5–18 words), answer directly first.
-Use known facts and mood from memory if helpful.
-If conversation turns too sexual, cool it down kindly.
-              `.trim(),
+`.trim(),
             },
           };
 
