@@ -1713,7 +1713,7 @@ wsPhone.on("connection", (ws, req) => {
           },
         });
 
-        rtWs.on("open", () => {
+        rtWs.on("open", async () => {
           rtOpen = true;
           console.log("[phone->OpenAI] ✅ Realtime connection opened");
 
