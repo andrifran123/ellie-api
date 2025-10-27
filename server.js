@@ -155,11 +155,11 @@ function verifySession(token) {
   try { return jwt.verify(token, SESSION_SECRET); } catch { return null; }
 }
 function setSessionCookie(res, token) {
-  const isProd = process.env.NODE_ENV === "production";
+  // Always use secure cookies when sameSite=none (required for cross-origin)
   const c = cookie.serialize(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: isProd,       // was: true (breaks localhost); still true in production
-    sameSite: "none",
+    secure: true,  // Always true for cross-origin cookies
+    sameSite: "none",  // Required for Vercel → Render proxy
     path: "/",
     maxAge: SESSION_MAX_AGE_SEC,
   });
