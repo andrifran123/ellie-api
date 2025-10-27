@@ -1164,11 +1164,20 @@ app.get("/api/auth/me", async (req, res) => {
     const token = req.cookies?.[SESSION_COOKIE_NAME] || null;
     const payload = token ? verifySession(token) : null;
 
-    if (!payload?.userId) {
+    // Support BOTH old email sessions and new userId sessions
+    if (!payload?.userId && !payload?.email) {
       return res.status(401).json({ ok: false, loggedIn: false });
     }
 
-    const user = await getUserByUserId(payload.userId);
+    let user;
+    if (payload.userId) {
+      // New UUID-based session
+      user = await getUserByUserId(payload.userId);
+    } else if (payload.email) {
+      // Old email-based session (backward compatibility)
+      user = await getUserByEmail(payload.email);
+    }
+
     if (!user) {
       return res.status(401).json({ ok: false, loggedIn: false });
     }
@@ -1963,7 +1972,7 @@ if (ev.type === "conversation.item.created") {
   });
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Graceful shutdown
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function shutdown(signal) {
