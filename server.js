@@ -245,7 +245,9 @@ async function sendLoginCodeEmail({ to, code }) {
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // LEMON WEBHOOK (must be BEFORE express.json())
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ------------------------------------------------------------
+// LEMON WEBHOOK (must be BEFORE express.json())
+// ------------------------------------------------------------
 app.post(
   "/api/webhooks/lemon",
   bodyParser.raw({ type: "application/json" }),
@@ -276,10 +278,15 @@ app.post(
         null;
 
       const status = evt?.data?.attributes?.status || null;
+      const variantId = evt?.data?.attributes?.variant_id || null;
+      const productId = evt?.data?.attributes?.product_id || null;
+      const customerId = evt?.data?.attributes?.customer_id || null;
+      const subscriptionId = evt?.data?.id || null;
       const currentPeriodEnd =
         evt?.data?.attributes?.renews_at || evt?.data?.attributes?.ends_at || null;
 
       if (email) {
+        // Update subscriptions table
         await pool.query(
           `INSERT INTO subscriptions (email, status, stripe_customer_id, stripe_sub_id, current_period_end, updated_at)
            VALUES ($1, $2, NULL, NULL, $3, NOW())
@@ -293,13 +300,61 @@ app.post(
         const paid = ["active", "on_trial", "trialing", "paid", "past_due"].includes(
           String(status || "").toLowerCase()
         );
-        await pool.query(
-          `INSERT INTO users (email, paid) VALUES ($1, $2)
-           ON CONFLICT (email) DO UPDATE SET paid = $2, updated_at = NOW()`,
-          [email.toLowerCase(), paid]
+        
+        // ✅ PHASE 2: Determine tier from variant ID
+        let tier = 'none';
+        if (variantId) {
+          if (variantId === TIERS.starter.variantId) tier = 'starter';
+          else if (variantId === TIERS.plus.variantId) tier = 'plus';
+          else if (variantId === TIERS.premium.variantId) tier = 'premium';
+        }
+
+        // Get user by email first
+        const { rows: userRows } = await pool.query(
+          `SELECT user_id FROM users WHERE email = $1`,
+          [email.toLowerCase()]
         );
 
-        console.log(`[lemon] ${type} â†’ ${email} â†’ status=${status} paid=${paid}`);
+        if (userRows.length > 0) {
+          const userId = userRows[0].user_id;
+
+          // ✅ PHASE 2: Handle subscription events
+          if (type === 'subscription_created' || type === 'subscription_updated') {
+            if (tier !== 'none' && status === 'active') {
+              // Assign tier and reset billing cycle
+              await assignTier(userId, tier);
+              console.log(`[lemon] Assigned ${tier} to ${email} (variant: ${variantId})`);
+            }
+          } else if (type === 'subscription_cancelled' || type === 'subscription_expired') {
+            // Cancel subscription
+            await cancelSubscription(userId);
+            console.log(`[lemon] Cancelled subscription for ${email}`);
+          } else if (type === 'subscription_payment_success') {
+            // Reset billing cycle on successful payment
+            await resetBillingCycle(userId);
+            console.log(`[lemon] Reset billing cycle for ${email}`);
+          }
+
+          // Update Lemon Squeezy IDs
+          await pool.query(
+            `UPDATE users 
+             SET lemon_customer_id = $1, 
+                 lemon_subscription_id = $2,
+                 paid = $3,
+                 updated_at = NOW()
+             WHERE user_id = $4`,
+            [customerId, subscriptionId, paid, userId]
+          );
+        } else {
+          // User doesn't exist yet, just mark as paid
+          await pool.query(
+            `INSERT INTO users (email, paid) VALUES ($1, $2)
+             ON CONFLICT (email) DO UPDATE SET paid = $2, updated_at = NOW()`,
+            [email.toLowerCase(), paid]
+          );
+        }
+
+        console.log(`[lemon] ${type} → ${email} → status=${status} tier=${tier} paid=${paid}`);
       } else {
         console.log("[lemon] event (no email):", type);
       }
@@ -310,12 +365,11 @@ app.post(
       return res.status(400).send("error");
     }
   }
-); // â† exactly one closer here
+); // ← exactly one closer here
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ------------------------------------------------------------
 // After webhook: JSON & cookies for all other routes
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-app.use(express.json());
+// ------------------------------------------------------------
 app.use(cookieParser());
 
 // âœ… Middleware: Extract userId from session and attach to req
@@ -476,6 +530,208 @@ async function initWithRetry({ attempts = 10, baseMs = 1000, maxMs = 30000 } = {
 
 // start init (non-blocking)
 initWithRetry().catch((e) => console.error("DB Init Error:", e));
+// ============================================================
+// PHASE 2: SUBSCRIPTION TIER SYSTEM
+// ============================================================
+
+// Tier Configuration
+const TIERS = {
+  none: {
+    name: "Free",
+    monthlyMinutes: 0,
+    price: 0,
+  },
+  starter: {
+    name: "Girlfriend Starter",
+    monthlyMinutes: 20,
+    price: 14.99,
+    variantId: null, // Set from env: LEMON_VARIANT_STARTER
+  },
+  plus: {
+    name: "Girlfriend Plus",
+    monthlyMinutes: 100,
+    price: 27.99,
+    variantId: null, // Set from env: LEMON_VARIANT_PLUS
+  },
+  premium: {
+    name: "Girlfriend Premium",
+    monthlyMinutes: 250,
+    price: 69.99,
+    variantId: null, // Set from env: LEMON_VARIANT_PREMIUM
+  },
+};
+
+// Load variant IDs from environment
+TIERS.starter.variantId = process.env.LEMON_VARIANT_STARTER || null;
+TIERS.plus.variantId = process.env.LEMON_VARIANT_PLUS || null;
+TIERS.premium.variantId = process.env.LEMON_VARIANT_PREMIUM || null;
+
+// Extra minute pricing
+const EXTRA_MINUTE_PRICE = 0.49; // $0.49 per minute
+const OPENAI_COST_PER_MINUTE = 0.17; // Estimated OpenAI cost
+
+// ============================================================
+// TIER MANAGEMENT FUNCTIONS
+// ============================================================
+
+/**
+ * Get tier limits for a user
+ */
+async function getUserTierLimits(userId) {
+  const { rows } = await pool.query(
+    `SELECT subscription_tier, voice_minutes_used, voice_minutes_limit, billing_cycle_start
+     FROM users WHERE user_id = $1`,
+    [userId]
+  );
+  
+  if (!rows.length) return null;
+  
+  const user = rows[0];
+  const tier = user.subscription_tier || 'none';
+  const tierConfig = TIERS[tier] || TIERS.none;
+  
+  return {
+    tier,
+    tierName: tierConfig.name,
+    monthlyMinutes: tierConfig.monthlyMinutes,
+    minutesUsed: user.voice_minutes_used || 0,
+    minutesLimit: user.voice_minutes_limit || tierConfig.monthlyMinutes,
+    minutesRemaining: Math.max(0, (user.voice_minutes_limit || tierConfig.monthlyMinutes) - (user.voice_minutes_used || 0)),
+    billingCycleStart: user.billing_cycle_start,
+    isUnlimited: false,
+  };
+}
+
+/**
+ * Check if user can make a voice call
+ */
+async function canMakeVoiceCall(userId) {
+  const limits = await getUserTierLimits(userId);
+  if (!limits) return { allowed: false, reason: 'USER_NOT_FOUND' };
+  
+  // No tier = no voice calls
+  if (limits.tier === 'none') {
+    return { 
+      allowed: false, 
+      reason: 'NO_SUBSCRIPTION',
+      message: 'Please subscribe to use voice features.'
+    };
+  }
+  
+  // Check if they have minutes remaining
+  if (limits.minutesRemaining <= 0) {
+    return { 
+      allowed: false, 
+      reason: 'LIMIT_REACHED',
+      message: `You've used all ${limits.monthlyMinutes} minutes this billing cycle. Upgrade or buy extra minutes!`,
+      minutesUsed: limits.minutesUsed,
+      minutesLimit: limits.minutesLimit,
+    };
+  }
+  
+  return { 
+    allowed: true,
+    minutesRemaining: limits.minutesRemaining,
+    minutesUsed: limits.minutesUsed,
+    minutesLimit: limits.minutesLimit,
+  };
+}
+
+/**
+ * Track voice usage (call this after each voice interaction)
+ */
+async function trackVoiceUsage(userId, durationSeconds) {
+  const minutes = Math.ceil(durationSeconds / 60); // Round up to nearest minute
+  
+  await pool.query(
+    `UPDATE users 
+     SET voice_minutes_used = voice_minutes_used + $1,
+         updated_at = NOW()
+     WHERE user_id = $2`,
+    [minutes, userId]
+  );
+  
+  console.log(`[usage] User ${userId} used ${minutes} minute(s) (${durationSeconds}s)`);
+  
+  return minutes;
+}
+
+/**
+ * Assign a tier to a user
+ */
+async function assignTier(userId, tier, customMinutes = null) {
+  const tierConfig = TIERS[tier];
+  if (!tierConfig) throw new Error(`Invalid tier: ${tier}`);
+  
+  const minutes = customMinutes !== null ? customMinutes : tierConfig.monthlyMinutes;
+  const now = new Date();
+  
+  await pool.query(
+    `UPDATE users 
+     SET subscription_tier = $1,
+         subscription_status = 'active',
+         voice_minutes_limit = $2,
+         voice_minutes_used = 0,
+         billing_cycle_start = $3,
+         updated_at = NOW()
+     WHERE user_id = $4`,
+    [tier, minutes, now, userId]
+  );
+  
+  console.log(`[tier] Assigned ${tier} to user ${userId} (${minutes} minutes)`);
+}
+
+/**
+ * Reset billing cycle (called by cron or webhook)
+ */
+async function resetBillingCycle(userId) {
+  const limits = await getUserTierLimits(userId);
+  if (!limits || limits.tier === 'none') return;
+  
+  await pool.query(
+    `UPDATE users 
+     SET voice_minutes_used = 0,
+         billing_cycle_start = NOW(),
+         updated_at = NOW()
+     WHERE user_id = $1`,
+    [userId]
+  );
+  
+  console.log(`[billing] Reset cycle for user ${userId}`);
+}
+
+/**
+ * Cancel subscription (set to none)
+ */
+async function cancelSubscription(userId) {
+  await pool.query(
+    `UPDATE users 
+     SET subscription_tier = 'none',
+         subscription_status = 'cancelled',
+         voice_minutes_limit = 0,
+         updated_at = NOW()
+     WHERE user_id = $1`,
+    [userId]
+  );
+  
+  console.log(`[tier] Cancelled subscription for user ${userId}`);
+}
+
+/**
+ * Add extra minutes (for pay-as-you-go)
+ */
+async function addExtraMinutes(userId, minutes) {
+  await pool.query(
+    `UPDATE users 
+     SET voice_minutes_limit = voice_minutes_limit + $1,
+         updated_at = NOW()
+     WHERE user_id = $2`,
+    [minutes, userId]
+  );
+  
+  console.log(`[usage] Added ${minutes} extra minutes to user ${userId}`);
+}
+
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Ellie system prompt & memory
@@ -1266,6 +1522,105 @@ async function getSubByEmail(email) {
 function isPaidStatus(status) { return ["active", "trialing", "past_due"].includes(String(status || "").toLowerCase()); }
 
 // Checkout placeholder
+
+// ============================================================
+// PHASE 2: TIER & USAGE API ROUTES
+// ============================================================
+
+// Get user's current usage and limits
+app.get("/api/usage", async (req, res) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: "NOT_LOGGED_IN" });
+    }
+
+    const limits = await getUserTierLimits(userId);
+    if (!limits) {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    return res.json({
+      tier: limits.tier,
+      tierName: limits.tierName,
+      minutesUsed: limits.minutesUsed,
+      minutesLimit: limits.minutesLimit,
+      minutesRemaining: limits.minutesRemaining,
+      billingCycleStart: limits.billingCycleStart,
+    });
+  } catch (e) {
+    console.error("[usage] error:", e);
+    return res.status(500).json({ error: "USAGE_FAILED" });
+  }
+});
+
+// Admin: Assign tier to user (for testing / manual assignment)
+app.post("/api/admin/assign-tier", async (req, res) => {
+  try {
+    // Simple admin check - in production use proper auth
+    const adminKey = req.headers['x-admin-key'];
+    if (adminKey !== process.env.ADMIN_API_KEY) {
+      return res.status(403).json({ error: "FORBIDDEN" });
+    }
+
+    const { userId, tier, customMinutes } = req.body;
+    if (!userId || !tier) {
+      return res.status(400).json({ error: "Missing userId or tier" });
+    }
+
+    await assignTier(userId, tier, customMinutes);
+    
+    return res.json({ ok: true, message: `Assigned ${tier} to ${userId}` });
+  } catch (e) {
+    console.error("[admin] assign-tier error:", e);
+    return res.status(500).json({ error: "ASSIGN_FAILED", message: e.message });
+  }
+});
+
+// Admin: Reset billing cycle for user
+app.post("/api/admin/reset-cycle", async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    if (adminKey !== process.env.ADMIN_API_KEY) {
+      return res.status(403).json({ error: "FORBIDDEN" });
+    }
+
+    const { userId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ error: "Missing userId" });
+    }
+
+    await resetBillingCycle(userId);
+    
+    return res.json({ ok: true, message: `Reset cycle for ${userId}` });
+  } catch (e) {
+    console.error("[admin] reset-cycle error:", e);
+    return res.status(500).json({ error: "RESET_FAILED", message: e.message });
+  }
+});
+
+// Admin: Add extra minutes
+app.post("/api/admin/add-minutes", async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    if (adminKey !== process.env.ADMIN_API_KEY) {
+      return res.status(403).json({ error: "FORBIDDEN" });
+    }
+
+    const { userId, minutes } = req.body;
+    if (!userId || !minutes) {
+      return res.status(400).json({ error: "Missing userId or minutes" });
+    }
+
+    await addExtraMinutes(userId, minutes);
+    
+    return res.json({ ok: true, message: `Added ${minutes} minutes to ${userId}` });
+  } catch (e) {
+    console.error("[admin] add-minutes error:", e);
+    return res.status(500).json({ error: "ADD_MINUTES_FAILED", message: e.message });
+  }
+});
+
 app.post("/api/billing/checkout", async (_req, res) => {
   return res.status(501).json({ message: "Billing disabled" });
 });
@@ -1454,13 +1809,27 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
 
 // Voice chat (language REQUIRED) + TTS (record/send flow)
 app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
+  const startTime = Date.now(); // Track call duration
   try {
-    const userId = (req.body?.userId || "default-user");
+    const userId = req.userId || "guest";
+    
+    // ✅ PHASE 2: Check if user can make voice call
+    if (userId !== "guest") {
+      const permission = await canMakeVoiceCall(userId);
+      if (!permission.allowed) {
+        return res.status(402).json({
+          error: permission.reason,
+          message: permission.message,
+          minutesUsed: permission.minutesUsed,
+          minutesLimit: permission.minutesLimit,
+        });
+      }
+    }
 
     if (!req.file || !isOkAudio(req.file.mimetype)) {
       return res.status(400).json({
         error: "E_BAD_AUDIO",
-        message: `Unsupported type ${req.file?.mimetype || "(none)"} â€” send webm/ogg/mp3/m4a/wav â‰¤ 10MB`,
+        message: `Unsupported type ${req.file?.mimetype || "(none)"} — send webm/ogg/mp3/m4a/wav ≤ 10MB`,
       });
     }
 
@@ -1490,7 +1859,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     if (!userText) {
       return res.status(200).json({
         text: "",
-        reply: "I couldnâ€™t catch thatâ€”can you try again a bit closer to the mic?",
+        reply: "I couldn't catch that—can you try again a bit closer to the mic?",
         language: prefLang,
         audioMp3Base64: null,
         voiceMode: "mini",
@@ -1518,24 +1887,29 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     const speech = await client.audio.speech.create({
       model,
       voice: chosenVoice,
-      input: replyForVoice,
-      format: "mp3",
+      input: decision.replyText,
+      response_format: "mp3",
     });
-    const ab = await speech.arrayBuffer();
-    const audioMp3Base64 = Buffer.from(ab).toString("base64");
 
-    res.json({
+    const buf = Buffer.from(await speech.arrayBuffer());
+    const b64 = buf.toString("base64");
+
+    // ✅ PHASE 2: Track usage after successful call
+    const durationSeconds = Math.ceil((Date.now() - startTime) / 1000);
+    if (userId !== "guest") {
+      await trackVoiceUsage(userId, durationSeconds);
+    }
+
+    return res.json({
       text: userText,
-      reply: replyForVoice,
+      reply: decision.replyText,
       language: prefLang,
-      audioMp3Base64,
+      audioMp3Base64: b64,
       voiceMode: decision.voiceMode,
-      ttsModel: model,
-      freshFacts
     });
-  } catch (e) {
-    console.error("voice-chat error:", e);
-    res.status(500).json({ error: "VOICE_CHAT_FAILED", detail: String(e?.message || e) });
+  } catch (err) {
+    console.error("[voice-chat] error:", err);
+    return res.status(500).json({ error: "E_PROCESSING", message: String(err?.message || err) });
   }
 });
 
