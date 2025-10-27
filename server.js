@@ -2341,22 +2341,29 @@ if (ev.type === "conversation.item.created") {
 }
 
             // Save facts & emotion from user's *live* transcript
-            if (ev.type === "conversation.item.input_audio_transcription.delta" && ev.delta) {
-              const text = String(ev.delta || "").trim();
-              if (text) {
+            // Save facts & emotion from COMPLETED transcript (not deltas)
+            if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
+              const text = String(ev.transcript || "").trim();
+              if (text && text.length > 5) {  // Only process meaningful text
+                console.log("[phone] 📝 Completed transcript:", text);
                 try {
                   const [facts, emo] = await Promise.all([
                     extractFacts(text),
                     extractEmotionPoint(text),
                   ]);
-                  if (facts?.length) await saveFacts(userId, facts, text);
-                  if (emo) await saveEmotion(userId, emo, text);
+                  if (facts?.length) {
+                    await saveFacts(userId, facts, text);
+                    console.log(`[phone] ✅ Saved ${facts.length} fact(s) for user ${userId}`);
+                  }
+                  if (emo) {
+                    await saveEmotion(userId, emo, text);
+                    console.log(`[phone] ✅ Saved emotion for user ${userId}`);
+                  }
                 } catch (e) {
                   console.error("[phone] realtime transcript save error:", e?.message || e);
                 }
               }
             }
-
             // forward errors
             if (ev.type === "error") {
               console.error("[phone<-OpenAI] Error:", ev);
