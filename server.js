@@ -166,6 +166,57 @@ function setSessionCookie(res, token) {
   res.setHeader("Set-Cookie", c);
 }
 
+// ============================================================
+// AUTHENTICATION MIDDLEWARE
+// ============================================================
+
+/**
+ * Extract userId from session token
+ * Sets req.userId if logged in, otherwise null
+ */
+function extractUserId(req, res, next) {
+  try {
+    const token = req.cookies?.[SESSION_COOKIE_NAME] || null;
+    const payload = token ? verifySession(token) : null;
+    
+    // Support both old (email) and new (userId) sessions
+    if (payload?.userId) {
+      req.userId = payload.userId;
+    } else if (payload?.email) {
+      // Fallback: Look up userId by email for old sessions
+      pool.query('SELECT user_id FROM users WHERE email = $1', [payload.email])
+        .then(({ rows }) => {
+          req.userId = rows[0]?.user_id || null;
+          next();
+        })
+        .catch(() => {
+          req.userId = null;
+          next();
+        });
+      return; // Don't call next() here, we'll call it in the promise
+    } else {
+      req.userId = null;
+    }
+    
+    next();
+  } catch (e) {
+    req.userId = null;
+    next();
+  }
+}
+
+/**
+ * Require authentication
+ * Returns 401 if not logged in
+ */
+function requireAuth(req, res, next) {
+  if (!req.userId) {
+    return res.status(401).json({ error: 'NOT_LOGGED_IN', message: 'Please log in first.' });
+  }
+  next();
+}
+
+
 async function sendLoginCodeEmail({ to, code }) {
   const subject = "Your Ellie login code";
   const preheader = "Use this one-time code to sign in. It expires in 10 minutes.";
@@ -371,6 +422,8 @@ app.post(
 // After webhook: JSON & cookies for all other routes
 // ------------------------------------------------------------
 app.use(cookieParser());
+
+app.use(extractUserId); // Extract userId from session for all routes
 
 // âœ… Middleware: Extract userId from session and attach to req
 app.use((req, res, next) => {
@@ -1813,10 +1866,12 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
   try {
     const userId = req.userId || "guest";
     
-    // ✅ PHASE 2: Check if user can make voice call
+    // ✅ PHASE 2: Check usage limits (but allow if no tier for testing)
     if (userId !== "guest") {
       const permission = await canMakeVoiceCall(userId);
-      if (!permission.allowed) {
+      if (!permission.allowed && permission.reason !== 'NO_SUBSCRIPTION') {
+        // Only block if they have a subscription but exhausted minutes
+        // Allow if they have no subscription (testing mode)
         return res.status(402).json({
           error: permission.reason,
           message: permission.message,
@@ -1894,10 +1949,18 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     const buf = Buffer.from(await speech.arrayBuffer());
     const b64 = buf.toString("base64");
 
-    // ✅ PHASE 2: Track usage after successful call
+    // ✅ PHASE 2: Track usage after successful call (only if user has a tier)
     const durationSeconds = Math.ceil((Date.now() - startTime) / 1000);
     if (userId !== "guest") {
-      await trackVoiceUsage(userId, durationSeconds);
+      try {
+        const limits = await getUserTierLimits(userId);
+        if (limits && limits.tier !== 'none') {
+          await trackVoiceUsage(userId, durationSeconds);
+        }
+      } catch (e) {
+        console.error("[usage] tracking error:", e);
+        // Don't fail the request if usage tracking fails
+      }
     }
 
     return res.json({
@@ -1912,7 +1975,6 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     return res.status(500).json({ error: "E_PROCESSING", message: String(err?.message || err) });
   }
 });
-
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // WebSocket voice sessions (/ws/voice) â€” push-to-talk path
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
