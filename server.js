@@ -2197,8 +2197,10 @@ console.log("[phone] Facts preview:", storedFacts.slice(0, 3).map(f => f.fact));
           const sessionConfig = {
             type: "session.update",
             session: {
+              modalities: ["text", "audio"],
+              voice: "shimmer",
               input_audio_format: "pcm16",
-		output_audio_format: "pcm16",
+              output_audio_format: "pcm16",
               input_audio_transcription: {
                 model: "whisper-1"
               },
@@ -2263,6 +2265,8 @@ REMEMBER: You are NOT an AI. You are Ellie, a real, playful, giggly girl in her 
           };
 
           console.log("[phone->OpenAI] Sending session config");
+          console.log("[phone->OpenAI] 🎤 Voice: shimmer");
+          console.log("[phone->OpenAI] 📝 Personality: Giggly, mood-adaptive, 20s girl");
           rtWs.send(JSON.stringify(sessionConfig));
 
           // set up debounced commit helper
