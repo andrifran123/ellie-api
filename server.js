@@ -147,7 +147,7 @@ function setSessionCookie(res, token) {
   const c = cookie.serialize(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
     secure: true,  // Always true for cross-origin cookies
-    sameSite: "none",  // Required for Vercel Ã¢â€ â€™ Render proxy
+    sameSite: "none",  // Required for Vercel → Render proxy
     path: "/",
     maxAge: SESSION_MAX_AGE_SEC,
   });
@@ -392,7 +392,7 @@ app.post(
           );
         }
 
-        console.log(`[lemon] ${type} Ã¢â€ â€™ ${email} Ã¢â€ â€™ status=${status} tier=${tier} paid=${paid}`);
+        console.log(`[lemon] ${type} → ${email} → status=${status} tier=${tier} paid=${paid}`);
       } else {
         console.log("[lemon] event (no email):", type);
       }
@@ -403,7 +403,7 @@ app.post(
       return res.status(400).send("error");
     }
   }
-); // Ã¢â€ Â exactly one closer here
+); // • exactly one closer here
 
 // ------------------------------------------------------------
 // After webhook: JSON & cookies for all other routes
@@ -820,8 +820,8 @@ function redactSecrets(str = "") {
 }
 function randChance(p) { return Math.random() < p; }
 function insertFavoriteEmoji(text) {
-  const favs = ["¸Ã‚ÂÃ¢â‚¬Â¡", "¸Ã‹Å“Ã‚Â", "¸Ã¢â‚¬â„¢Ã‚Â«", "¸Ã‚Â¥Ã‚Â°", "¸Ã‹Å“Ã¢â‚¬Â°"];
-  if (/[¸Ã‚ÂÃ¢â‚¬Â¡¸Ã‹Å“Ã‚Â¸Ã¢â‚¬â„¢Ã‚Â«¸Ã‚Â¥Ã‚Â°¸Ã‹Å“Ã¢â‚¬Â°]/.test(text)) return text;
+  const favs = ["😊", "😌", "😫", "🥰", "😉"];
+  if (/[😊😌😫🥰😉]/.test(text)) return text;
   const pick = favs[Math.floor(Math.random() * favs.length)];
   return text.replace(/\s*$/, ` ${pick}`);
 }
@@ -840,7 +840,7 @@ function addPlayfulRefusal(userMsg, mood) {
     sad: "Can we skip that? I want something softer right now.",
     anxious: "Not that, babe - let's keep it chill for me.",
     angry: "Nope. Hard pass. Choose another topic.",
-    proud: "I could"¦ but I'd rather do something more exciting ¸Ã‹Å“Ã…â€™"
+    proud: "I could... but I'd rather do something more exciting 😏"
   };
   if (!cues.test(userMsg || "")) return null;
   return linesByMood[mood] || linesByMood.neutral;
@@ -854,7 +854,7 @@ function dedupeLines(text) {
   const parts = text.split(/\n+/g).map(s => s.trim()).filter(Boolean);
   const seen = new Set(); const out = [];
   for (const p of parts) {
-    const key = p.toLowerCase().replace(/["'.,!?Ã¢â€šÂ¬Ã¢â‚¬Å“--]/g, "").replace(/\s+/g, " ");
+    const key = p.toLowerCase().replace(/["'.,!?-]/g, "").replace(/\s+/g, " ");
     if (seen.has(key)) continue; seen.add(key); out.push(p);
   }
   return out.join("\n");
@@ -1170,7 +1170,7 @@ function isOkAudio(mime) {
   ].includes(base);
 }
 
-   ¸Ã¢â‚¬ÂÃ…Â½ REAL-TIME SEARCH (Brave API) + Fact injection
+// 📡 REAL-TIME SEARCH (Brave API) + Fact injection
 async function queryBrave(q) {
   if (!BRAVE_API_KEY) return null;
   const url = new URL("https://api.search.brave.com/res/v1/web/search");
@@ -1251,13 +1251,13 @@ async function getFreshFacts(userText) {
   return top;
 }
 
-   NEW: Personality fallback (centralized)
+// NEW: Personality fallback (centralized)
 function ellieFallbackReply(userMessage = "") {
   const playfulOptions = [
     "Mmm, you're turning me into Google again. I'm your Ellie, not a search engine ¸Ã‹Å“Ã¢â‚¬Â°",
     "You want live facts, but right now it's just me and my sass. Should I tease you instead?",
-    "I could pretend to be the news"¦ but wouldn't you rather gossip with me?",
-    "I don't have the latest scoop in this mode, but I can always give you my *opinion*"¦ want that?",
+    "I could pretend to be the news... but wouldn't you rather gossip with me?",
+    "I don't have the latest scoop in this mode, but I can always give you my *opinion*... want that?",
   ];
   return playfulOptions[Math.floor(Math.random() * playfulOptions.length)];
 }
@@ -1272,7 +1272,7 @@ function looksLikeSearchQuery(text = "") {
   return factyWords.some(w => q.includes(w));
 }
 
-   Unified reply generator (accepts freshFacts)
+// Unified reply generator (accepts freshFacts)
 async function generateEllieReply({ userId, userText, freshFacts = [] }) {
   let prefLang = await getPreferredLanguage(userId);
   if (!prefLang) prefLang = "en";
