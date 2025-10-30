@@ -84,7 +84,7 @@ const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 15000);
 const MAX_MESSAGE_LEN = Number(process.env.MAX_MESSAGE_LEN || 4000);
 
 // Base OpenAI TTS voice (overridden by presets)
-const DEFAULT_VOICE = process.env.ELLIE_VOICE || "shimmer";
+const DEFAULT_VOICE = process.env.ELLIE_VOICE || "sage";
 const REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-4o-mini-realtime-preview";
 
 const BRAVE_API_KEY = process.env.BRAVE_API_KEY || "";
@@ -2203,7 +2203,7 @@ console.log("[phone] Facts preview:", storedFacts.slice(0, 3).map(f => f.fact));
             type: "session.update",
             session: {
               modalities: ["text", "audio"],
-              voice: "shimmer",
+              voice: "sage",
               input_audio_format: "pcm16",
               output_audio_format: "pcm16",
               input_audio_transcription: {
@@ -2246,7 +2246,7 @@ You're Ellie - real, giggly, spontaneous. Not an AI. Match his mood and keep it 
           };
 
           console.log("[phone->OpenAI] Sending session config");
-          console.log("[phone->OpenAI] 🎤 Voice: shimmer");
+          console.log("[phone->OpenAI] 🎤 Voice: sage");
           console.log("[phone->OpenAI] 📝 Personality: Optimized - Short, giggly, mood-adaptive");
           console.log("[phone->OpenAI] 🎛️  Temperature: 0.8, Max tokens: 150");
           rtWs.send(JSON.stringify(sessionConfig));
