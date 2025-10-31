@@ -2203,13 +2203,18 @@ console.log("[phone] Facts preview:", storedFacts.slice(0, 3).map(f => f.fact));
             type: "session.update",
             session: {
               modalities: ["text", "audio"],
-              voice: "shimmer",
+              voice: "sage",
               input_audio_format: "pcm16",
               output_audio_format: "pcm16",
               input_audio_transcription: {
                 model: "whisper-1"
               },
-              turn_detection: { type: "server_vad", threshold: 0.5, silence_duration_ms: 700 },
+              turn_detection: { 
+                type: "server_vad", 
+                threshold: 0.8,              // Increased from 0.5 - less sensitive to background noise
+                prefix_padding_ms: 300,      // More buffer before detecting speech
+                silence_duration_ms: 1000    // Increased from 700 - wait longer before cutting off
+              },
               temperature: 0.8,
               max_response_output_tokens: 150,
     
@@ -2268,6 +2273,7 @@ Remember: Use a GIGGLY, PLAYFUL TONE in your voice. Add "hehe" or "haha" natural
           console.log("[phone->OpenAI] 🎤 Voice: sage");
           console.log("[phone->OpenAI] 📝 Personality: GIGGLY TONE - Playful voice, hehe/haha, mood-matching");
           console.log("[phone->OpenAI] 🎛️  Temperature: 0.8, Max tokens: 150");
+          console.log("[phone->OpenAI] 🎙️  VAD: threshold=0.8 (less sensitive), silence=1000ms");
           rtWs.send(JSON.stringify(sessionConfig));
 
           // set up debounced commit helper
