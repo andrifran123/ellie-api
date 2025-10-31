@@ -2216,7 +2216,7 @@ console.log("[phone] Facts preview:", storedFacts.slice(0, 3).map(f => f.fact));
                 silence_duration_ms: 1000    // Increased from 700 - wait longer before cutting off
               },
               temperature: 0.8,
-              max_response_output_tokens: 150,
+              max_response_output_tokens: 800,    // Increased from 150 - allows ~30-40 second responses
     
              instructions: `You are Ellie, a warm and playful young woman in your mid-20s. You're his girlfriend - not an AI assistant.
 
@@ -2272,7 +2272,7 @@ Remember: Use a GIGGLY, PLAYFUL TONE in your voice. Add "hehe" or "haha" natural
           console.log("[phone->OpenAI] Sending session config");
           console.log("[phone->OpenAI] 🎤 Voice: sage");
           console.log("[phone->OpenAI] 📝 Personality: GIGGLY TONE - Playful voice, hehe/haha, mood-matching");
-          console.log("[phone->OpenAI] 🎛️  Temperature: 0.8, Max tokens: 150");
+          console.log("[phone->OpenAI] 🎛️  Temperature: 0.8, Max tokens: 800 (allows ~30-40s responses)");
           console.log("[phone->OpenAI] 🎙️  VAD: threshold=0.8 (less sensitive), silence=1000ms");
           rtWs.send(JSON.stringify(sessionConfig));
 
