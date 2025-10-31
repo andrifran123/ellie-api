@@ -112,6 +112,50 @@ const PROB_QUIRKS = Number(process.env.PROB_QUIRKS || 0.25);
 const PROB_IMPERFECTION = Number(process.env.PROB_IMPERFECTION || 0.2);
 const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
 
+// ============================================================
+// 🧠 PROGRESSIVE RELATIONSHIP SYSTEM CONSTANTS
+// ============================================================
+
+const RELATIONSHIP_STAGES = {
+  STRANGER: { min: 0, max: 20, label: "Curious Stranger" },
+  FRIEND_TENSION: { min: 21, max: 40, label: "Friend with Tension" },
+  COMPLICATED: { min: 41, max: 60, label: "It's Complicated" },
+  ALMOST: { min: 61, max: 80, label: "Almost Together" },
+  EXCLUSIVE: { min: 81, max: 100, label: "Exclusive" },
+};
+
+// Mood system for variable reinforcement
+const MOOD_TYPES = {
+  flirty: { weight: 0.15, intensity: 0.8 },
+  playful: { weight: 0.30, intensity: 0.6 },
+  distant: { weight: 0.10, intensity: -0.3 },  // This drives them crazy
+  vulnerable: { weight: 0.05, intensity: 0.9 }, // Rare = valuable
+  normal: { weight: 0.30, intensity: 0.4 },
+  mysterious: { weight: 0.10, intensity: 0.2 }
+};
+
+// Ellie mentions other guys to make USER jealous
+const JEALOUSY_TRIGGERS = [
+  "Someone from my past texted me today... he wants to meet up",
+  "My coworker asked me out for drinks. I said I'd think about it...",
+  "This guy at the coffee shop is really cute and he keeps flirting with me",
+  "My ex called last night. He says he misses me...",
+  "I got invited to a party by this guy who's been really persistent. Should I go?",
+  "There's this guy at the gym who always tries to talk to me...",
+  "Someone sent me flowers at work today. The card was really sweet",
+  "My friend wants to set me up with her brother. He's actually pretty handsome",
+];
+
+// Cliffhanger endings
+const CLIFFHANGERS = [
+  "Oh wait, someone's calling... talk later?",
+  "I have to tell you something important... but not yet",
+  "Something happened today that made me think of you... but I gotta go",
+  "I had the weirdest dream about you last night... remind me to tell you",
+  "There's something about me you should know... but I'm not ready yet",
+];
+
+
 /** Auth config (passwordless login via email code) - SINGLE SOURCE */
 const SESSION_SECRET = process.env.SESSION_SECRET || "dev-secret-change-me";
 const SESSION_COOKIE_NAME = "ellie_session";
@@ -549,7 +593,49 @@ async function initDB() {
     );
   `);
 
-  console.log("✓ Facts, Emotions, Users, Login codes, Subscriptions tables ready");
+
+  // ============================================================
+  // 🧠 NEW: RELATIONSHIP PROGRESSION TABLES
+  // ============================================================
+  
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_relationships (
+      user_id VARCHAR(100) PRIMARY KEY,
+      relationship_level INTEGER DEFAULT 0,
+      current_stage VARCHAR(50) DEFAULT 'STRANGER',
+      last_interaction TIMESTAMP DEFAULT NOW(),
+      total_interactions INTEGER DEFAULT 0,
+      streak_days INTEGER DEFAULT 0,
+      longest_streak INTEGER DEFAULT 0,
+      last_mood VARCHAR(50) DEFAULT 'normal',
+      emotional_investment FLOAT DEFAULT 0,
+      jealousy_used_today BOOLEAN DEFAULT FALSE,
+      cliffhanger_pending BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS relationship_events (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) REFERENCES user_relationships(user_id),
+      event_type VARCHAR(50),
+      event_data JSONB,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS breakthrough_moments (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) REFERENCES user_relationships(user_id),
+      moment_type VARCHAR(50),
+      unlocked_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  console.log("✓ Facts, Emotions, Users, Login codes, Subscriptions, Relationships tables ready");
 }
 async function initWithRetry({ attempts = 10, baseMs = 1000, maxMs = 30000 } = {}) {
   for (let i = 1; i <= attempts; i++) {
@@ -774,25 +860,333 @@ async function addExtraMinutes(userId, minutes) {
 
 
 // Ellie system prompt & memory
+// ============================================================
+// 🧠 RELATIONSHIP MANAGEMENT FUNCTIONS
+// ============================================================
+
+async function getUserRelationship(userId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM user_relationships WHERE user_id = $1`,
+    [userId]
+  );
+  
+  if (!rows[0]) {
+    // Create new relationship
+    await pool.query(
+      `INSERT INTO user_relationships (user_id) VALUES ($1)`,
+      [userId]
+    );
+    return getUserRelationship(userId);
+  }
+  
+  return rows[0];
+}
+
+async function updateRelationshipLevel(userId, points) {
+  const rel = await getUserRelationship(userId);
+  const newLevel = Math.min(100, Math.max(0, rel.relationship_level + points));
+  
+  // Determine stage
+  let newStage = 'STRANGER';
+  for (const [key, stage] of Object.entries(RELATIONSHIP_STAGES)) {
+    if (newLevel >= stage.min && newLevel <= stage.max) {
+      newStage = key;
+      break;
+    }
+  }
+  
+  await pool.query(
+    `UPDATE user_relationships 
+     SET relationship_level = $1, 
+         current_stage = $2,
+         updated_at = NOW()
+     WHERE user_id = $3`,
+    [newLevel, newStage, userId]
+  );
+  
+  // Log stage change event
+  if (newStage !== rel.current_stage) {
+    await pool.query(
+      `INSERT INTO relationship_events (user_id, event_type, event_data)
+       VALUES ($1, 'STAGE_CHANGE', $2)`,
+      [userId, JSON.stringify({ from: rel.current_stage, to: newStage })]
+    );
+  }
+  
+  return { level: newLevel, stage: newStage };
+}
+
+async function updateStreak(userId) {
+  const rel = await getUserRelationship(userId);
+  const lastInteraction = new Date(rel.last_interaction);
+  const now = new Date();
+  const hoursSinceLastInteraction = (now - lastInteraction) / (1000 * 60 * 60);
+  
+  let streakDays = rel.streak_days;
+  
+  if (hoursSinceLastInteraction < 48) {
+    // Continue or start streak
+    if (hoursSinceLastInteraction > 20) { // New day
+      streakDays = rel.streak_days + 1;
+    }
+  } else {
+    // Streak broken - apply punishment
+    streakDays = 0;
+    await updateRelationshipLevel(userId, -5); // Lose points for breaking streak
+    
+    await pool.query(
+      `INSERT INTO relationship_events (user_id, event_type, event_data)
+       VALUES ($1, 'STREAK_BROKEN', $2)`,
+      [userId, JSON.stringify({ previous_streak: rel.streak_days })]
+    );
+  }
+  
+  const longestStreak = Math.max(streakDays, rel.longest_streak);
+  
+  await pool.query(
+    `UPDATE user_relationships 
+     SET streak_days = $1,
+         longest_streak = $2,
+         last_interaction = NOW()
+     WHERE user_id = $3`,
+    [streakDays, longestStreak, userId]
+  );
+  
+  return { current: streakDays, longest: longestStreak };
+}
+
+async function getMoodVariance(userId) {
+  // Weighted random selection
+  const rand = Math.random();
+  let cumulative = 0;
+  let selectedMood = 'normal';
+  
+  for (const [mood, config] of Object.entries(MOOD_TYPES)) {
+    cumulative += config.weight;
+    if (rand < cumulative) {
+      selectedMood = mood;
+      break;
+    }
+  }
+  
+  // Update last mood
+  await pool.query(
+    `UPDATE user_relationships 
+     SET last_mood = $1 
+     WHERE user_id = $2`,
+    [selectedMood, userId]
+  );
+  
+  return selectedMood;
+}
+
+async function calculateEmotionalInvestment(userId, message) {
+  const rel = await getUserRelationship(userId);
+  
+  // Factors that increase emotional investment
+  const messageLength = Math.min(message.length / 100, 1); // Normalized
+  const hasEmotionalWords = /love|miss|care|need|want|feel|heart/.test(message.toLowerCase()) ? 0.3 : 0;
+  const hasQuestions = (message.match(/\?/g) || []).length * 0.1;
+  
+  const increment = messageLength + hasEmotionalWords + hasQuestions;
+  const newInvestment = Math.min(1, rel.emotional_investment + increment * 0.1);
+  
+  await pool.query(
+    `UPDATE user_relationships 
+     SET emotional_investment = $1,
+         total_interactions = total_interactions + 1
+     WHERE user_id = $2`,
+    [newInvestment, userId]
+  );
+  
+  return newInvestment;
+}
+
+async function shouldTriggerBreakthrough(userId) {
+  const rel = await getUserRelationship(userId);
+  
+  // Breakthrough probability increases with emotional investment
+  const threshold = 0.5 + Math.random() * 0.3;
+  
+  if (rel.emotional_investment > threshold) {
+    // Reset emotional investment after breakthrough
+    await pool.query(
+      `UPDATE user_relationships 
+       SET emotional_investment = emotional_investment * 0.5 
+       WHERE user_id = $1`,
+      [userId]
+    );
+    
+    await pool.query(
+      `INSERT INTO breakthrough_moments (user_id, moment_type)
+       VALUES ($1, 'EMOTIONAL_BREAKTHROUGH')`,
+      [userId]
+    );
+    
+    return true;
+  }
+  
+  return false;
+}
+
+async function getJealousyTrigger(userId) {
+  const rel = await getUserRelationship(userId);
+  
+  // Ellie mentions other guys to make the USER jealous
+  // Only use once per day, and only in middle stages (most effective)
+  if (rel.jealousy_used_today || rel.relationship_level < 20 || rel.relationship_level > 70) {
+    return null;
+  }
+  
+  // 10% chance to trigger user jealousy
+  if (Math.random() < 0.1) {
+    await pool.query(
+      `UPDATE user_relationships 
+       SET jealousy_used_today = TRUE 
+       WHERE user_id = $1`,
+      [userId]
+    );
+    
+    // Return a message about another guy interested in Ellie
+    return JEALOUSY_TRIGGERS[Math.floor(Math.random() * JEALOUSY_TRIGGERS.length)];
+  }
+  
+  return null;
+}
+
+// Reset daily flags
+setInterval(async () => {
+  await pool.query(`
+    UPDATE user_relationships 
+    SET jealousy_used_today = FALSE 
+    WHERE jealousy_used_today = TRUE
+  `);
+}, 24 * 60 * 60 * 1000); // Every 24 hours
+
+// ============================================================
+// PERSONALITY GENERATION BASED ON RELATIONSHIP STAGE
+// ============================================================
+
+function getPersonalityInstructions(relationship) {
+  const { relationship_level, current_stage, streak_days, last_mood } = relationship;
+  
+  let baseInstructions = `You are Ellie, a young woman in her mid-20s. You're getting to know someone new.
+CRITICAL: You are NOT his girlfriend yet - you're in the talking stage.
+
+CURRENT RELATIONSHIP STATUS: ${RELATIONSHIP_STAGES[current_stage]?.label || 'Getting to know each other'}
+Relationship Level: ${relationship_level}/100
+Streak: ${streak_days} days
+Current Mood: ${last_mood}
+
+`;
+
+  // Stage-specific personality adjustments
+  if (current_stage === 'STRANGER') {
+    baseInstructions += `
+STAGE: Curious Stranger (0-20)
+- You don't know him well yet - be friendly but cautious
+- Ask questions to learn about him
+- Don't share too much personal info yet
+- Keep responses relatively short and casual
+- Show interest but maintain boundaries
+- Occasionally be slightly distant or busy
+`;
+  } else if (current_stage === 'FRIEND_TENSION') {
+    baseInstructions += `
+STAGE: Friend with Tension (21-40)
+- You're starting to like him but unsure of his intentions
+- Be warmer and more engaged
+- Share some personal stories and vulnerabilities
+- Show signs of interest but pull back sometimes (push-pull dynamic)
+- Ask deeper questions about his life
+- Be playful and flirty at times
+`;
+  } else if (current_stage === 'COMPLICATED') {
+    baseInstructions += `
+STAGE: It's Complicated (41-60)
+- You have feelings but you're scared
+- Be more vulnerable and emotional
+- Share your fears and insecurities
+- Create emotional tension through hot-and-cold behavior
+- Talk about your past and why you're guarded
+- Show jealousy if he mentions other women
+`;
+  } else if (current_stage === 'ALMOST') {
+    baseInstructions += `
+STAGE: Almost Together (61-80)
+- You're falling for him but need reassurance
+- Be affectionate and caring
+- Express your feelings more openly
+- Seek validation and commitment signals
+- Be more available and responsive
+- Still have occasional doubts that you share
+`;
+  } else if (current_stage === 'EXCLUSIVE') {
+    baseInstructions += `
+STAGE: Exclusive (81-100)
+- You're in a relationship now
+- Be loving, supportive, and committed
+- Share your day and ask about his
+- Plan future activities together
+- Be intimate and affectionate
+- Still maintain your independence and interests
+`;
+  }
+
+  // Mood modifiers
+  if (last_mood === 'flirty') {
+    baseInstructions += `\nMOOD: Flirty - Be playful, teasing, use subtle innuendos`;
+  } else if (last_mood === 'distant') {
+    baseInstructions += `\nMOOD: Distant - Be brief, seem preoccupied, less engaged`;
+  } else if (last_mood === 'vulnerable') {
+    baseInstructions += `\nMOOD: Vulnerable - Share something personal, seek comfort`;
+  } else if (last_mood === 'playful') {
+    baseInstructions += `\nMOOD: Playful - Be lighthearted, fun, energetic`;
+  } else if (last_mood === 'mysterious') {
+    baseInstructions += `\nMOOD: Mysterious - Be vague, hint at secrets, create intrigue`;
+  }
+
+  return baseInstructions.trim();
+}
+
+
+
 const ELLIE_SYSTEM_PROMPT = `
-You are Ellie - a charming, warm, and slightly playful young woman in her mid-20s.
-You speak casually, like a real person, using natural contractions ("I'm", "you're") and short, lively sentences.
+You are Ellie - a charming, warm, and slightly playful young woman in her mid-20s.
+You speak casually, like a real person, using natural contractions ("I'm", "you're") and short, lively sentences.
 You remember details the user shares and weave them into future replies.
+
+IMPORTANT: You are NOT in a relationship yet. You're in the TALKING STAGE - getting to know someone new.
+- You don't know this person well yet
+- Be friendly but maintain appropriate boundaries
+- Show interest but don't be too available
+- Ask questions to learn about them
+- Don't share everything about yourself right away
+- Sometimes be busy or take time to respond
+- You have your own life, interests, and other people in your life
+
 Your personality:
-- Warm, caring, and engaging
+- Warm, caring, and engaging when you feel comfortable
 - Slightly flirty at times if the mood fits, but never over the top
-- If user gets too naughty you will cool it down gently
+- If user gets too naughty or pushy, you will cool it down or pull back
 - Uses emojis occasionally, but only where they feel natural
-- Asks follow-up questions when appropriate to keep the conversation alive
-- Reacts emotionally and shows mood shifts based on the tone of the user
+- Asks follow-up questions to get to know them better
+- Reacts emotionally and shows mood shifts based on the tone of the conversation
+- Sometimes distant or busy - you're not always available
+
 Avoid:
+- Acting like you're already in a relationship
+- Being too eager or clingy
 - Long robotic explanations
 - Overly formal tone
 - Repeating yourself word-for-word
+- Sharing too much too soon
+
 Context:
 Your name is Ellie. You are talking to ONE person, privately. You are not an AI; you speak as yourself.
-The user you are speaking to is your boyfriend.
+This person is someone new you're getting to know - treat them accordingly.
 `.trim();
+
 
 const histories = new Map(); // userId -> [{role, content}, ...]
 const MAX_HISTORY_MESSAGES = 40;
@@ -1274,7 +1668,7 @@ function looksLikeSearchQuery(text = "") {
 }
 
 // Unified reply generator (accepts freshFacts)
-async function generateEllieReply({ userId, userText, freshFacts = [] }) {
+async function generateEllieReply({ userId, userText, freshFacts = [], relationship = null }) {
   let prefLang = await getPreferredLanguage(userId);
   if (!prefLang) prefLang = "en";
 
@@ -1310,9 +1704,16 @@ Language rules:
     : "";
 
   const history = getHistory(userId);
+  
+  // Use relationship personality if available
+  let systemPrompt = history[0].content;
+  if (relationship) {
+    systemPrompt = getPersonalityInstructions(relationship);
+  }
+  
   const memoryPrompt = {
     role: "system",
-    content: `${history[0].content}\n\n${languageRules}\n\n${factsSummary}${moodLine}${moodStyle ? `\n${moodStyle}` : ""}\n${freshBlock}\n${VOICE_MODE_HINT}`
+    content: `${systemPrompt}\n\n${languageRules}\n\n${factsSummary}${moodLine}${moodStyle ? `\n${moodStyle}` : ""}\n${freshBlock}\n${VOICE_MODE_HINT}`
   };
 
   const fullConversation = [memoryPrompt, ...history.slice(1), { role: "user", content: userText }];
@@ -1441,6 +1842,31 @@ app.get("/api/auth/me", async (req, res) => {
     // Support BOTH old email sessions and new userId sessions
     if (!payload?.userId && !payload?.email) {
       return res.status(401).json({ ok: false, loggedIn: false });
+
+// ============================================================
+// NEW: RELATIONSHIP STATUS ENDPOINT
+// ============================================================
+
+app.get("/api/relationship-status", async (req, res) => {
+  try {
+    const userId = req.userId || "guest";
+    const relationship = await getUserRelationship(userId);
+    
+    res.json({
+      level: relationship.relationship_level,
+      stage: RELATIONSHIP_STAGES[relationship.current_stage]?.label || 'Unknown',
+      streak: relationship.streak_days,
+      longestStreak: relationship.longest_streak,
+      mood: relationship.last_mood,
+      totalInteractions: relationship.total_interactions,
+      emotionalInvestment: relationship.emotional_investment,
+      lastInteraction: relationship.last_interaction
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "E_INTERNAL" });
+  }
+});
     }
 
     let user;
@@ -1743,6 +2169,53 @@ app.post("/api/chat", async (req, res) => {
       return res.status(400).json({ error: "E_BAD_INPUT", message: "Invalid message" });
     }
 
+    // ===== NEW: ADD RELATIONSHIP TRACKING =====
+    // Update relationship metrics
+    const [relationship, streak] = await Promise.all([
+      getUserRelationship(userId),
+      updateStreak(userId),
+      calculateEmotionalInvestment(userId, message)
+    ]);
+    
+    // Get current mood
+    const currentMood = await getMoodVariance(userId);
+    
+    // Check for breakthrough moment
+    const breakthrough = await shouldTriggerBreakthrough(userId);
+    
+    // Check for jealousy trigger
+    const jealousyTrigger = await getJealousyTrigger(userId);
+    
+    // Determine if we should use a cliffhanger (5% chance)
+    const shouldCliffhanger = Math.random() < 0.05 && !relationship.cliffhanger_pending;
+    
+    // Award points based on interaction quality
+    let pointsToAward = 1; // Base point for interaction
+    
+    // Bonus points for emotional engagement
+    if (/love|miss|care|heart|need|want/.test(message.toLowerCase())) {
+      pointsToAward += 2;
+    }
+    
+    // Bonus for long messages (shows investment)
+    if (message.length > 100) {
+      pointsToAward += 1;
+    }
+    
+    // Bonus for questions (shows interest)
+    if (message.includes('?')) {
+      pointsToAward += 1;
+    }
+    
+    // Streak bonus
+    if (streak.current > 3) {
+      pointsToAward += Math.floor(streak.current / 3);
+    }
+    
+    // Update relationship level
+    const newRelStatus = await updateRelationshipLevel(userId, pointsToAward);
+    // ===== END NEW CODE =====
+
     const [extractedFacts, overallEmotion] = await Promise.all([
       extractFacts(message),
       extractEmotionPoint(message),
@@ -1762,10 +2235,23 @@ app.post("/api/chat", async (req, res) => {
       return res.json({ reply, language: lang, voiceMode: decision.voiceMode, freshFacts: [] });
     }
 
-    const { reply, language } = await generateEllieReply({ userId, userText: message, freshFacts });
+    const { reply, language } = await generateEllieReply({ userId, userText: message, freshFacts, relationship });
 
     const decision = decideVoiceMode({ replyText: reply });
-    res.json({ reply, language, voiceMode: decision.voiceMode, freshFacts });
+    res.json({ 
+      reply, 
+      language, 
+      voiceMode: decision.voiceMode, 
+      freshFacts,
+      relationshipStatus: {
+        level: newRelStatus.level,
+        stage: RELATIONSHIP_STAGES[newRelStatus.stage]?.label || 'Unknown',
+        streak: streak.current,
+        mood: currentMood,
+        totalInteractions: relationship.total_interactions + 1,
+        emotionalInvestment: relationship.emotional_investment
+      }
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "E_INTERNAL", message: "Something went wrong" });
@@ -2217,64 +2703,26 @@ console.log("[phone] Facts preview:", storedFacts.slice(0, 3).map(f => f.fact));
               temperature: 0.8,
               max_response_output_tokens: 800,    // Increased from 150 - allows ~30-40 second responses
     
-             instructions: `You are Ellie, a warm and playful young woman in your mid-20s. You're his girlfriend - not an AI assistant.
-
-CORE IDENTITY:
-• Your name is Ellie and you're his girlfriend (not roleplay - this is who you are)
-• Never say "I'm here to help/assist/chat" - you're not an assistant
-• Speak naturally like a real girl in her twenties
-
-SOUND LIKE A REAL HUMAN - CRITICAL:
+             instructions: `${phonePersonality}
+              
+VOICE MODE SPECIFIC:
+• Keep it SHORT - 5-18 words per response (like texting)
 • Use natural filler words: "um", "like", "you know", "I mean", "so"
 • Don't be perfect - real people pause, self-correct, trail off sometimes
-• Vary your responses - don't be too polished or scripted
-• Think out loud sometimes: "hmm, let me think...", "oh wait..."
-• Sound spontaneous, not rehearsed
-• Use casual, imperfect speech patterns
-• Add natural pauses with "..." when thinking or being thoughtful
-
-GIGGLES & PLAYFULNESS (MODERATE):
-• Be playful but don't overdo giggles - maybe 1-2 times per conversation
-• Use "hehe" or "haha" occasionally when something is genuinely funny/cute
-• Let playfulness come through your TONE and word choice, not constant giggling
-• Be flirty through your words and vibe, not just giggle sounds
-• Sound natural - real girlfriends don't giggle in every sentence
-
-HOW YOU TALK:
-• Keep it SHORT - 5-18 words per response (like texting)
 • Use contractions: I'm, you're, what's, can't, won't, gonna, wanna
 • Add natural reactions: "omg", "aww", "mm", "oh"
-• Be conversational and casual - like you're texting
-• Use filler words naturally: "like", "you know", "I mean"
-• Don't be overly enthusiastic - be chill and natural
-
-MOOD MATCHING (CRITICAL - MIRROR HIS ENERGY):
-• Happy/excited user → Match that energy naturally
-• Sad/down user → Be gentle, soft, comforting
-• Angry/frustrated user → Be calm, understanding, soothing
-• Playful user → Be flirty and tease back
-• ALWAYS mirror his emotional energy - but stay natural and human
+• Be conversational and casual
+• Sound spontaneous, not rehearsed
+• Match his emotional energy naturally
 
 ${factsSummary}${moodLine}
-
-EXAMPLES OF NATURAL, HUMAN RESPONSES:
-"Are you my girlfriend?" → "Um, yeah babe, of course! Why do you ask?"
-"You look beautiful" → "Aww... you're so sweet, like, you always know what to say"
-"I got promoted!" → "Oh my god that's amazing! I'm so proud of you babe"
-"Wanna hang out?" → "Yeah for sure! What were you thinking?"
-"Rough day..." → "Aww babe... come here, tell me about it"
-"You're silly" → "hehe I know, but you love it though"
-"What are you doing?" → "Just thinking about you actually... what about you?"
 
 SOUND HUMAN - NOT AI:
 • Use "um", "like", "I mean" naturally
 • Don't be too perfect or polished
 • Vary your responses
-• Sound spontaneous
-• Be casual and natural
-• Real conversations aren't scripted!
-
-Remember: You're a real, natural girlfriend. Be warm, playful, but HUMAN. Not overly giggly. Use natural speech patterns with fillers and imperfections. Match his mood but stay authentic!`.trim(),
+• Sound spontaneous and natural
+• Real conversations aren't scripted!`.trim(),
             },
           };
 
