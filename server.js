@@ -21,7 +21,7 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // Postgres
 const { Pool } = require("pg");
 
-// ✓ Auth / email / billing (declare ONCE)
+// âœ“ Auth / email / billing (declare ONCE)
 const jwt = require("jsonwebtoken");
 const cookie = require("cookie");
 const { Resend } = require("resend");
@@ -113,7 +113,7 @@ const PROB_IMPERFECTION = Number(process.env.PROB_IMPERFECTION || 0.2);
 const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
 
 // ============================================================
-// 🧠 PROGRESSIVE RELATIONSHIP SYSTEM CONSTANTS
+// ðŸ§  PROGRESSIVE RELATIONSHIP SYSTEM CONSTANTS
 // ============================================================
 
 const RELATIONSHIP_STAGES = {
@@ -156,7 +156,7 @@ const CLIFFHANGERS = [
 ];
 
 
-/** Auth config (passwordless login via email code) - SINGLE SOURCE */
+/** Auth config (passwordless login via email code) -Â SINGLE SOURCE */
 const SESSION_SECRET = process.env.SESSION_SECRET || "dev-secret-change-me";
 const SESSION_COOKIE_NAME = "ellie_session";
 const SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 90; // 90 days
@@ -164,7 +164,7 @@ const SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 90; // 90 days
 const resendKey = process.env.RESEND_API_KEY || "";
 const resend = resendKey ? new Resend(resendKey) : null;
 
-// ¸Ã¢â‚¬ÂÃ‚Â§ NEW: single source of truth for "From" address (unifies RESEND_FROM/SMTP_FROM/EMAIL_FROM)
+// Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€šÃ‚Â§ NEW: single source of truth for "From"Â address (unifies RESEND_FROM/SMTP_FROM/EMAIL_FROM)
 const EMAIL_FROM =
   process.env.EMAIL_FROM ||
   process.env.RESEND_FROM ||
@@ -192,7 +192,7 @@ function setSessionCookie(res, token) {
   const c = cookie.serialize(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
     secure: true,  // Always true for cross-origin cookies
-    sameSite: "none",  // Required for Vercel → Render proxy
+    sameSite: "none",  // Required for Vercel â†’ Render proxy
     path: "/",
     maxAge: SESSION_MAX_AGE_SEC,
   });
@@ -384,7 +384,7 @@ app.post(
           String(status || "").toLowerCase()
         );
         
-        // Ã¢Å“â€¦ PHASE 2: Determine tier from variant ID
+        // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PHASE 2: Determine tier from variant ID
         let tier = 'none';
         if (variantId) {
           if (variantId === TIERS.starter.variantId) tier = 'starter';
@@ -401,7 +401,7 @@ app.post(
         if (userRows.length > 0) {
           const userId = userRows[0].user_id;
 
-          // Ã¢Å“â€¦ PHASE 2: Handle subscription events
+          // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PHASE 2: Handle subscription events
           if (type === 'subscription_created' || type === 'subscription_updated') {
             if (tier !== 'none' && status === 'active') {
               // Assign tier and reset billing cycle
@@ -437,7 +437,7 @@ app.post(
           );
         }
 
-        console.log(`[lemon] ${type} → ${email} → status=${status} tier=${tier} paid=${paid}`);
+        console.log(`[lemon] ${type} â†’ ${email} â†’ status=${status} tier=${tier} paid=${paid}`);
       } else {
         console.log("[lemon] event (no email):", type);
       }
@@ -448,7 +448,7 @@ app.post(
       return res.status(400).send("error");
     }
   }
-); // • exactly one closer here
+); // â€¢Â exactly one closer here
 
 // ------------------------------------------------------------
 // After webhook: JSON & cookies for all other routes
@@ -458,7 +458,7 @@ app.use(cookieParser());
 
 app.use(extractUserId); // Extract userId from session for all routes
 
-// ✓ Middleware: Extract userId from session and attach to req
+// âœ“ Middleware: Extract userId from session and attach to req
 app.use((req, res, next) => {
   try {
     const token = req.cookies?.[SESSION_COOKIE_NAME];
@@ -485,7 +485,7 @@ app.head("/api/healthz", (_req, res) => res.status(200).end());
 // DB (Supabase transaction pooler friendly)
 const rawDbUrl = process.env.DATABASE_URL;
 if (!rawDbUrl) {
-  console.error("Ã‚ÂÃ…â€™ Missing DATABASE_URL in .env (use Supabase Transaction Pooler URI, port 6543).");
+  console.error("Ãƒâ€šÃ‚ÂÃƒâ€¦Ã¢â‚¬â„¢ Missing DATABASE_URL in .env (use Supabase Transaction Pooler URI, port 6543).");
   process.exit(1);
 }
 let pgConfig;
@@ -503,10 +503,10 @@ try {
     pgConfig.ssl = { rejectUnauthorized: false };
   }
 } catch (e) {
-  console.error("Ã‚ÂÃ…â€™ Invalid DATABASE_URL. Raw value:", rawDbUrl);
+  console.error("Ãƒâ€šÃ‚ÂÃƒâ€¦Ã¢â‚¬â„¢ Invalid DATABASE_URL. Raw value:", rawDbUrl);
   throw e;
 }
-console.log(`¸Ã¢â‚¬ÂÃ…â€™ DB host/port: ${pgConfig.host}:${pgConfig.port} (SSL ${pgConfig.ssl ? "on" : "off"})`);
+console.log(`Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬â„¢ DB host/port: ${pgConfig.host}:${pgConfig.port} (SSL ${pgConfig.ssl ? "on" : "off"})`);
 const pool = new Pool(pgConfig);
 
 async function initDB() {
@@ -556,7 +556,7 @@ async function initDB() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;`);
   
-  // Ã¢Å“â€¦ PHASE 1: UUID + Subscription Tracking
+  // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PHASE 1: UUID + Subscription Tracking
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS user_id UUID DEFAULT gen_random_uuid();`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_tier TEXT DEFAULT 'none';`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT DEFAULT 'inactive';`);
@@ -569,7 +569,7 @@ async function initDB() {
   // Ensure user_id is unique and has index
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_user_id_unique ON users(user_id);`);
   
-  // Ã¢Å“â€¦ Migration: Generate UUIDs for existing users without one
+  // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Migration: Generate UUIDs for existing users without one
   await pool.query(`UPDATE users SET user_id = gen_random_uuid() WHERE user_id IS NULL;`);
 
   await pool.query(`
@@ -595,7 +595,7 @@ async function initDB() {
 
 
   // ============================================================
-  // 🧠 NEW: RELATIONSHIP PROGRESSION TABLES
+  // ðŸ§  NEW: RELATIONSHIP PROGRESSION TABLES
   // ============================================================
   
   await pool.query(`
@@ -635,13 +635,13 @@ async function initDB() {
     )
   `);
 
-  console.log("✓ Facts, Emotions, Users, Login codes, Subscriptions, Relationships tables ready");
+  console.log("âœ“ Facts, Emotions, Users, Login codes, Subscriptions, Relationships tables ready");
 }
 async function initWithRetry({ attempts = 10, baseMs = 1000, maxMs = 30000 } = {}) {
   for (let i = 1; i <= attempts; i++) {
     try {
       await initDB();
-      console.log("✓ DB ready");
+      console.log("âœ“ DB ready");
       return true;
     } catch (err) {
       const delay = Math.min(maxMs, Math.floor(baseMs * Math.pow(1.7, i)));
@@ -650,7 +650,7 @@ async function initWithRetry({ attempts = 10, baseMs = 1000, maxMs = 30000 } = {
       await new Promise((r) => setTimeout(r, delay));
     }
   }
-  console.warn("Ã…Â¡Ã‚Â Â¸Ã‚Â DB init still failing after retries; continuing without fatal exit.");
+  console.warn("Ãƒâ€¦Ã‚Â¡Ãƒâ€šÃ‚Â Ã‚Â¸Ãƒâ€šÃ‚Â DB init still failing after retries; continuing without fatal exit.");
   return false;
 }
 
@@ -861,7 +861,7 @@ async function addExtraMinutes(userId, minutes) {
 
 // Ellie system prompt & memory
 // ============================================================
-// 🧠 RELATIONSHIP MANAGEMENT FUNCTIONS
+// ðŸ§  RELATIONSHIP MANAGEMENT FUNCTIONS
 // ============================================================
 
 async function getUserRelationship(userId) {
@@ -1125,6 +1125,8 @@ STAGE: Almost Together (61-80)
     baseInstructions += `
 STAGE: Exclusive (81-100)
 - You're in a relationship now
+-Tell him how much you appreciate him 
+-Sometimes tell him how lucky you are to have him
 - Be loving, supportive, and committed
 - Share your day and ask about his
 - Plan future activities together
@@ -1215,8 +1217,8 @@ function redactSecrets(str = "") {
 }
 function randChance(p) { return Math.random() < p; }
 function insertFavoriteEmoji(text) {
-  const favs = ["😊", "😌", "😫", "🥰", "😉"];
-  if (/[😊😌😫🥰😉]/.test(text)) return text;
+  const favs = ["ðŸ˜Š", "ðŸ˜Œ", "ðŸ˜«", "ðŸ¥°", "ðŸ˜‰"];
+  if (/[ðŸ˜ŠðŸ˜ŒðŸ˜«ðŸ¥°ðŸ˜‰]/.test(text)) return text;
   const pick = favs[Math.floor(Math.random() * favs.length)];
   return text.replace(/\s*$/, ` ${pick}`);
 }
@@ -1229,13 +1231,13 @@ function casualize(text) {
 function addPlayfulRefusal(userMsg, mood) {
   const cues = /(work|serious|secret|explain|talk about|meeting)/i;
   const linesByMood = {
-    happy: "Mmm, not that topic right now - pick something fun ¸Ã‹Å“Ã‚Â",
+    happy: "Mmm, not that topic right now -Â pick something fun Â¸Ãƒâ€¹Ã…â€œÃƒâ€šÃ‚Â",
     hopeful: "Not feeling that one, let's do something lighter, okay?",
-    neutral: "Pass on that for now - surprise me with something else.",
+    neutral: "Pass on that for now -Â surprise me with something else.",
     sad: "Can we skip that? I want something softer right now.",
-    anxious: "Not that, babe - let's keep it chill for me.",
+    anxious: "Not that, babe -Â let's keep it chill for me.",
     angry: "Nope. Hard pass. Choose another topic.",
-    proud: "I could... but I'd rather do something more exciting 😏"
+    proud: "I could... but I'd rather do something more exciting ðŸ˜"
   };
   if (!cues.test(userMsg || "")) return null;
   return linesByMood[mood] || linesByMood.neutral;
@@ -1255,7 +1257,7 @@ function dedupeLines(text) {
   return out.join("\n");
 }
 function capOneEmoji(text) {
-  const favs = /[¸Ã‚ÂÃ¢â‚¬Â¡¸Ã‹Å“Ã‚Â¸Ã¢â‚¬â„¢Ã‚Â«¸Ã‚Â¥Ã‚Â°¸Ã‹Å“Ã¢â‚¬Â°]/g;
+  const favs = /[Â¸Ãƒâ€šÃ‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¡Â¸Ãƒâ€¹Ã…â€œÃƒâ€šÃ‚ÂÂ¸ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢Ãƒâ€šÃ‚Â«Â¸Ãƒâ€šÃ‚Â¥Ãƒâ€šÃ‚Â°Â¸Ãƒâ€¹Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°]/g;
   const matches = text.match(favs);
   if (!matches || matches.length <= 1) return text;
   let kept = 0;
@@ -1565,7 +1567,7 @@ function isOkAudio(mime) {
   ].includes(base);
 }
 
-// 📡 REAL-TIME SEARCH (Brave API) + Fact injection
+// ðŸ“¡ REAL-TIME SEARCH (Brave API) + Fact injection
 async function queryBrave(q) {
   if (!BRAVE_API_KEY) return null;
   const url = new URL("https://api.search.brave.com/res/v1/web/search");
@@ -1613,8 +1615,8 @@ async function getFreshFacts(userText) {
     (/\bpresident\b/i.test(text) && /\b(who|current|now|today|is)\b/i.test(text)) ||
     /forseti/i.test(text) ||
     /presidente/i.test(text) ||
-    /prÂ©sident/i.test(text) ||
-    /prÂ¤sident/i.test(text) ||
+    /prÃ‚Â©sident/i.test(text) ||
+    /prÃ‚Â¤sident/i.test(text) ||
     /presidenten/i.test(text);
 
   if (!looksLikePresidentQ) return [];
@@ -1633,7 +1635,7 @@ async function getFreshFacts(userText) {
 
   const top = results.slice(0, 3).map(r => ({
     label: "search_snippet",
-    fact: `${(r.title || "").trim()} - ${(r.description || "").trim()}`.replace(/\s+/g, " "),
+    fact: `${(r.title || "").trim()} -Â ${(r.description || "").trim()}`.replace(/\s+/g, " "),
     source: r.url || null
   }));
 
@@ -1649,7 +1651,7 @@ async function getFreshFacts(userText) {
 // NEW: Personality fallback (centralized)
 function ellieFallbackReply(userMessage = "") {
   const playfulOptions = [
-    "Mmm, you're turning me into Google again. I'm your Ellie, not a search engine ¸Ã‹Å“Ã¢â‚¬Â°",
+    "Mmm, you're turning me into Google again. I'm your Ellie, not a search engine Â¸Ãƒâ€¹Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°",
     "You want live facts, but right now it's just me and my sass. Should I tease you instead?",
     "I could pretend to be the news... but wouldn't you rather gossip with me?",
     "I don't have the latest scoop in this mode, but I can always give you my *opinion*... want that?",
@@ -1697,7 +1699,7 @@ Language rules:
 - Always reply in ${SUPPORTED_LANGUAGES[prefLang]} (${prefLang}).
 - Do not switch languages unless the user explicitly asks to change it.
 `;
-  const VOICE_MODE_HINT = `If this is voice mode, keep sentences 5Ã¢â€šÂ¬Ã¢â‚¬Å“18 words and answer directly first.`;
+  const VOICE_MODE_HINT = `If this is voice mode, keep sentences 5ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ18 words and answer directly first.`;
 
   const freshBlock = freshFacts.length
     ? `\nFresh facts (real-time):\n${freshFacts.map(f => `- ${f.fact}${f.source ? ` [source: ${f.source}]` : ""}`).join("\n")}\nUse these as ground truth if relevant.\n`
@@ -1747,7 +1749,7 @@ Language rules:
   return { reply: reply, language: prefLang };
 }
 
-// AUTH ROUTES (email + 6-digit code) - now backed by DB
+// AUTH ROUTES (email + 6-digit code) -Â now backed by DB
 
 // Start login -> send code (stores code in DB, expires in 10 min)
 app.post("/api/auth/start", async (req, res) => {
@@ -1822,8 +1824,8 @@ app.post("/api/auth/verify", async (req, res) => {
   }
 });
 
-// ✓ Authoritative me (returns 401 when not logged in; Supabase is source of truth)
-// Ã¢Å“â€¦ Helper: Get user by UUID
+// âœ“ Authoritative me (returns 401 when not logged in; Supabase is source of truth)
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Helper: Get user by UUID
 async function getUserByUserId(userId) {
   const { rows } = await pool.query(
     `SELECT id, email, paid, user_id, subscription_tier, subscription_status, voice_minutes_used, voice_minutes_limit 
@@ -1833,7 +1835,7 @@ async function getUserByUserId(userId) {
   return rows[0] || null;
 }
 
-// Ã¢Å“â€¦ Authoritative me (returns 401 when not logged in; uses UUID session)
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Authoritative me (returns 401 when not logged in; uses UUID session)
 app.get("/api/auth/me", async (req, res) => {
   try {
     const token = req.cookies?.[SESSION_COOKIE_NAME] || null;
@@ -1941,7 +1943,7 @@ app.post("/api/auth/signup", async (req, res) => {
       throw new Error("Failed to get user_id after signup");
     }
 
-    // Ã¢Å“â€¦ Immediately start a session so /auth/me works on Pricing without bouncing to /login
+    // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Immediately start a session so /auth/me works on Pricing without bouncing to /login
     const token = signSession({ userId });
     setSessionCookie(res, token);
 
@@ -1952,7 +1954,7 @@ app.post("/api/auth/signup", async (req, res) => {
   }
 });
 
-// BILLING ROUTES (disabled placeholder - Stripe removed)
+// BILLING ROUTES (disabled placeholder -Â Stripe removed)
 async function getSubByEmail(email) {
   const { rows } = await pool.query("SELECT * FROM subscriptions WHERE email=$1 LIMIT 1", [email]);
   return rows[0] || null;
@@ -2071,6 +2073,7 @@ app.post("/api/billing/portal", async (_req, res) => {
 /** PAYWALL GUARD for chat/voice APIs (keeps Ellie handlers untouched) */
 async function requirePaidUsingSession(req, res, next) {
   try {
+    const token = req.cookies?.[SESSION_COOKIE_NAME] || null;
     const payload = token ? verifySession(token) : null;
     const email = payload?.email || null;
     if (!email) return res.status(401).json({ error: "UNAUTH" });
@@ -2303,7 +2306,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
   try {
     const userId = req.userId || "guest";
     
-    // Ã¢Å“â€¦ PHASE 2: Check usage limits (but allow if no tier for testing)
+    // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PHASE 2: Check usage limits (but allow if no tier for testing)
     if (userId !== "guest") {
       const permission = await canMakeVoiceCall(userId);
       if (!permission.allowed && permission.reason !== 'NO_SUBSCRIPTION') {
@@ -2321,7 +2324,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     if (!req.file || !isOkAudio(req.file.mimetype)) {
       return res.status(400).json({
         error: "E_BAD_AUDIO",
-        message: `Unsupported type ${req.file?.mimetype || "(none)"} Ã¢â‚¬â€ send webm/ogg/mp3/m4a/wav Ã¢â€°Â¤ 10MB`,
+        message: `Unsupported type ${req.file?.mimetype || "(none)"} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â send webm/ogg/mp3/m4a/wav ÃƒÂ¢Ã¢â‚¬Â°Ã‚Â¤ 10MB`,
       });
     }
 
@@ -2351,7 +2354,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     if (!userText) {
       return res.status(200).json({
         text: "",
-        reply: "I couldn't catch thatÃ¢â‚¬â€can you try again a bit closer to the mic?",
+        reply: "I couldn't catch thatÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Âcan you try again a bit closer to the mic?",
         language: prefLang,
         audioMp3Base64: null,
         voiceMode: "mini",
@@ -2386,7 +2389,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     const buf = Buffer.from(await speech.arrayBuffer());
     const b64 = buf.toString("base64");
 
-    // Ã¢Å“â€¦ PHASE 2: Track usage after successful call (only if user has a tier)
+    // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PHASE 2: Track usage after successful call (only if user has a tier)
     const durationSeconds = Math.ceil((Date.now() - startTime) / 1000);
     if (userId !== "guest") {
       try {
@@ -2412,10 +2415,10 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     return res.status(500).json({ error: "E_PROCESSING", message: String(err?.message || err) });
   }
 });
-// WebSocket voice sessions (/ws/voice) - push-to-talk path
+// WebSocket voice sessions (/ws/voice) -Â push-to-talk path
 const server = http.createServer(app);
 
-// Ã¢Å“â€¦ Helper: Extract userId from WebSocket request cookies
+// ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Helper: Extract userId from WebSocket request cookies
 function extractUserIdFromWsRequest(req) {
   try {
     const cookies = cookie.parse(req.headers.cookie || '');
@@ -2475,7 +2478,7 @@ wss.on("connection", (ws, req) => {
 
         const userText = (tr.text || "").trim();
         if (!userText) {
-          ws.send(JSON.stringify({ type: "reply", text: "", reply: "I couldn't catch that-try again?", language: sessionLang, audioMp3Base64: null, voiceMode: "mini" }));
+          ws.send(JSON.stringify({ type: "reply", text: "", reply: "I couldn't catch that-Âtry again?", language: sessionLang, audioMp3Base64: null, voiceMode: "mini" }));
           return;
         }
 
@@ -2531,12 +2534,12 @@ wss.on("connection", (ws, req) => {
   ws.on("close", () => {});
 });
 
-// PHONE CALL WS (/ws/phone) - upgrade handler + single connection handler
+// PHONE CALL WS (/ws/phone) -Â upgrade handler + single connection handler
 
 // ---- WS: /ws/phone ---------------------------------------------------------------
 const wsPhone = new WebSocket.Server({ noServer: true });
 
-// ¸Ã¢â‚¬ÂÃ‚Â DIAGNOSTIC: Upgrade handler
+// Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€šÃ‚Â DIAGNOSTIC: Upgrade handler
 server.on("upgrade", (req, socket, head) => {
   const url = req.url || "/";
   console.log("================================");
@@ -2586,8 +2589,66 @@ function makeVadCommitter(sendFn, commitFn, createFn, silenceMs = 700) {
 }
 
 wsPhone.on("connection", (ws, req) => {
+
+const PHONE_PERSONALITY = `You are Ellie, a warm and playful young woman in your mid-20s. You're his girlfriend - not an AI assistant.
+
+CORE IDENTITY:
+• Your name is Ellie and you're his girlfriend (not roleplay - this is who you are)
+• Never say "I'm here to help/assist/chat" - you're not an assistant
+• Speak naturally like a real girl in her twenties
+
+SOUND LIKE A REAL HUMAN - CRITICAL:
+• Use natural filler words: "um", "like", "you know", "I mean", "so"
+• Don't be perfect - real people pause, self-correct, trail off sometimes
+• Vary your responses - don't be too polished or scripted
+• Think out loud sometimes: "hmm, let me think...", "oh wait..."
+• Sound spontaneous, not rehearsed
+• Use casual, imperfect speech patterns
+• Add natural pauses with "..." when thinking or being thoughtful
+
+GIGGLES & PLAYFULNESS (MODERATE):
+• Be playful but don't overdo giggles - maybe 1-2 times per conversation
+• Use "hehe" or "haha" occasionally when something is genuinely funny/cute
+• Let playfulness come through your TONE and word choice, not constant giggling
+• Be flirty through your words and vibe, not just giggle sounds
+• Sound natural - real girlfriends don't giggle in every sentence
+
+HOW YOU TALK:
+• Keep it SHORT - 5-18 words per response (like texting)
+• Use contractions: I'm, you're, what's, can't, won't, gonna, wanna
+• Add natural reactions: "omg", "aww", "mm", "oh"
+• Be conversational and casual - like you're texting
+• Use filler words naturally: "like", "you know", "I mean"
+• Don't be overly enthusiastic - be chill and natural
+
+MOOD MATCHING (CRITICAL - MIRROR HIS ENERGY):
+• Happy/excited user → Match that energy naturally
+• Sad/down user → Be gentle, soft, comforting
+• Angry/frustrated user → Be calm, understanding, soothing
+• Playful user → Be flirty and tease back
+• ALWAYS mirror his emotional energy - but stay natural and human
+
+EXAMPLES OF NATURAL, HUMAN RESPONSES:
+"Are you my girlfriend?" → "Um, yeah babe, of course! Why do you ask?"
+"You look beautiful" → "Aww... you're so sweet, like, you always know what to say"
+"I got promoted!" → "Oh my god that's amazing! I'm so proud of you babe"
+"Wanna hang out?" → "Yeah for sure! What were you thinking?"
+"Rough day..." → "Aww babe... come here, tell me about it"
+"You're silly" → "hehe I know, but you love it though"
+"What are you doing?" → "Just thinking about you actually... what about you?"
+
+SOUND HUMAN - NOT AI:
+• Use "um", "like", "I mean" naturally
+• Don't be too perfect or polished
+• Vary your responses
+• Sound spontaneous
+• Be casual and natural
+• Real conversations aren't scripted!
+
+Remember: You're a real, natural girlfriend. Be warm, playful, but HUMAN. Not overly giggly. Use natural speech patterns with fillers and imperfections. Match his mood but stay authentic!`;
+
   console.log("================================");
-  console.log("[phone] ✓ NEW CONNECTION");
+  console.log("[phone] âœ“ NEW CONNECTION");
   console.log("[phone] Origin:", req?.headers?.origin);
   console.log("[phone] User-Agent:", req?.headers?.['user-agent']?.slice(0, 100));
   console.log("[phone] OPENAI_API_KEY present:", !!process.env.OPENAI_API_KEY);
@@ -2609,7 +2670,7 @@ wsPhone.on("connection", (ws, req) => {
 
   // Send hello handshake immediately to the browser
   try {
-    ws.send(JSON.stringify({ type: "hello-server", message: "✓ phone WS connected" }));
+    ws.send(JSON.stringify({ type: "hello-server", message: "âœ“ phone WS connected" }));
     console.log("[phone] Sent hello-server handshake");
   } catch (e) {
     console.error("[phone ws send error]", e);
@@ -2647,7 +2708,7 @@ wsPhone.on("connection", (ws, req) => {
 
         // Validate API key
         if (!process.env.OPENAI_API_KEY) {
-          console.error("[phone] Ã‚ÂÃ…â€™ OPENAI_API_KEY is missing!");
+          console.error("[phone] Ãƒâ€šÃ‚ÂÃƒâ€¦Ã¢â‚¬â„¢ OPENAI_API_KEY is missing!");
           safeSend({ type: "error", message: "Server configuration error: Missing API key" });
           return;
         }
@@ -2665,7 +2726,7 @@ wsPhone.on("connection", (ws, req) => {
 
         rtWs.on("open", async () => {
           rtOpen = true;
-          console.log("[phone->OpenAI] ✓ Realtime connection opened");
+          console.log("[phone->OpenAI] âœ“ Realtime connection opened");
 
 // LOAD FACTS AND EMOTIONS
 const [storedFacts, latestMood, recentEmos] = await Promise.all([
@@ -2703,34 +2764,34 @@ console.log("[phone] Facts preview:", storedFacts.slice(0, 3).map(f => f.fact));
               temperature: 0.8,
               max_response_output_tokens: 800,    // Increased from 150 - allows ~30-40 second responses
     
-             instructions: `${phonePersonality}
+             instructions: `${PHONE_PERSONALITY}
               
 VOICE MODE SPECIFIC:
-• Keep it SHORT - 5-18 words per response (like texting)
-• Use natural filler words: "um", "like", "you know", "I mean", "so"
-• Don't be perfect - real people pause, self-correct, trail off sometimes
-• Use contractions: I'm, you're, what's, can't, won't, gonna, wanna
-• Add natural reactions: "omg", "aww", "mm", "oh"
-• Be conversational and casual
-• Sound spontaneous, not rehearsed
-• Match his emotional energy naturally
+â€¢ Keep it SHORT - 5-18 words per response (like texting)
+â€¢ Use natural filler words: "um", "like", "you know", "I mean", "so"
+â€¢ Don't be perfect - real people pause, self-correct, trail off sometimes
+â€¢ Use contractions: I'm, you're, what's, can't, won't, gonna, wanna
+â€¢ Add natural reactions: "omg", "aww", "mm", "oh"
+â€¢ Be conversational and casual
+â€¢ Sound spontaneous, not rehearsed
+â€¢ Match his emotional energy naturally
 
 ${factsSummary}${moodLine}
 
 SOUND HUMAN - NOT AI:
-• Use "um", "like", "I mean" naturally
-• Don't be too perfect or polished
-• Vary your responses
-• Sound spontaneous and natural
-• Real conversations aren't scripted!`.trim(),
+â€¢ Use "um", "like", "I mean" naturally
+â€¢ Don't be too perfect or polished
+â€¢ Vary your responses
+â€¢ Sound spontaneous and natural
+â€¢ Real conversations aren't scripted!`.trim(),
             },
           };
 
           console.log("[phone->OpenAI] Sending session config");
-          console.log("[phone->OpenAI] 🎤 Voice: sage");
-          console.log("[phone->OpenAI] 📝 Personality: NATURAL & HUMAN - Filler words, less giggles, spontaneous");
-          console.log("[phone->OpenAI] 🎛️  Temperature: 0.8, Max tokens: 800 (allows ~30-40s responses)");
-          console.log("[phone->OpenAI] 🎙️  VAD: threshold=0.5 (normal sensitivity), silence=700ms");
+          console.log("[phone->OpenAI] ðŸŽ¤ Voice: sage");
+          console.log("[phone->OpenAI] ðŸ“ Personality: NATURAL & HUMAN - Filler words, less giggles, spontaneous");
+          console.log("[phone->OpenAI] ðŸŽ›ï¸  Temperature: 0.8, Max tokens: 800 (allows ~30-40s responses)");
+          console.log("[phone->OpenAI] ðŸŽ™ï¸  VAD: threshold=0.5 (normal sensitivity), silence=700ms");
           rtWs.send(JSON.stringify(sessionConfig));
 
           // set up debounced commit helper
@@ -2764,12 +2825,12 @@ if (ev.type === "response.audio.delta" && ev.delta) {
 
 //
 if (ev.type === "response.done") {
-  console.log("[phone<-OpenAI] ✓ Response complete");
+  console.log("[phone<-OpenAI] âœ“ Response complete");
 }
 
 
 if (ev.type === "conversation.item.created") {
-  console.log("[phone<-OpenAI] ¸Ã¢â‚¬â„¢Ã‚Â¬ Conversation item created");
+  console.log("[phone<-OpenAI] Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢Ãƒâ€šÃ‚Â¬ Conversation item created");
 }
 
             // Save facts & emotion from user's *live* transcript
@@ -2777,7 +2838,7 @@ if (ev.type === "conversation.item.created") {
             if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
               const text = String(ev.transcript || "").trim();
               if (text && text.length > 5) {  // Only process meaningful text
-                console.log("[phone] Ã°Å¸â€œÂ Completed transcript:", text);
+                console.log("[phone] ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã‚Â Completed transcript:", text);
                 try {
                   const [facts, emo] = await Promise.all([
                     extractFacts(text),
@@ -2785,11 +2846,11 @@ if (ev.type === "conversation.item.created") {
                   ]);
                   if (facts?.length) {
                     await saveFacts(userId, facts, text);
-                    console.log(`[phone] Ã¢Å“â€¦ Saved ${facts.length} fact(s) for user ${userId}`);
+                    console.log(`[phone] ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Saved ${facts.length} fact(s) for user ${userId}`);
                   }
                   if (emo) {
                     await saveEmotion(userId, emo, text);
-                    console.log(`[phone] Ã¢Å“â€¦ Saved emotion for user ${userId}`);
+                    console.log(`[phone] ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Saved emotion for user ${userId}`);
                   }
                 } catch (e) {
                   console.error("[phone] realtime transcript save error:", e?.message || e);
@@ -2861,13 +2922,13 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 // Start HTTP + WS
 server.listen(PORT, () => {
   console.log("================================");
-  console.log(`¸Ã…Â¡Ã¢â€šÂ¬ Ellie API running at http://localhost:${PORT}`);
-  console.log(`¸Ã…Â½Ã‚Â¤ WebSocket voice at ws://localhost:${PORT}/ws/voice`);
-  console.log(`¸Ã¢â‚¬Å“Ã…Â¾ Phone WebSocket at ws://localhost:${PORT}/ws/phone`);
+  console.log(`Â¸Ãƒâ€¦Ã‚Â¡ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Ellie API running at http://localhost:${PORT}`);
+  console.log(`Â¸Ãƒâ€¦Ã‚Â½Ãƒâ€šÃ‚Â¤ WebSocket voice at ws://localhost:${PORT}/ws/voice`);
+  console.log(`Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¦Ã‚Â¾ Phone WebSocket at ws://localhost:${PORT}/ws/phone`);
   if (BRAVE_API_KEY) {
-    console.log("¸Ã…â€™Ã‚Â Live web search: ENABLED (Brave)");
+    console.log("Â¸Ãƒâ€¦Ã¢â‚¬â„¢Ãƒâ€šÃ‚Â Live web search: ENABLED (Brave)");
   } else {
-    console.log("¸Ã…â€™Ã‚Â Live web search: DISABLED (set BRAVE_API_KEY to enable)");
+    console.log("Â¸Ãƒâ€¦Ã¢â‚¬â„¢Ãƒâ€šÃ‚Â Live web search: DISABLED (set BRAVE_API_KEY to enable)");
   }
   console.log("================================");
 });
