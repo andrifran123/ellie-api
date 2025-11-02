@@ -3425,6 +3425,8 @@ app.get("/api/analytics/forecast", async (req, res) => {
  */
 app.get("/api/analytics/active-users", async (req, res) => {
   try {
+    // Changed from 1 hour to 30 minutes for more real-time visibility
+    // and simplified query to avoid potential issues with conversation_history table
     const query = `
       SELECT 
         ur.user_id,
@@ -3434,29 +3436,65 @@ app.get("/api/analytics/active-users", async (req, res) => {
         ur.streak_days,
         ur.emotional_investment,
         ur.last_mood,
-        COUNT(ch.id) as message_count
+        ur.total_interactions as message_count
       FROM user_relationships ur
-      LEFT JOIN conversation_history ch ON ur.user_id = ch.user_id
-        AND ch.created_at > NOW() - INTERVAL '24 hours'
-      WHERE ur.last_interaction > NOW() - INTERVAL '1 hour'
-      GROUP BY ur.user_id, ur.relationship_level, ur.current_stage, 
-               ur.last_interaction, ur.streak_days, ur.emotional_investment, ur.last_mood
+      WHERE ur.last_interaction > NOW() - INTERVAL '30 minutes'
       ORDER BY ur.last_interaction DESC
       LIMIT 50
+    `;
+
+    const result = await pool.query(query);
+    
+    console.log(`[active-users] Found ${result.rows.length} active users in last 30 minutes`);
+
+    res.json({
+      success: true,
+      users: result.rows,
+      count: result.rows.length,
+      timestamp: new Date().toISOString(),
+      query_window: '30 minutes'
+    });
+  } catch (error) {
+    console.error("Error fetching active users:", error);
+    res.status(500).json({ 
+      error: "Failed to fetch active users",
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * GET /api/analytics/debug-users
+ * Debug endpoint to check the most recent user interactions (regardless of time)
+ */
+app.get("/api/analytics/debug-users", async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        ur.user_id,
+        ur.last_interaction,
+        ur.relationship_level,
+        ur.current_stage,
+        EXTRACT(EPOCH FROM (NOW() - ur.last_interaction)) / 60 as minutes_since_last_interaction,
+        NOW() as current_db_time
+      FROM user_relationships ur
+      ORDER BY ur.last_interaction DESC
+      LIMIT 10
     `;
 
     const result = await pool.query(query);
 
     res.json({
       success: true,
-      users: result.rows,
-      count: result.rows.length,
-      timestamp: new Date().toISOString()
+      current_time: new Date().toISOString(),
+      db_timezone: result.rows[0]?.current_db_time,
+      recent_users: result.rows,
+      note: "Shows 10 most recent users regardless of time window"
     });
   } catch (error) {
-    console.error("Error fetching active users:", error);
+    console.error("Error in debug endpoint:", error);
     res.status(500).json({ 
-      error: "Failed to fetch active users",
+      error: "Debug query failed",
       details: error.message 
     });
   }
