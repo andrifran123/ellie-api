@@ -2896,9 +2896,9 @@ app.get("/api/analytics/overview", async (req, res) => {
       SELECT 
         current_stage,
         COUNT(*) as user_count,
-        AVG(relationship_level) as avg_level,
-        AVG(streak_days) as avg_streak,
-        MAX(longest_streak) as max_streak
+        COALESCE(AVG(relationship_level), 0) as avg_level,
+        COALESCE(AVG(streak_days), 0) as avg_streak,
+        COALESCE(MAX(longest_streak), 0) as max_streak
       FROM user_relationships
       GROUP BY current_stage
       ORDER BY MIN(relationship_level)
@@ -2907,9 +2907,9 @@ app.get("/api/analytics/overview", async (req, res) => {
     const { rows: totalData } = await pool.query(`
       SELECT 
         COUNT(*) as total_users,
-        AVG(relationship_level) as avg_relationship_level,
+        COALESCE(AVG(relationship_level), 0) as avg_relationship_level,
         SUM(CASE WHEN streak_days > 0 THEN 1 ELSE 0 END) as active_streaks,
-        AVG(emotional_investment) as avg_emotional_investment
+        COALESCE(AVG(emotional_investment), 0) as avg_emotional_investment
       FROM user_relationships
     `);
     
@@ -2932,7 +2932,7 @@ app.get("/api/analytics/engagement", async (req, res) => {
       SELECT 
         DATE(last_interaction) as day,
         COUNT(DISTINCT user_id) as active_users,
-        AVG(total_interactions) as avg_interactions,
+        COALESCE(AVG(total_interactions), 0) as avg_interactions,
         SUM(CASE WHEN streak_days > 0 THEN 1 ELSE 0 END) as users_with_streak
       FROM user_relationships
       WHERE last_interaction >= NOW() - INTERVAL '7 days'
@@ -2945,7 +2945,7 @@ app.get("/api/analytics/engagement", async (req, res) => {
       SELECT 
         last_mood,
         COUNT(*) as count,
-        AVG(relationship_level) as avg_level
+        COALESCE(AVG(relationship_level), 0) as avg_level
       FROM user_relationships
       GROUP BY last_mood
     `);
@@ -2994,8 +2994,8 @@ app.get("/api/analytics/revenue", async (req, res) => {
         r.current_stage,
         COUNT(DISTINCT r.user_id) as user_count,
         SUM(CASE WHEN u.paid = true THEN 1 ELSE 0 END) as paid_users,
-        AVG(r.emotional_investment) as avg_investment,
-        AVG(r.relationship_level) as avg_level
+        COALESCE(AVG(r.emotional_investment), 0) as avg_investment,
+        COALESCE(AVG(r.relationship_level), 0) as avg_level
       FROM user_relationships r
       LEFT JOIN users u ON r.user_id::text = u.user_id::text
       GROUP BY r.current_stage
@@ -3019,7 +3019,7 @@ app.get("/api/analytics/revenue", async (req, res) => {
     const { rows: opportunities } = await pool.query(`
       SELECT 
         COUNT(*) as total_opportunities,
-        AVG(relationship_level) as avg_level,
+        COALESCE(AVG(relationship_level), 0) as avg_level,
         SUM(CASE 
           WHEN current_stage = 'FRIEND_TENSION' THEN 1 
           ELSE 0 
@@ -3048,16 +3048,16 @@ app.get("/api/analytics/revenue", async (req, res) => {
     
     const revenuePotential = revenueByStage.map(stage => ({
       ...stage,
-      potential_revenue: (stage.user_count - stage.paid_users) * 
+      potential_revenue: ((stage.user_count || 0) - (stage.paid_users || 0)) * 
                         (PRICE_POINTS[stage.current_stage] || 0),
-      conversion_rate: stage.paid_users / stage.user_count
+      conversion_rate: (stage.paid_users || 0) / (stage.user_count || 1)
     }));
     
     res.json({
       byStage: revenuePotential,
       targets: targets,
-      opportunities: opportunities[0],
-      totalPotential: revenuePotential.reduce((sum, s) => sum + s.potential_revenue, 0),
+      opportunities: opportunities[0] || { total_opportunities: 0, avg_level: 0, stage_2_opportunities: 0, stage_3_opportunities: 0, stage_4_opportunities: 0 },
+      totalPotential: revenuePotential.reduce((sum, s) => sum + (s.potential_revenue || 0), 0),
       timestamp: new Date()
     });
   } catch (err) {
@@ -3075,7 +3075,7 @@ app.get("/api/analytics/addiction", async (req, res) => {
         COUNT(CASE WHEN streak_days >= 7 THEN 1 END) as week_plus_streaks,
         COUNT(CASE WHEN streak_days >= 14 THEN 1 END) as two_week_plus_streaks,
         COUNT(CASE WHEN streak_days >= 30 THEN 1 END) as month_plus_streaks,
-        AVG(CASE WHEN streak_days > 0 THEN streak_days END) as avg_active_streak,
+        COALESCE(AVG(CASE WHEN streak_days > 0 THEN streak_days END), 0) as avg_active_streak,
         COUNT(CASE WHEN total_interactions > 100 THEN 1 END) as heavy_users,
         COUNT(CASE WHEN emotional_investment > 0.7 THEN 1 END) as emotionally_invested,
         COUNT(CASE 
