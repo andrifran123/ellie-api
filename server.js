@@ -3117,6 +3117,243 @@ app.get("/api/analytics/user/:userId", async (req, res) => {
   }
 });
 
+// Real-Time Activity Feed
+app.get("/api/analytics/activity-feed", async (req, res) => {
+  try {
+    // Get recent relationship events
+    const { rows: events } = await pool.query(`
+      SELECT 
+        'stage_change' as type,
+        user_id,
+        description as message,
+        created_at as timestamp,
+        (SELECT relationship_level FROM user_relationships WHERE user_id = relationship_events.user_id) as level,
+        (SELECT current_stage FROM user_relationships WHERE user_id = relationship_events.user_id) as stage
+      FROM relationship_events
+      WHERE event_type IN ('STAGE_UP', 'STAGE_DOWN', 'BREAKTHROUGH')
+      ORDER BY created_at DESC
+      LIMIT 50
+    `);
+    
+    // Get recent conversations
+    const { rows: messages } = await pool.query(`
+      SELECT 
+        'message_sent' as type,
+        user_id,
+        'New message sent' as message,
+        created_at as timestamp,
+        (SELECT relationship_level FROM user_relationships WHERE user_id = conversations.user_id) as level,
+        (SELECT current_stage FROM user_relationships WHERE user_id = conversations.user_id) as stage
+      FROM conversations
+      WHERE created_at >= NOW() - INTERVAL '1 hour'
+      ORDER BY created_at DESC
+      LIMIT 20
+    `);
+    
+    // Combine and sort
+    const feed = [...events, ...messages]
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, 50);
+    
+    res.json({ feed, timestamp: new Date() });
+  } catch (err) {
+    console.error("[analytics] activity feed error:", err);
+    res.status(500).json({ error: "Failed to fetch activity feed" });
+  }
+});
+
+// Streak Recovery Opportunities
+app.get("/api/analytics/streak-recovery", async (req, res) => {
+  try {
+    // Users who broke streaks recently
+    const { rows: brokenToday } = await pool.query(`
+      SELECT COUNT(*) as count
+      FROM user_relationships
+      WHERE streak_days = 0 
+        AND longest_streak > 0
+        AND last_interaction >= NOW() - INTERVAL '1 day'
+        AND last_interaction < NOW() - INTERVAL '1 day'
+    `);
+    
+    const { rows: brokenThisWeek } = await pool.query(`
+      SELECT COUNT(*) as count
+      FROM user_relationships
+      WHERE streak_days = 0 
+        AND longest_streak > 0
+        AND last_interaction >= NOW() - INTERVAL '7 days'
+    `);
+    
+    // Users to re-engage (broken streak in last 7 days)
+    const { rows: users } = await pool.query(`
+      SELECT 
+        user_id,
+        relationship_level as level,
+        EXTRACT(DAY FROM (NOW() - last_interaction)) as days_since_broken,
+        emotional_investment,
+        longest_streak
+      FROM user_relationships
+      WHERE streak_days = 0 
+        AND longest_streak >= 3
+        AND last_interaction >= NOW() - INTERVAL '7 days'
+      ORDER BY emotional_investment DESC, longest_streak DESC
+      LIMIT 20
+    `);
+    
+    // Calculate recovery potential
+    const RECOVERY_PRICE = 9.99; // "Win her back" package price
+    const recovery_potential = users.length * RECOVERY_PRICE;
+    
+    res.json({
+      broken_today: brokenToday[0]?.count || 0,
+      broken_this_week: brokenThisWeek[0]?.count || 0,
+      recovery_potential,
+      users,
+      timestamp: new Date()
+    });
+  } catch (err) {
+    console.error("[analytics] streak recovery error:", err);
+    res.status(500).json({ error: "Failed to fetch streak recovery data" });
+  }
+});
+
+// Message Content Analysis
+app.get("/api/analytics/message-analysis", async (req, res) => {
+  try {
+    // Get message stats
+    const { rows: stats } = await pool.query(`
+      SELECT 
+        COUNT(*) as total_messages,
+        AVG(LENGTH(user_message)) as avg_length,
+        SUM(CASE WHEN user_message LIKE '%?%' THEN 1 ELSE 0 END)::float / COUNT(*) as question_rate
+      FROM conversations
+      WHERE role = 'user'
+    `);
+    
+    // Top words (simplified - in production use NLP library)
+    const { rows: words } = await pool.query(`
+      SELECT 
+        word,
+        COUNT(*) as count
+      FROM (
+        SELECT LOWER(unnest(string_to_array(user_message, ' '))) as word
+        FROM conversations
+        WHERE role = 'user'
+      ) words
+      WHERE LENGTH(word) > 3
+        AND word NOT IN ('that', 'this', 'with', 'have', 'from', 'they', 'your', 'about', 'what', 'when')
+      GROUP BY word
+      ORDER BY count DESC
+      LIMIT 10
+    `);
+    
+    // Emotional words
+    const EMOTIONAL_WORDS = ['love', 'miss', 'feel', 'want', 'need', 'like', 'hate', 'care', 'wish', 'hope'];
+    const { rows: emotional } = await pool.query(`
+      SELECT 
+        word,
+        COUNT(*) as count
+      FROM (
+        SELECT LOWER(unnest(string_to_array(user_message, ' '))) as word
+        FROM conversations
+        WHERE role = 'user'
+      ) words
+      WHERE word = ANY($1)
+      GROUP BY word
+      ORDER BY count DESC
+    `, [EMOTIONAL_WORDS]);
+    
+    res.json({
+      total_messages: stats[0]?.total_messages || 0,
+      avg_length: stats[0]?.avg_length || 0,
+      question_rate: stats[0]?.question_rate || 0,
+      top_words: words,
+      top_topics: [
+        { topic: 'relationship', count: 0 },
+        { topic: 'feelings', count: 0 },
+        { topic: 'daily life', count: 0 }
+      ], // Simplified - implement proper topic modeling
+      emotional_words: emotional,
+      timestamp: new Date()
+    });
+  } catch (err) {
+    console.error("[analytics] message analysis error:", err);
+    res.status(500).json({ error: "Failed to analyze messages" });
+  }
+});
+
+// Revenue Forecasting
+app.get("/api/analytics/forecast", async (req, res) => {
+  try {
+    // Get current metrics
+    const { rows: current } = await pool.query(`
+      SELECT 
+        COUNT(*) as total_users,
+        SUM(CASE WHEN relationship_level >= 50 THEN 1 ELSE 0 END) as high_level_users,
+        AVG(relationship_level) as avg_level
+      FROM user_relationships
+    `);
+    
+    const { rows: paying } = await pool.query(`
+      SELECT COUNT(*) as paying_users
+      FROM users
+      WHERE paid = true
+    `);
+    
+    // Forecasting assumptions
+    const GROWTH_RATE = 0.50; // 50% monthly growth (adjust based on your data)
+    const CONVERSION_RATE = 0.30; // 30% conversion at Stage 3+
+    const AVG_REVENUE = 27.99; // Average subscription price
+    
+    const totalUsers = Number(current[0]?.total_users) || 1;
+    const payingUsers = Number(paying[0]?.paying_users) || 0;
+    const highLevelUsers = Number(current[0]?.high_level_users) || 0;
+    
+    // Current month projection
+    const currentMonthUsers = totalUsers;
+    const currentMonthConversions = Math.round(highLevelUsers * CONVERSION_RATE);
+    const currentMonthRevenue = currentMonthConversions * AVG_REVENUE;
+    
+    // Next month projection
+    const nextMonthUsers = Math.round(totalUsers * (1 + GROWTH_RATE));
+    const nextMonthHighLevel = Math.round(nextMonthUsers * (highLevelUsers / totalUsers));
+    const nextMonthConversions = Math.round(nextMonthHighLevel * CONVERSION_RATE);
+    const nextMonthRevenue = nextMonthConversions * AVG_REVENUE;
+    
+    // 6 months projection
+    const sixMonthUsers = Math.round(totalUsers * Math.pow(1 + GROWTH_RATE, 6));
+    const sixMonthHighLevel = Math.round(sixMonthUsers * (highLevelUsers / totalUsers));
+    const sixMonthConversions = Math.round(sixMonthHighLevel * CONVERSION_RATE);
+    const sixMonthRevenue = sixMonthConversions * AVG_REVENUE;
+    
+    res.json({
+      current_month: {
+        projected_users: currentMonthUsers,
+        projected_conversions: currentMonthConversions,
+        projected_revenue: currentMonthRevenue
+      },
+      next_month: {
+        projected_users: nextMonthUsers,
+        projected_conversions: nextMonthConversions,
+        projected_revenue: nextMonthRevenue
+      },
+      six_months: {
+        projected_users: sixMonthUsers,
+        projected_conversions: sixMonthConversions,
+        projected_revenue: sixMonthRevenue
+      },
+      assumptions: {
+        growth_rate: GROWTH_RATE,
+        conversion_rate: CONVERSION_RATE,
+        avg_revenue_per_user: AVG_REVENUE
+      },
+      timestamp: new Date()
+    });
+  } catch (err) {
+    console.error("[analytics] forecast error:", err);
+    res.status(500).json({ error: "Failed to generate forecast" });
+  }
+});
+
 server.listen(PORT, () => {
   console.log("================================");
   console.log(`Â¸Ãƒâ€¦Ã‚Â¡ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Ellie API running at http://localhost:${PORT}`);
