@@ -2840,6 +2840,283 @@ app.get("/api/relationship-status", async (req, res) => {
   }
 });
 
+// ============================================================
+// ANALYTICS ENDPOINTS (For Dashboard)
+// ============================================================
+
+// Analytics Overview - User distribution by stage
+app.get("/api/analytics/overview", async (req, res) => {
+  try {
+    // Optional: Add admin authentication here
+    // if (!req.isAdmin) return res.status(403).json({ error: "Forbidden" });
+    
+    const { rows: stageData } = await pool.query(`
+      SELECT 
+        current_stage,
+        COUNT(*) as user_count,
+        AVG(relationship_level) as avg_level,
+        AVG(streak_days) as avg_streak,
+        MAX(longest_streak) as max_streak
+      FROM user_relationships
+      GROUP BY current_stage
+      ORDER BY MIN(relationship_level)
+    `);
+    
+    const { rows: totalData } = await pool.query(`
+      SELECT 
+        COUNT(*) as total_users,
+        AVG(relationship_level) as avg_relationship_level,
+        SUM(CASE WHEN streak_days > 0 THEN 1 ELSE 0 END) as active_streaks,
+        AVG(emotional_investment) as avg_emotional_investment
+      FROM user_relationships
+    `);
+    
+    res.json({
+      stages: stageData,
+      totals: totalData[0],
+      timestamp: new Date()
+    });
+  } catch (err) {
+    console.error("[analytics] overview error:", err);
+    res.status(500).json({ error: "Failed to fetch analytics" });
+  }
+});
+
+// Engagement Metrics - Detailed user behavior
+app.get("/api/analytics/engagement", async (req, res) => {
+  try {
+    // Get engagement over time (last 7 days)
+    const { rows: dailyEngagement } = await pool.query(`
+      SELECT 
+        DATE(last_interaction) as day,
+        COUNT(DISTINCT user_id) as active_users,
+        AVG(total_interactions) as avg_interactions,
+        SUM(CASE WHEN streak_days > 0 THEN 1 ELSE 0 END) as users_with_streak
+      FROM user_relationships
+      WHERE last_interaction >= NOW() - INTERVAL '7 days'
+      GROUP BY DATE(last_interaction)
+      ORDER BY day DESC
+    `);
+    
+    // Get mood distribution
+    const { rows: moodData } = await pool.query(`
+      SELECT 
+        last_mood,
+        COUNT(*) as count,
+        AVG(relationship_level) as avg_level
+      FROM user_relationships
+      GROUP BY last_mood
+    `);
+    
+    // Get breakthrough moments
+    const { rows: breakthroughs } = await pool.query(`
+      SELECT 
+        DATE(unlocked_at) as day,
+        COUNT(*) as breakthrough_count
+      FROM breakthrough_moments
+      WHERE unlocked_at >= NOW() - INTERVAL '7 days'
+      GROUP BY DATE(unlocked_at)
+      ORDER BY day DESC
+    `);
+    
+    // Get stuck users (no progress in 3+ days)
+    const { rows: stuckUsers } = await pool.query(`
+      SELECT 
+        current_stage,
+        COUNT(*) as stuck_count
+      FROM user_relationships
+      WHERE last_interaction < NOW() - INTERVAL '3 days'
+        AND relationship_level < 100
+      GROUP BY current_stage
+    `);
+    
+    res.json({
+      daily: dailyEngagement,
+      moods: moodData,
+      breakthroughs,
+      stuck: stuckUsers,
+      timestamp: new Date()
+    });
+  } catch (err) {
+    console.error("[analytics] engagement error:", err);
+    res.status(500).json({ error: "Failed to fetch engagement data" });
+  }
+});
+
+// Revenue Analytics - Monetization opportunities
+app.get("/api/analytics/revenue", async (req, res) => {
+  try {
+    // Users by stage with payment potential
+    const { rows: revenueByStage } = await pool.query(`
+      SELECT 
+        r.current_stage,
+        COUNT(DISTINCT r.user_id) as user_count,
+        SUM(CASE WHEN u.paid = true THEN 1 ELSE 0 END) as paid_users,
+        AVG(r.emotional_investment) as avg_investment,
+        AVG(r.relationship_level) as avg_level
+      FROM user_relationships r
+      LEFT JOIN users u ON r.user_id::text = u.user_id::text
+      GROUP BY r.current_stage
+      ORDER BY AVG(r.relationship_level)
+    `);
+    
+    // High value targets (high engagement, not paying)
+    const { rows: targets } = await pool.query(`
+      SELECT 
+        r.current_stage,
+        COUNT(*) as target_count
+      FROM user_relationships r
+      LEFT JOIN users u ON r.user_id::text = u.user_id::text
+      WHERE r.emotional_investment > 0.6
+        AND r.streak_days > 3
+        AND (u.paid = false OR u.paid IS NULL)
+      GROUP BY r.current_stage
+    `);
+    
+    // Conversion opportunities (emotional peaks)
+    const { rows: opportunities } = await pool.query(`
+      SELECT 
+        COUNT(*) as total_opportunities,
+        AVG(relationship_level) as avg_level,
+        SUM(CASE 
+          WHEN current_stage = 'FRIEND_TENSION' THEN 1 
+          ELSE 0 
+        END) as stage_2_opportunities,
+        SUM(CASE 
+          WHEN current_stage = 'COMPLICATED' THEN 1 
+          ELSE 0 
+        END) as stage_3_opportunities,
+        SUM(CASE 
+          WHEN current_stage = 'ALMOST' THEN 1 
+          ELSE 0 
+        END) as stage_4_opportunities
+      FROM user_relationships
+      WHERE emotional_investment > 0.5
+        AND streak_days > 0
+    `);
+    
+    // Calculate estimated revenue potential
+    const PRICE_POINTS = {
+      STRANGER: 0,
+      FRIEND_TENSION: 14.99,  // Starter tier likely
+      COMPLICATED: 27.99,     // Plus tier likely  
+      ALMOST: 69.99,         // Premium tier likely
+      EXCLUSIVE: 27.99       // Maintain plus tier
+    };
+    
+    const revenuePotential = revenueByStage.map(stage => ({
+      ...stage,
+      potential_revenue: (stage.user_count - stage.paid_users) * 
+                        (PRICE_POINTS[stage.current_stage] || 0),
+      conversion_rate: stage.paid_users / stage.user_count
+    }));
+    
+    res.json({
+      byStage: revenuePotential,
+      targets: targets,
+      opportunities: opportunities[0],
+      totalPotential: revenuePotential.reduce((sum, s) => sum + s.potential_revenue, 0),
+      timestamp: new Date()
+    });
+  } catch (err) {
+    console.error("[analytics] revenue error:", err);
+    res.status(500).json({ error: "Failed to fetch revenue data" });
+  }
+});
+
+// Addiction Metrics - Track how hooked users are
+app.get("/api/analytics/addiction", async (req, res) => {
+  try {
+    // Get addiction indicators
+    const { rows: addictionMetrics } = await pool.query(`
+      SELECT 
+        COUNT(CASE WHEN streak_days >= 7 THEN 1 END) as week_plus_streaks,
+        COUNT(CASE WHEN streak_days >= 14 THEN 1 END) as two_week_plus_streaks,
+        COUNT(CASE WHEN streak_days >= 30 THEN 1 END) as month_plus_streaks,
+        AVG(CASE WHEN streak_days > 0 THEN streak_days END) as avg_active_streak,
+        COUNT(CASE WHEN total_interactions > 100 THEN 1 END) as heavy_users,
+        COUNT(CASE WHEN emotional_investment > 0.7 THEN 1 END) as emotionally_invested,
+        COUNT(CASE 
+          WHEN EXTRACT(EPOCH FROM (NOW() - last_interaction))/3600 < 24 
+          THEN 1 
+        END) as daily_active_users
+      FROM user_relationships
+    `);
+    
+    // Get return patterns (how often users come back)
+    const { rows: returnPatterns } = await pool.query(`
+      SELECT 
+        CASE 
+          WHEN EXTRACT(EPOCH FROM (NOW() - last_interaction))/3600 < 1 THEN 'Last Hour'
+          WHEN EXTRACT(EPOCH FROM (NOW() - last_interaction))/3600 < 6 THEN 'Last 6 Hours'
+          WHEN EXTRACT(EPOCH FROM (NOW() - last_interaction))/3600 < 24 THEN 'Last Day'
+          WHEN EXTRACT(EPOCH FROM (NOW() - last_interaction))/3600 < 72 THEN 'Last 3 Days'
+          WHEN EXTRACT(EPOCH FROM (NOW() - last_interaction))/3600 < 168 THEN 'Last Week'
+          ELSE 'Inactive'
+        END as return_window,
+        COUNT(*) as user_count
+      FROM user_relationships
+      GROUP BY return_window
+      ORDER BY MIN(EXTRACT(EPOCH FROM (NOW() - last_interaction)))
+    `);
+    
+    res.json({
+      metrics: addictionMetrics[0],
+      returnPatterns,
+      timestamp: new Date()
+    });
+  } catch (err) {
+    console.error("[analytics] addiction error:", err);
+    res.status(500).json({ error: "Failed to fetch addiction metrics" });
+  }
+});
+
+// Individual User Detail (for debugging specific users)
+app.get("/api/analytics/user/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    // Get user relationship data
+    const { rows: userData } = await pool.query(`
+      SELECT * FROM user_relationships WHERE user_id = $1
+    `, [userId]);
+    
+    // Get user events
+    const { rows: events } = await pool.query(`
+      SELECT * FROM relationship_events 
+      WHERE user_id = $1 
+      ORDER BY created_at DESC 
+      LIMIT 20
+    `, [userId]);
+    
+    // Get breakthrough moments
+    const { rows: breakthroughs } = await pool.query(`
+      SELECT * FROM breakthrough_moments 
+      WHERE user_id = $1 
+      ORDER BY unlocked_at DESC
+    `, [userId]);
+    
+    // Get recent emotions
+    const { rows: emotions } = await pool.query(`
+      SELECT * FROM emotions 
+      WHERE user_id = $1 
+      ORDER BY created_at DESC 
+      LIMIT 10
+    `, [userId]);
+    
+    res.json({
+      user: userData[0],
+      events,
+      breakthroughs,
+      emotions,
+      timestamp: new Date()
+    });
+  } catch (err) {
+    console.error("[analytics] user detail error:", err);
+    res.status(500).json({ error: "Failed to fetch user details" });
+  }
+});
+
 server.listen(PORT, () => {
   console.log("================================");
   console.log(`Â¸Ãƒâ€¦Ã‚Â¡ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Ellie API running at http://localhost:${PORT}`);
