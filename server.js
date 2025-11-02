@@ -113,6 +113,20 @@ const PROB_IMPERFECTION = Number(process.env.PROB_IMPERFECTION || 0.2);
 const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
 
 // ============================================================
+// 🎮 MANUAL OVERRIDE SYSTEM - STORAGE
+// ============================================================
+
+// Manual Override Storage (In-memory)
+const manualOverrideSessions = new Map(); // userId -> { active: boolean, startedAt: timestamp }
+
+// Helper function to check if user is in manual override mode
+function isInManualOverride(userId) {
+  const session = manualOverrideSessions.get(userId);
+  return session && session.active;
+}
+
+
+// ============================================================
 // ðŸ§  PROGRESSIVE RELATIONSHIP SYSTEM CONSTANTS
 // ============================================================
 
@@ -2096,6 +2110,7 @@ app.post("/api/apply-voice-preset", async (req, res) => {
   }
 });
 
+
 app.post("/api/chat", async (req, res) => {
   try {
     const { message } = req.body;
@@ -2105,7 +2120,34 @@ app.post("/api/chat", async (req, res) => {
       return res.status(400).json({ error: "E_BAD_INPUT", message: "Invalid message" });
     }
 
-    // ===== RELATIONSHIP TRACKING =====
+    // 🎮 CHECK FOR MANUAL OVERRIDE FIRST
+    if (isInManualOverride(userId)) {
+      console.log(`🎮 User ${userId} in manual override - storing message only`);
+      
+      // Store user's message in database
+      await pool.query(
+        `INSERT INTO conversation_history (user_id, role, content, created_at)
+         VALUES ($1, 'user', $2, NOW())`,
+        [userId, message]
+      );
+
+      // Update last interaction time
+      await pool.query(
+        `UPDATE user_relationships 
+         SET last_interaction = NOW()
+         WHERE user_id = $1`,
+        [userId]
+      );
+
+      // Return empty - admin will respond manually
+      return res.json({
+        reply: "",
+        language: await getPreferredLanguage(userId),
+        in_manual_override: true
+      });
+    }
+
+    // ===== CONTINUE WITH NORMAL RELATIONSHIP TRACKING =====
     const [relationship, streak] = await Promise.all([
       getUserRelationship(userId),
       updateStreak(userId),
@@ -3372,6 +3414,301 @@ app.get("/api/analytics/forecast", async (req, res) => {
     res.status(500).json({ error: "Failed to generate forecast" });
   }
 });
+
+// ============================================================
+// 🎮 LIVE USER MONITORING & MANUAL OVERRIDE ENDPOINTS
+// ============================================================
+
+/**
+ * GET /api/analytics/active-users
+ * Returns list of recently active users for the Live Activity tab
+ */
+app.get("/api/analytics/active-users", async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        ur.user_id,
+        ur.relationship_level,
+        ur.current_stage,
+        ur.last_interaction,
+        ur.streak_days,
+        ur.emotional_investment,
+        ur.last_mood,
+        COUNT(ch.id) as message_count
+      FROM user_relationships ur
+      LEFT JOIN conversation_history ch ON ur.user_id = ch.user_id
+        AND ch.created_at > NOW() - INTERVAL '24 hours'
+      WHERE ur.last_interaction > NOW() - INTERVAL '1 hour'
+      GROUP BY ur.user_id, ur.relationship_level, ur.current_stage, 
+               ur.last_interaction, ur.streak_days, ur.emotional_investment, ur.last_mood
+      ORDER BY ur.last_interaction DESC
+      LIMIT 50
+    `;
+
+    const result = await pool.query(query);
+
+    res.json({
+      success: true,
+      users: result.rows,
+      count: result.rows.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error("Error fetching active users:", error);
+    res.status(500).json({ 
+      error: "Failed to fetch active users",
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * GET /api/chat-view/messages/:userId
+ * Get conversation history for a specific user
+ */
+app.get("/api/chat-view/messages/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const limit = parseInt(req.query.limit) || 50;
+
+    // Fetch recent conversation history
+    const query = `
+      SELECT 
+        id::text as id,
+        role,
+        content,
+        created_at
+      FROM conversation_history
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+      LIMIT $2
+    `;
+
+    const result = await pool.query(query, [userId, limit]);
+
+    // Reverse to show oldest first
+    const messages = result.rows.reverse();
+
+    res.json({
+      success: true,
+      user_id: userId,
+      messages: messages,
+      count: messages.length
+    });
+  } catch (error) {
+    console.error("Error fetching chat messages:", error);
+    res.status(500).json({ 
+      error: "Failed to fetch messages",
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * POST /api/manual-override/start
+ * Start manual override for a specific user
+ */
+app.post("/api/manual-override/start", async (req, res) => {
+  try {
+    const { user_id } = req.body;
+
+    if (!user_id) {
+      return res.status(400).json({ error: "user_id is required" });
+    }
+
+    // Verify user exists
+    const userCheck = await pool.query(
+      "SELECT user_id FROM user_relationships WHERE user_id = $1",
+      [user_id]
+    );
+
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Check if already in override
+    if (isInManualOverride(user_id)) {
+      return res.status(400).json({ 
+        error: "User is already in manual override mode" 
+      });
+    }
+
+    // Create override session
+    manualOverrideSessions.set(user_id, {
+      active: true,
+      startedAt: new Date().toISOString()
+    });
+
+    console.log(`🎮 Manual override STARTED for user: ${user_id}`);
+
+    res.json({
+      success: true,
+      message: "Manual override started",
+      user_id: user_id,
+      started_at: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error("Error starting manual override:", error);
+    res.status(500).json({ 
+      error: "Failed to start manual override",
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * POST /api/manual-override/send
+ * Send a manual response (stored as normal assistant message)
+ */
+app.post("/api/manual-override/send", async (req, res) => {
+  try {
+    const { user_id, message } = req.body;
+
+    if (!user_id || !message) {
+      return res.status(400).json({ 
+        error: "user_id and message are required" 
+      });
+    }
+
+    if (!isInManualOverride(user_id)) {
+      return res.status(400).json({ 
+        error: "No active manual override for this user" 
+      });
+    }
+
+    // Store message as normal assistant message (not marked as manual)
+    await pool.query(
+      `INSERT INTO conversation_history (user_id, role, content, created_at)
+       VALUES ($1, 'assistant', $2, NOW())`,
+      [user_id, message]
+    );
+
+    console.log(`🎮 Manual response sent for user: ${user_id}`);
+
+    res.json({
+      success: true,
+      message: "Response sent successfully",
+      user_id: user_id
+    });
+  } catch (error) {
+    console.error("Error sending manual response:", error);
+    res.status(500).json({ 
+      error: "Failed to send message",
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * POST /api/manual-override/end
+ * End manual override and resume normal API operation
+ */
+app.post("/api/manual-override/end", async (req, res) => {
+  try {
+    const { user_id } = req.body;
+
+    if (!user_id) {
+      return res.status(400).json({ error: "user_id is required" });
+    }
+
+    if (!isInManualOverride(user_id)) {
+      return res.status(400).json({ 
+        error: "No active manual override for this user" 
+      });
+    }
+
+    // Remove from override sessions
+    manualOverrideSessions.delete(user_id);
+
+    console.log(`🎮 Manual override ENDED for user: ${user_id}`);
+
+    res.json({
+      success: true,
+      message: "Manual override ended. API will resume normal operation.",
+      user_id: user_id,
+      ended_at: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error("Error ending manual override:", error);
+    res.status(500).json({ 
+      error: "Failed to end manual override",
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * GET /api/manual-override/status/:userId
+ * Check if a user is currently in manual override mode
+ */
+app.get("/api/manual-override/status/:userId", (req, res) => {
+  try {
+    const { userId } = req.params;
+    const session = manualOverrideSessions.get(userId);
+
+    res.json({
+      user_id: userId,
+      in_override: session ? session.active : false,
+      started_at: session ? session.startedAt : null
+    });
+  } catch (error) {
+    console.error("Error checking override status:", error);
+    res.status(500).json({ 
+      error: "Failed to check status",
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * GET /api/manual-override/active-sessions
+ * Get list of all active manual override sessions
+ */
+app.get("/api/manual-override/active-sessions", (req, res) => {
+  try {
+    const activeSessions = [];
+    
+    for (const [userId, session] of manualOverrideSessions.entries()) {
+      if (session.active) {
+        activeSessions.push({
+          user_id: userId,
+          started_at: session.startedAt
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      sessions: activeSessions,
+      count: activeSessions.length
+    });
+  } catch (error) {
+    console.error("Error fetching active sessions:", error);
+    res.status(500).json({ 
+      error: "Failed to fetch active sessions",
+      details: error.message 
+    });
+  }
+});
+
+// Cleanup function for old override sessions
+function cleanupOldOverrideSessions() {
+  const now = Date.now();
+  const maxAge = 24 * 60 * 60 * 1000; // 24 hours
+
+  for (const [userId, session] of manualOverrideSessions.entries()) {
+    const sessionAge = now - new Date(session.startedAt).getTime();
+    if (sessionAge > maxAge) {
+      console.log(`🧹 Cleaning up old override session for user: ${userId}`);
+      manualOverrideSessions.delete(userId);
+    }
+  }
+}
+
+// Run cleanup every hour
+setInterval(cleanupOldOverrideSessions, 60 * 60 * 1000);
+
+console.log("✅ Live User Monitoring & Manual Override System initialized");
 
 server.listen(PORT, () => {
   console.log("================================");
