@@ -2922,9 +2922,9 @@ app.get("/api/analytics/overview", async (req, res) => {
       SELECT 
         current_stage,
         COUNT(*) as user_count,
-        AVG(relationship_level) as avg_level,
-        AVG(streak_days) as avg_streak,
-        MAX(longest_streak) as max_streak
+        COALESCE(AVG(relationship_level), 0) as avg_level,
+        COALESCE(AVG(streak_days), 0) as avg_streak,
+        COALESCE(MAX(longest_streak), 0) as max_streak
       FROM user_relationships
       GROUP BY current_stage
       ORDER BY MIN(relationship_level)
@@ -2933,9 +2933,9 @@ app.get("/api/analytics/overview", async (req, res) => {
     const { rows: totalData } = await pool.query(`
       SELECT 
         COUNT(*) as total_users,
-        AVG(relationship_level) as avg_relationship_level,
+        COALESCE(AVG(relationship_level), 0) as avg_relationship_level,
         SUM(CASE WHEN streak_days > 0 THEN 1 ELSE 0 END) as active_streaks,
-        AVG(emotional_investment) as avg_emotional_investment
+        COALESCE(AVG(emotional_investment), 0) as avg_emotional_investment
       FROM user_relationships
     `);
     
