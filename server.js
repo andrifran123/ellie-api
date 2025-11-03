@@ -3822,6 +3822,47 @@ function cleanupOldOverrideSessions() {
 // Run cleanup every hour
 setInterval(cleanupOldOverrideSessions, 60 * 60 * 1000);
 
+// ============================================================
+// CHAT HISTORY CLEANUP FOR INACTIVE USERS
+// ============================================================
+
+/**
+ * Clean up chat history for users who haven't been active in 32 minutes
+ * This removes them from "Live Active Users" by deleting their recent chat history
+ */
+async function cleanupInactiveChatHistory() {
+  try {
+    const INACTIVE_THRESHOLD_MINUTES = 32;
+    
+    // Delete chat history for users inactive for more than 32 minutes
+    const result = await pool.query(`
+      DELETE FROM conversation_history
+      WHERE user_id IN (
+        SELECT DISTINCT user_id 
+        FROM user_relationships 
+        WHERE last_interaction < NOW() - INTERVAL '${INACTIVE_THRESHOLD_MINUTES} minutes'
+      )
+      AND created_at > NOW() - INTERVAL '24 hours'
+    `);
+    
+    if (result.rowCount > 0) {
+      console.log(`🧹 Cleaned up chat history for ${result.rowCount} messages from inactive users (>32 min)`);
+    }
+  } catch (error) {
+    // If conversation_history table doesn't exist, silently ignore
+    if (error.code !== '42P01') {
+      console.error("Error cleaning up inactive chat history:", error.message);
+    }
+  }
+}
+
+// Run cleanup every 10 minutes to check for inactive users
+setInterval(cleanupInactiveChatHistory, 10 * 60 * 1000);
+
+// Run once on startup after a delay
+setTimeout(cleanupInactiveChatHistory, 30000); // 30 seconds after startup
+
+
 console.log("✅ Live User Monitoring & Manual Override System initialized");
 
 server.listen(PORT, () => {
