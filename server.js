@@ -122,7 +122,20 @@ const manualOverrideSessions = new Map(); // userId -> { active: boolean, starte
 // Helper function to check if user is in manual override mode
 function isInManualOverride(userId) {
   const session = manualOverrideSessions.get(userId);
-  return session && session.active;
+  if (!session || !session.active) return false;
+  
+  // Auto-cleanup stale sessions (older than 1 hour)
+  const now = Date.now();
+  const startedAt = new Date(session.startedAt).getTime();
+  const hourInMs = 60 * 60 * 1000;
+  
+  if (now - startedAt > hourInMs) {
+    console.log(`🧹 Auto-cleaning stale manual override session for ${userId}`);
+    manualOverrideSessions.delete(userId);
+    return false;
+  }
+  
+  return true;
 }
 
 // Helper function to check if admin is currently typing for this user
@@ -3600,13 +3613,14 @@ app.post("/api/manual-override/start", async (req, res) => {
     }
 
     // Check if already in override
-    if (isInManualOverride(user_id)) {
-      return res.status(400).json({ 
-        error: "User is already in manual override mode" 
-      });
+    const alreadyInOverride = isInManualOverride(user_id);
+    
+    if (alreadyInOverride) {
+      console.log(`⚠️ User ${user_id} already in manual override - restarting session`);
+      // Allow restarting the session (update the timestamp)
     }
 
-    // Create override session
+    // Create or update override session
     manualOverrideSessions.set(user_id, {
       active: true,
       startedAt: new Date().toISOString(),
@@ -3880,6 +3894,38 @@ app.get("/api/manual-override/active-sessions", (req, res) => {
     console.error("Error fetching active sessions:", error);
     res.status(500).json({ 
       error: "Failed to fetch active sessions",
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * POST /api/manual-override/force-clear
+ * Force clear a user's manual override session (for stuck/stale sessions)
+ */
+app.post("/api/manual-override/force-clear", async (req, res) => {
+  try {
+    const { user_id } = req.body;
+
+    if (!user_id) {
+      return res.status(400).json({ error: "user_id is required" });
+    }
+
+    const hadSession = manualOverrideSessions.has(user_id);
+    manualOverrideSessions.delete(user_id);
+
+    console.log(`🧹 Force-cleared manual override session for user: ${user_id}`);
+
+    res.json({
+      success: true,
+      message: `Manual override session ${hadSession ? 'cleared' : 'was not active'}`,
+      user_id: user_id,
+      had_session: hadSession
+    });
+  } catch (error) {
+    console.error("Error force-clearing override session:", error);
+    res.status(500).json({ 
+      error: "Failed to clear session",
       details: error.message 
     });
   }
