@@ -2124,12 +2124,16 @@ app.post("/api/chat", async (req, res) => {
     if (isInManualOverride(userId)) {
       console.log(`🎮 User ${userId} in manual override - storing message only`);
       
-      // Store user's message in database
-      await pool.query(
-        `INSERT INTO conversation_history (user_id, role, content, created_at)
-         VALUES ($1, 'user', $2, NOW())`,
-        [userId, message]
-      );
+      // Store user's message in database (if table exists)
+      try {
+        await pool.query(
+          `INSERT INTO conversation_history (user_id, role, content, created_at)
+           VALUES ($1, 'user', $2, NOW())`,
+          [userId, message]
+        );
+      } catch (historyErr) {
+        console.warn(`⚠️ Could not store in conversation_history (table may not exist):`, historyErr.message);
+      }
 
       // Update last interaction time
       await pool.query(
@@ -3535,6 +3539,19 @@ app.get("/api/chat-view/messages/:userId", async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching chat messages:", error);
+    
+    // If table doesn't exist, return empty messages instead of error
+    if (error.code === '42P01') { // PostgreSQL error code for "relation does not exist"
+      console.warn(`⚠️ conversation_history table does not exist. Please run the migration SQL.`);
+      return res.json({
+        success: true,
+        user_id: req.params.userId,
+        messages: [],
+        count: 0,
+        note: "conversation_history table not yet created"
+      });
+    }
+    
     res.status(500).json({ 
       error: "Failed to fetch messages",
       details: error.message 
@@ -3615,11 +3632,19 @@ app.post("/api/manual-override/send", async (req, res) => {
     }
 
     // Store message as normal assistant message (not marked as manual)
-    await pool.query(
-      `INSERT INTO conversation_history (user_id, role, content, created_at)
-       VALUES ($1, 'assistant', $2, NOW())`,
-      [user_id, message]
-    );
+    try {
+      await pool.query(
+        `INSERT INTO conversation_history (user_id, role, content, created_at)
+         VALUES ($1, 'assistant', $2, NOW())`,
+        [user_id, message]
+      );
+    } catch (historyErr) {
+      console.warn(`⚠️ Could not store in conversation_history:`, historyErr.message);
+      if (historyErr.code === '42P01') {
+        console.warn(`⚠️ conversation_history table does not exist. Please run the migration SQL.`);
+      }
+      // Continue even if history storage fails
+    }
 
     console.log(`🎮 Manual response sent for user: ${user_id}`);
 
