@@ -125,6 +125,18 @@ function isInManualOverride(userId) {
   return session && session.active;
 }
 
+// Helper function to check if admin is currently typing for this user
+function isAdminTyping(userId) {
+  const session = manualOverrideSessions.get(userId);
+  if (!session || !session.active) return false;
+  
+  // Typing expires after 3 seconds of no updates
+  const now = Date.now();
+  const lastUpdate = session.lastTypingUpdate ? new Date(session.lastTypingUpdate).getTime() : 0;
+  return session.isTyping && (now - lastUpdate < 3000);
+}
+
+
 
 // ============================================================
 // ðŸ§  PROGRESSIVE RELATIONSHIP SYSTEM CONSTANTS
@@ -3575,7 +3587,9 @@ app.post("/api/manual-override/start", async (req, res) => {
     // Create override session
     manualOverrideSessions.set(user_id, {
       active: true,
-      startedAt: new Date().toISOString()
+      startedAt: new Date().toISOString(),
+      isTyping: false,
+      lastTypingUpdate: null
     });
 
     console.log(`🎮 Manual override STARTED for user: ${user_id}`);
@@ -3647,13 +3661,15 @@ app.post("/api/manual-override/send", async (req, res) => {
 });
 
 /**
+/**
  * GET /api/manual-override/pending-response/:userId
  * For user's chat interface to poll for manual responses
- * Returns any assistant messages sent since their last message
+ * Returns any assistant messages sent since their last check (timestamp-based)
  */
 app.get("/api/manual-override/pending-response/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
+    const lastCheckTimestamp = req.query.since || '1970-01-01'; // Timestamp of last successful fetch
     
     // Check if user is in manual override
     if (!isInManualOverride(userId)) {
@@ -3663,35 +3679,37 @@ app.get("/api/manual-override/pending-response/:userId", async (req, res) => {
       });
     }
 
-    // Get the most recent assistant message that's newer than the last user message
+    // Get all assistant messages created after the last check
+    // This fixes the issue where multiple user messages would hide admin responses
     try {
       const query = `
-        SELECT content, created_at
+        SELECT id, content, created_at
         FROM conversation_history
         WHERE user_id = $1 
           AND role = 'assistant'
-          AND created_at > (
-            SELECT COALESCE(MAX(created_at), '1970-01-01'::timestamp)
-            FROM conversation_history
-            WHERE user_id = $1 AND role = 'user'
-          )
-        ORDER BY created_at DESC
-        LIMIT 1
+          AND created_at > $2
+        ORDER BY created_at ASC
       `;
       
-      const result = await pool.query(query, [userId]);
+      const result = await pool.query(query, [userId, lastCheckTimestamp]);
       
       if (result.rows.length > 0) {
+        // Return all new messages + typing status
         return res.json({
           has_response: true,
           in_override: true,
-          reply: result.rows[0].content,
-          timestamp: result.rows[0].created_at
+          is_admin_typing: isAdminTyping(userId),
+          messages: result.rows.map(row => ({
+            reply: row.content,
+            timestamp: row.created_at,
+            id: row.id
+          }))
         });
       } else {
         return res.json({
           has_response: false,
           in_override: true,
+          is_admin_typing: isAdminTyping(userId),
           waiting: true
         });
       }
@@ -3700,6 +3718,7 @@ app.get("/api/manual-override/pending-response/:userId", async (req, res) => {
       return res.json({
         has_response: false,
         in_override: true,
+        is_admin_typing: isAdminTyping(userId),
         waiting: true,
         note: "conversation_history table not available"
       });
@@ -3750,6 +3769,45 @@ app.post("/api/manual-override/end", async (req, res) => {
     });
   }
 });
+
+/**
+ * POST /api/manual-override/typing
+ * Update typing status for manual override
+ */
+app.post("/api/manual-override/typing", async (req, res) => {
+  try {
+    const { user_id, is_typing } = req.body;
+
+    if (!user_id) {
+      return res.status(400).json({ error: "user_id is required" });
+    }
+
+    const session = manualOverrideSessions.get(user_id);
+    if (!session || !session.active) {
+      return res.status(400).json({ 
+        error: "No active manual override for this user" 
+      });
+    }
+
+    // Update typing status
+    session.isTyping = is_typing === true;
+    session.lastTypingUpdate = new Date().toISOString();
+    manualOverrideSessions.set(user_id, session);
+
+    res.json({
+      success: true,
+      user_id: user_id,
+      is_typing: session.isTyping
+    });
+  } catch (error) {
+    console.error("Error updating typing status:", error);
+    res.status(500).json({ 
+      error: "Failed to update typing status",
+      details: error.message 
+    });
+  }
+});
+
 
 /**
  * GET /api/manual-override/status/:userId
