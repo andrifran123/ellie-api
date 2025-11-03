@@ -2132,7 +2132,7 @@ app.post("/api/chat", async (req, res) => {
           [userId, message]
         );
       } catch (historyErr) {
-        console.warn(`⚠️ Could not store in conversation_history (table may not exist):`, historyErr.message);
+        console.warn(`⚠️ Could not store in conversation_history:`, historyErr.message);
       }
 
       // Update last interaction time
@@ -2187,6 +2187,17 @@ app.post("/api/chat", async (req, res) => {
     
     history.push({ role: "user", content: message });
 
+    // 💾 Store user message in conversation_history database
+    try {
+      await pool.query(
+        `INSERT INTO conversation_history (user_id, role, content, created_at)
+         VALUES ($1, 'user', $2, NOW())`,
+        [userId, message]
+      );
+    } catch (historyErr) {
+      console.warn(`⚠️ Could not store user message:`, historyErr.message);
+    }
+
     const prefCode = await getPreferredLanguage(userId);
     const langLabel = SUPPORTED_LANGUAGES[prefCode] || "English";
     let finalSystemMsg = personalityInstructions;
@@ -2210,6 +2221,17 @@ app.post("/api/chat", async (req, res) => {
 
     const reply = completion.choices[0]?.message?.content || "...";
     history.push({ role: "assistant", content: reply });
+
+    // 💾 Store assistant reply in conversation_history database
+    try {
+      await pool.query(
+        `INSERT INTO conversation_history (user_id, role, content, created_at)
+         VALUES ($1, 'assistant', $2, NOW())`,
+        [userId, reply]
+      );
+    } catch (historyErr) {
+      console.warn(`⚠️ Could not store assistant reply:`, historyErr.message);
+    }
 
     if (history.length > MAX_HISTORY_MESSAGES) {
       const keep = history.splice(1, history.length - MAX_HISTORY_MESSAGES);
@@ -2900,9 +2922,9 @@ app.get("/api/analytics/overview", async (req, res) => {
       SELECT 
         current_stage,
         COUNT(*) as user_count,
-        COALESCE(AVG(relationship_level), 0) as avg_level,
-        COALESCE(AVG(streak_days), 0) as avg_streak,
-        COALESCE(MAX(longest_streak), 0) as max_streak
+        AVG(relationship_level) as avg_level,
+        AVG(streak_days) as avg_streak,
+        MAX(longest_streak) as max_streak
       FROM user_relationships
       GROUP BY current_stage
       ORDER BY MIN(relationship_level)
@@ -2911,9 +2933,9 @@ app.get("/api/analytics/overview", async (req, res) => {
     const { rows: totalData } = await pool.query(`
       SELECT 
         COUNT(*) as total_users,
-        COALESCE(AVG(relationship_level), 0) as avg_relationship_level,
+        AVG(relationship_level) as avg_relationship_level,
         SUM(CASE WHEN streak_days > 0 THEN 1 ELSE 0 END) as active_streaks,
-        COALESCE(AVG(emotional_investment), 0) as avg_emotional_investment
+        AVG(emotional_investment) as avg_emotional_investment
       FROM user_relationships
     `);
     
@@ -2936,7 +2958,7 @@ app.get("/api/analytics/engagement", async (req, res) => {
       SELECT 
         DATE(last_interaction) as day,
         COUNT(DISTINCT user_id) as active_users,
-        COALESCE(AVG(total_interactions), 0) as avg_interactions,
+        AVG(total_interactions) as avg_interactions,
         SUM(CASE WHEN streak_days > 0 THEN 1 ELSE 0 END) as users_with_streak
       FROM user_relationships
       WHERE last_interaction >= NOW() - INTERVAL '7 days'
@@ -2949,7 +2971,7 @@ app.get("/api/analytics/engagement", async (req, res) => {
       SELECT 
         last_mood,
         COUNT(*) as count,
-        COALESCE(AVG(relationship_level), 0) as avg_level
+        AVG(relationship_level) as avg_level
       FROM user_relationships
       GROUP BY last_mood
     `);
@@ -2998,8 +3020,8 @@ app.get("/api/analytics/revenue", async (req, res) => {
         r.current_stage,
         COUNT(DISTINCT r.user_id) as user_count,
         SUM(CASE WHEN u.paid = true THEN 1 ELSE 0 END) as paid_users,
-        COALESCE(AVG(r.emotional_investment), 0) as avg_investment,
-        COALESCE(AVG(r.relationship_level), 0) as avg_level
+        AVG(r.emotional_investment) as avg_investment,
+        AVG(r.relationship_level) as avg_level
       FROM user_relationships r
       LEFT JOIN users u ON r.user_id::text = u.user_id::text
       GROUP BY r.current_stage
@@ -3023,7 +3045,7 @@ app.get("/api/analytics/revenue", async (req, res) => {
     const { rows: opportunities } = await pool.query(`
       SELECT 
         COUNT(*) as total_opportunities,
-        COALESCE(AVG(relationship_level), 0) as avg_level,
+        AVG(relationship_level) as avg_level,
         SUM(CASE 
           WHEN current_stage = 'FRIEND_TENSION' THEN 1 
           ELSE 0 
@@ -3052,16 +3074,16 @@ app.get("/api/analytics/revenue", async (req, res) => {
     
     const revenuePotential = revenueByStage.map(stage => ({
       ...stage,
-      potential_revenue: ((stage.user_count || 0) - (stage.paid_users || 0)) * 
+      potential_revenue: (stage.user_count - stage.paid_users) * 
                         (PRICE_POINTS[stage.current_stage] || 0),
-      conversion_rate: (stage.paid_users || 0) / (stage.user_count || 1)
+      conversion_rate: stage.paid_users / stage.user_count
     }));
     
     res.json({
       byStage: revenuePotential,
       targets: targets,
-      opportunities: opportunities[0] || { total_opportunities: 0, avg_level: 0, stage_2_opportunities: 0, stage_3_opportunities: 0, stage_4_opportunities: 0 },
-      totalPotential: revenuePotential.reduce((sum, s) => sum + (s.potential_revenue || 0), 0),
+      opportunities: opportunities[0],
+      totalPotential: revenuePotential.reduce((sum, s) => sum + s.potential_revenue, 0),
       timestamp: new Date()
     });
   } catch (err) {
@@ -3079,7 +3101,7 @@ app.get("/api/analytics/addiction", async (req, res) => {
         COUNT(CASE WHEN streak_days >= 7 THEN 1 END) as week_plus_streaks,
         COUNT(CASE WHEN streak_days >= 14 THEN 1 END) as two_week_plus_streaks,
         COUNT(CASE WHEN streak_days >= 30 THEN 1 END) as month_plus_streaks,
-        COALESCE(AVG(CASE WHEN streak_days > 0 THEN streak_days END), 0) as avg_active_streak,
+        AVG(CASE WHEN streak_days > 0 THEN streak_days END) as avg_active_streak,
         COUNT(CASE WHEN total_interactions > 100 THEN 1 END) as heavy_users,
         COUNT(CASE WHEN emotional_investment > 0.7 THEN 1 END) as emotionally_invested,
         COUNT(CASE 
@@ -3429,8 +3451,6 @@ app.get("/api/analytics/forecast", async (req, res) => {
  */
 app.get("/api/analytics/active-users", async (req, res) => {
   try {
-    // Changed from 1 hour to 30 minutes for more real-time visibility
-    // and simplified query to avoid potential issues with conversation_history table
     const query = `
       SELECT 
         ur.user_id,
@@ -3440,65 +3460,29 @@ app.get("/api/analytics/active-users", async (req, res) => {
         ur.streak_days,
         ur.emotional_investment,
         ur.last_mood,
-        ur.total_interactions as message_count
+        COUNT(ch.id) as message_count
       FROM user_relationships ur
-      WHERE ur.last_interaction > NOW() - INTERVAL '30 minutes'
+      LEFT JOIN conversation_history ch ON ur.user_id = ch.user_id
+        AND ch.created_at > NOW() - INTERVAL '24 hours'
+      WHERE ur.last_interaction > NOW() - INTERVAL '1 hour'
+      GROUP BY ur.user_id, ur.relationship_level, ur.current_stage, 
+               ur.last_interaction, ur.streak_days, ur.emotional_investment, ur.last_mood
       ORDER BY ur.last_interaction DESC
       LIMIT 50
     `;
 
     const result = await pool.query(query);
-    
-    console.log(`[active-users] Found ${result.rows.length} active users in last 30 minutes`);
 
     res.json({
       success: true,
       users: result.rows,
       count: result.rows.length,
-      timestamp: new Date().toISOString(),
-      query_window: '30 minutes'
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error("Error fetching active users:", error);
     res.status(500).json({ 
       error: "Failed to fetch active users",
-      details: error.message 
-    });
-  }
-});
-
-/**
- * GET /api/analytics/debug-users
- * Debug endpoint to check the most recent user interactions (regardless of time)
- */
-app.get("/api/analytics/debug-users", async (req, res) => {
-  try {
-    const query = `
-      SELECT 
-        ur.user_id,
-        ur.last_interaction,
-        ur.relationship_level,
-        ur.current_stage,
-        EXTRACT(EPOCH FROM (NOW() - ur.last_interaction)) / 60 as minutes_since_last_interaction,
-        NOW() as current_db_time
-      FROM user_relationships ur
-      ORDER BY ur.last_interaction DESC
-      LIMIT 10
-    `;
-
-    const result = await pool.query(query);
-
-    res.json({
-      success: true,
-      current_time: new Date().toISOString(),
-      db_timezone: result.rows[0]?.current_db_time,
-      recent_users: result.rows,
-      note: "Shows 10 most recent users regardless of time window"
-    });
-  } catch (error) {
-    console.error("Error in debug endpoint:", error);
-    res.status(500).json({ 
-      error: "Debug query failed",
       details: error.message 
     });
   }
@@ -3657,6 +3641,73 @@ app.post("/api/manual-override/send", async (req, res) => {
     console.error("Error sending manual response:", error);
     res.status(500).json({ 
       error: "Failed to send message",
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * GET /api/manual-override/pending-response/:userId
+ * For user's chat interface to poll for manual responses
+ * Returns any assistant messages sent since their last message
+ */
+app.get("/api/manual-override/pending-response/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    // Check if user is in manual override
+    if (!isInManualOverride(userId)) {
+      return res.json({
+        has_response: false,
+        in_override: false
+      });
+    }
+
+    // Get the most recent assistant message that's newer than the last user message
+    try {
+      const query = `
+        SELECT content, created_at
+        FROM conversation_history
+        WHERE user_id = $1 
+          AND role = 'assistant'
+          AND created_at > (
+            SELECT COALESCE(MAX(created_at), '1970-01-01'::timestamp)
+            FROM conversation_history
+            WHERE user_id = $1 AND role = 'user'
+          )
+        ORDER BY created_at DESC
+        LIMIT 1
+      `;
+      
+      const result = await pool.query(query, [userId]);
+      
+      if (result.rows.length > 0) {
+        return res.json({
+          has_response: true,
+          in_override: true,
+          reply: result.rows[0].content,
+          timestamp: result.rows[0].created_at
+        });
+      } else {
+        return res.json({
+          has_response: false,
+          in_override: true,
+          waiting: true
+        });
+      }
+    } catch (dbErr) {
+      // If conversation_history doesn't exist, just return waiting
+      return res.json({
+        has_response: false,
+        in_override: true,
+        waiting: true,
+        note: "conversation_history table not available"
+      });
+    }
+  } catch (error) {
+    console.error("Error checking pending response:", error);
+    res.status(500).json({ 
+      error: "Failed to check for pending response",
       details: error.message 
     });
   }
