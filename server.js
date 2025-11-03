@@ -2232,6 +2232,28 @@ app.post("/api/chat", async (req, res) => {
     });
 
     const reply = completion.choices[0]?.message?.content || "...";
+    
+    // ✅ FINAL CHECK: Verify manual override wasn't activated during generation
+    if (isInManualOverride(userId)) {
+      console.log(`🛑 Manual override activated during generation for ${userId} - discarding API response`);
+      
+      // Don't store the AI response in database
+      // Don't add to history
+      // Return empty response indicating manual override is active
+      const updatedRelationship = await getUserRelationship(userId);
+      return res.json({
+        reply: "",
+        language: prefCode,
+        in_manual_override: true,
+        relationshipStatus: {
+          level: updatedRelationship.relationship_level,
+          stage: RELATIONSHIP_STAGES[updatedRelationship.current_stage]?.label || 'Unknown',
+          streak: updatedRelationship.streak_days,
+          mood: updatedRelationship.last_mood
+        }
+      });
+    }
+    
     history.push({ role: "assistant", content: reply });
 
     // 💾 Store assistant reply in conversation_history database
