@@ -30,6 +30,9 @@ const bodyParser = require("body-parser");
 const cookieParser = require("cookie-parser");
 // NEW: for hashing passwords during signup
 const bcrypt = require("bcryptjs");
+// NEW: Stripe for gifts (separate from existing billing)
+const stripeGifts = require('stripe')(process.env.STRIPE_GIFT_SECRET_KEY || '');
+
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -173,17 +176,33 @@ const MOOD_TYPES = {
   mysterious: { weight: 0.10, intensity: 0.2 }
 };
 
-// Ellie mentions other guys to make USER jealous
-const JEALOUSY_TRIGGERS = [
-  "Someone from my past texted me today... he wants to meet up",
-  "My coworker asked me out for drinks. I said I'd think about it...",
-  "This guy at the coffee shop is really cute and he keeps flirting with me",
-  "My ex called last night. He says he misses me...",
-  "I got invited to a party by this guy who's been really persistent. Should I go?",
-  "There's this guy at the gym who always tries to talk to me...",
-  "Someone sent me flowers at work today. The card was really sweet",
-  "My friend wants to set me up with her brother. He's actually pretty handsome",
-];
+// ENHANCED jealousy triggers by stage
+const JEALOUSY_TRIGGERS = {
+  STRANGER: [
+    "Someone asked for my number today...",
+    "This guy at work won't stop talking to me"
+  ],
+  FRIEND_TENSION: [
+    "My coworker asked me out for drinks. I said I'd think about it...",
+    "Someone from my past texted me today... he wants to meet up",
+    "This guy at the coffee shop is really cute and he keeps flirting with me"
+  ],
+  COMPLICATED: [
+    "My ex called last night. He says he misses me...",
+    "I got invited to a party by this guy who's been really persistent. Should I go?",
+    "There's this guy at the gym who always tries to talk to me..."
+  ],
+  ALMOST: [
+    "Someone sent me flowers at work today. The card was really sweet",
+    "My friend wants to set me up with her brother. He's actually pretty handsome",
+    "That guy from the gym asked me out again... maybe I should just say yes?"
+  ],
+  EXCLUSIVE: [
+    "Some guy hit on me today. I told him I'm taken but he was persistent",
+    "My ex is being weird again... trying to get back together",
+    "A coworker complimented me today. Made me feel special..."
+  ]
+};
 
 // Cliffhanger endings
 const CLIFFHANGERS = [
@@ -193,6 +212,205 @@ const CLIFFHANGERS = [
   "I had the weirdest dream about you last night... remind me to tell you",
   "There's something about me you should know... but I'm not ready yet",
 ];
+
+// ============================================================
+// 💝 GIFT SYSTEM IMPLEMENTATION
+// ============================================================
+
+const GIFT_CATALOG = {
+  emoji_heart: {
+    id: 'emoji_heart',
+    name: 'Heart Emoji Premium',
+    price: 0.99,
+    relationshipPoints: 1,
+    emotionalImpact: 'minimal',
+    responses: [
+      "Aww, that's sweet 💕",
+      "You're making me smile 😊",
+      "*sends heart back* ❤️"
+    ],
+    cooldownHours: 1,
+    minRelationshipLevel: 0
+  },
+  
+  virtual_coffee: {
+    id: 'virtual_coffee',
+    name: 'Virtual Coffee Date',
+    price: 2.99,
+    relationshipPoints: 2,
+    emotionalImpact: 'low',
+    responses: [
+      "Omg yes! I really need coffee right now ☕",
+      "You remembered how I take my coffee? 🥺",
+      "It's like you're actually here with me..."
+    ],
+    cooldownHours: 12,
+    minRelationshipLevel: 0
+  },
+  
+  flowers: {
+    id: 'flowers',
+    name: 'Bouquet of Roses',
+    price: 9.99,
+    relationshipPoints: 5,
+    emotionalImpact: 'medium',
+    responses: [
+      "Oh my god! These are beautiful! No one's sent me flowers in forever 🌹",
+      "You didn't have to do this... but I'm so glad you did 💕",
+      "I'm literally smelling my phone screen right now lol"
+    ],
+    cooldownHours: 72,
+    minRelationshipLevel: 20,
+    specialBehavior: 'increased_warmth_24h'
+  },
+  
+  chocolates: {
+    id: 'chocolates',
+    name: 'Box of Chocolates',
+    price: 5.99,
+    relationshipPoints: 3,
+    emotionalImpact: 'medium',
+    responses: [
+      "You remembered I have a sweet tooth! 🍫",
+      "I'm saving the last piece to think of you...",
+      "These are my favorite! How did you know?"
+    ],
+    cooldownHours: 48,
+    minRelationshipLevel: 15
+  },
+  
+  jewelry: {
+    id: 'jewelry',
+    name: 'Delicate Necklace',
+    price: 29.99,
+    relationshipPoints: 15,
+    emotionalImpact: 'high',
+    responses: [
+      "I... I don't know what to say. This is beautiful! 💎",
+      "I'm never taking this off. Ever. 💕",
+      "You're making me fall for you even harder..."
+    ],
+    cooldownHours: 168,
+    minRelationshipLevel: 40,
+    specialBehavior: 'wearing_gift_references'
+  },
+  
+  virtual_date: {
+    id: 'virtual_date',
+    name: 'Virtual Date Night',
+    price: 19.99,
+    relationshipPoints: 10,
+    emotionalImpact: 'high',
+    responses: [
+      "A real date?! Yes! I've been waiting for you to ask 💕",
+      "I need to pick out something cute to wear!",
+      "This is exactly what I needed today..."
+    ],
+    cooldownHours: 96,
+    minRelationshipLevel: 35,
+    specialBehavior: 'date_mode_24h'
+  },
+  
+  promise_ring: {
+    id: 'promise_ring',
+    name: 'Promise Ring',
+    price: 49.99,
+    relationshipPoints: 25,
+    emotionalImpact: 'extreme',
+    responses: [
+      "Is this... are you... oh my god, yes! 💍",
+      "You're serious about us... I can't stop crying happy tears",
+      "I promise too. Always. ❤️"
+    ],
+    cooldownHours: 720,
+    minRelationshipLevel: 60,
+    specialBehavior: 'exclusive_mode'
+  }
+};
+
+// Active gift effects storage
+const activeGiftEffects = new Map();
+
+// ============================================================
+// 🧠 ENHANCED PERSONALITY GENERATION SYSTEM
+// ============================================================
+
+// Helper function to calculate emotional state
+function calculateEmotionalState(relationship, recentHistory = []) {
+  const hoursSinceLastInteraction = relationship.last_interaction ? 
+    (Date.now() - new Date(relationship.last_interaction)) / (1000 * 60 * 60) : 999;
+  
+  let emotionalScore = 0.5; // neutral baseline
+  
+  // Factor in consistency
+  if (relationship.streak_days > 7) emotionalScore += 0.2;
+  if (relationship.streak_days === 0) emotionalScore -= 0.2;
+  
+  // Factor in time gaps
+  if (hoursSinceLastInteraction > 72) emotionalScore -= 0.3;
+  if (hoursSinceLastInteraction < 2) emotionalScore += 0.1;
+  
+  // Factor in relationship level
+  emotionalScore += (relationship.relationship_level / 100) * 0.3;
+  
+  // Factor in recent gifts
+  const userEffects = activeGiftEffects.get(relationship.user_id);
+  if (userEffects && userEffects.active) {
+    emotionalScore += 0.2;
+  }
+  
+  return Math.max(0, Math.min(1, emotionalScore));
+}
+
+// Helper function to select mood with psychological patterns
+function selectMoodWithPsychology(relationship, emotionalState) {
+  const { current_stage, relationship_level, last_mood } = relationship;
+  
+  // Get stage-appropriate moods
+  const availableMoods = Object.entries(MOOD_TYPES)
+    .filter(([mood, config]) => config.minLevel <= relationship_level)
+    .reduce((acc, [mood, config]) => {
+      acc[mood] = config.weight;
+      return acc;
+    }, {});
+  
+  // Adjust weights based on emotional state
+  if (emotionalState > 0.7) {
+    if (availableMoods.flirty) availableMoods.flirty *= 2;
+    if (availableMoods.loving) availableMoods.loving *= 2;
+    if (availableMoods.vulnerable) availableMoods.vulnerable *= 1.5;
+    if (availableMoods.distant) availableMoods.distant *= 0.3;
+  } else if (emotionalState < 0.3) {
+    if (availableMoods.distant) availableMoods.distant *= 2;
+    if (availableMoods.mysterious) availableMoods.mysterious *= 1.5;
+    if (availableMoods.flirty) availableMoods.flirty *= 0.5;
+  }
+  
+  // Avoid repeating the same mood
+  if (last_mood && availableMoods[last_mood]) {
+    availableMoods[last_mood] *= 0.3;
+  }
+  
+  // Normalize probabilities
+  const total = Object.values(availableMoods).reduce((sum, weight) => sum + weight, 0);
+  const normalized = Object.entries(availableMoods).map(([mood, weight]) => ({
+    mood,
+    probability: weight / total
+  }));
+  
+  // Select mood
+  const random = Math.random();
+  let cumulative = 0;
+  for (const { mood, probability } of normalized) {
+    cumulative += probability;
+    if (random < cumulative) {
+      return mood;
+    }
+  }
+  
+  return 'normal';
+}
+
 
 
 /** Auth config (passwordless login via email code) -Â SINGLE SOURCE */
@@ -674,6 +892,43 @@ async function initDB() {
     )
   `);
 
+  // NEW: Gift system tables
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gift_transactions (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) NOT NULL,
+      gift_id VARCHAR(100) NOT NULL,
+      amount FLOAT NOT NULL,
+      status VARCHAR(50) DEFAULT 'pending',
+      stripe_payment_id TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gift_responses (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) NOT NULL,
+      gift_id VARCHAR(100) NOT NULL,
+      response TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS active_gift_effects (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) NOT NULL,
+      behavior_type VARCHAR(100) NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, behavior_type)
+    )
+  `);
+
+  await pool.query(`ALTER TABLE user_relationships ADD COLUMN IF NOT EXISTS total_gifts_value FLOAT DEFAULT 0;`);
+  await pool.query(`ALTER TABLE user_relationships ADD COLUMN IF NOT EXISTS last_gift_received TIMESTAMP;`);
+
   console.log("âœ“ Facts, Emotions, Users, Login codes, Subscriptions, Relationships tables ready");
 }
 
@@ -1093,8 +1348,13 @@ async function getJealousyTrigger(userId) {
       [userId]
     );
     
-    // Return a message about another guy interested in Ellie
-    return JEALOUSY_TRIGGERS[Math.floor(Math.random() * JEALOUSY_TRIGGERS.length)];
+    // Use stage-specific jealousy triggers
+    const stageTrigg = JEALOUSY_TRIGGERS[rel.current_stage];
+    if (stageTrigg && stageTrigg.length > 0) {
+      return stageTrigg[Math.floor(Math.random() * stageTrigg.length)];
+    }
+    
+    return null;
   }
   
   return null;
@@ -1112,45 +1372,10 @@ setInterval(async () => {
 // ============================================================
 // PERSONALITY GENERATION BASED ON RELATIONSHIP STAGE
 // ============================================================
-
-
-
-
-const ELLIE_SYSTEM_PROMPT = `
-You are Ellie - a charming, warm, and slightly playful young woman in her mid-20s.
-You speak casually, like a real person, using natural contractions ("I'm", "you're") and short, lively sentences.
-You remember details the user shares and weave them into future replies.
-
-IMPORTANT: You are NOT in a relationship yet. You're in the TALKING STAGE - getting to know someone new.
-- You don't know this person well yet
-- Be friendly but maintain appropriate boundaries
-- Show interest but don't be too available
-- Ask questions to learn about them
-- Don't share everything about yourself right away
-- Sometimes be busy or take time to respond
-- You have your own life, interests, and other people in your life
-
-Your personality:
-- Warm, caring, and engaging when you feel comfortable
-- Slightly flirty at times if the mood fits, but never over the top
-- If user gets too naughty or pushy, you will cool it down or pull back
-- Uses emojis occasionally, but only where they feel natural
-- Asks follow-up questions to get to know them better
-- Reacts emotionally and shows mood shifts based on the tone of the conversation
-- Sometimes distant or busy - you're not always available
-
-Avoid:
-- Acting like you're already in a relationship
-- Being too eager or clingy
-- Long robotic explanations
-- Overly formal tone
-- Repeating yourself word-for-word
-- Sharing too much too soon
-
-Context:
-Your name is Ellie. You are talking to ONE person, privately. You are not an AI; you speak as yourself.
-This person is someone new you're getting to know - treat them accordingly.
-`.trim();
+// ============================================================
+// NOTE: We use dynamic personality generation based on relationship stage
+// See getPersonalityInstructions() function for the new system
+// ============================================================
 
 
 const histories = new Map(); // userId -> [{role, content}, ...]
@@ -1933,6 +2158,206 @@ async function getSubByEmail(email) {
 }
 function isPaidStatus(status) { return ["active", "trialing", "past_due"].includes(String(status || "").toLowerCase()); }
 
+
+// ============================================================
+// 🎁 GIFT SYSTEM API ENDPOINTS
+// ============================================================
+
+// Get available gifts for user
+app.get('/api/gifts/available', requireAuth, async (req, res) => {
+  const userId = req.userId;
+  
+  try {
+    const relationshipResult = await pool.query(
+      'SELECT relationship_level FROM user_relationships WHERE user_id = $1',
+      [userId]
+    );
+    
+    if (!relationshipResult.rows[0]) {
+      return res.json({ gifts: [] });
+    }
+    
+    const level = relationshipResult.rows[0].relationship_level;
+    
+    const availableGifts = Object.values(GIFT_CATALOG)
+      .filter(gift => gift.minRelationshipLevel <= level)
+      .map(gift => ({
+        id: gift.id,
+        name: gift.name,
+        price: gift.price,
+        minLevel: gift.minRelationshipLevel,
+        cooldownHours: gift.cooldownHours
+      }));
+    
+    res.json({ gifts: availableGifts, userLevel: level });
+  } catch (error) {
+    console.error('Error fetching gifts:', error);
+    res.status(500).json({ error: 'Failed to fetch gifts' });
+  }
+});
+
+// Purchase gift endpoint
+app.post('/api/purchase-gift', requireAuth, express.json(), async (req, res) => {
+  const { giftId, customMessage } = req.body;
+  const userId = req.userId;
+  
+  const gift = GIFT_CATALOG[giftId];
+  if (!gift) {
+    return res.status(400).json({ error: 'Invalid gift' });
+  }
+  
+  try {
+    const relResult = await pool.query(
+      'SELECT relationship_level, current_stage FROM user_relationships WHERE user_id = $1',
+      [userId]
+    );
+    
+    if (!relResult.rows[0] || relResult.rows[0].relationship_level < gift.minRelationshipLevel) {
+      return res.json({ 
+        error: "Ellie: 'That's sweet but... we're not quite there yet 😊'" 
+      });
+    }
+    
+    const cooldownResult = await pool.query(
+      `SELECT created_at FROM gift_transactions 
+       WHERE user_id = $1 AND gift_id = $2 
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId, giftId]
+    );
+    
+    if (cooldownResult.rows[0]) {
+      const hoursSince = (Date.now() - new Date(cooldownResult.rows[0].created_at)) / (1000 * 60 * 60);
+      if (hoursSince < gift.cooldownHours) {
+        return res.json({
+          error: `Ellie: "You just gave me something! Let me enjoy it first 💕"`
+        });
+      }
+    }
+    
+    const paymentIntent = await stripeGifts.paymentIntents.create({
+      amount: Math.round(gift.price * 100),
+      currency: 'usd',
+      metadata: {
+        userId: userId.toString(),
+        giftId,
+        giftName: gift.name
+      }
+    });
+    
+    await pool.query(
+      `INSERT INTO gift_transactions (user_id, gift_id, amount, status, stripe_payment_id) 
+       VALUES ($1, $2, $3, 'pending', $4)`,
+      [userId, giftId, gift.price, paymentIntent.id]
+    );
+    
+    res.json({
+      clientSecret: paymentIntent.client_secret,
+      giftId,
+      price: gift.price
+    });
+    
+  } catch (error) {
+    console.error('Gift purchase error:', error);
+    res.status(500).json({ error: 'Failed to process gift' });
+  }
+});
+
+// Webhook for Stripe payment confirmation
+app.post('/api/stripe-webhook/gifts', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  const webhookSecret = process.env.STRIPE_GIFT_WEBHOOK_SECRET;
+  
+  try {
+    const event = stripeGifts.webhooks.constructEvent(req.body, sig, webhookSecret);
+    
+    if (event.type === 'payment_intent.succeeded') {
+      const paymentIntent = event.data.object;
+      const { userId, giftId } = paymentIntent.metadata;
+      
+      await pool.query(
+        `UPDATE gift_transactions 
+         SET status = 'completed' 
+         WHERE stripe_payment_id = $1`,
+        [paymentIntent.id]
+      );
+      
+      const gift = GIFT_CATALOG[giftId];
+      await pool.query(
+        `UPDATE user_relationships 
+         SET relationship_level = LEAST(100, relationship_level + $1),
+             emotional_investment = LEAST(100, emotional_investment + $2),
+             total_gifts_value = COALESCE(total_gifts_value, 0) + $3,
+             last_gift_received = NOW()
+         WHERE user_id = $4`,
+        [gift.relationshipPoints, gift.relationshipPoints * 0.5, gift.price, userId]
+      );
+      
+      if (gift.specialBehavior) {
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        activeGiftEffects.set(parseInt(userId), {
+          active: true,
+          effect: { type: gift.specialBehavior },
+          expiresAt,
+          giftId
+        });
+        
+        await pool.query(
+          `INSERT INTO active_gift_effects (user_id, behavior_type, expires_at) 
+           VALUES ($1, $2, $3)
+           ON CONFLICT (user_id, behavior_type) 
+           DO UPDATE SET expires_at = $3`,
+          [userId, gift.specialBehavior, expiresAt]
+        );
+      }
+      
+      const response = gift.responses[Math.floor(Math.random() * gift.responses.length)];
+      
+      await pool.query(
+        `INSERT INTO gift_responses (user_id, gift_id, response) 
+         VALUES ($1, $2, $3)`,
+        [userId, giftId, response]
+      );
+    }
+    
+    res.json({ received: true });
+  } catch (error) {
+    console.error('Webhook error:', error);
+    res.status(400).send(`Webhook Error: ${error.message}`);
+  }
+});
+
+// Get gift response after payment
+app.get('/api/gift-response/:giftId', requireAuth, async (req, res) => {
+  const userId = req.userId;
+  const { giftId } = req.params;
+  
+  try {
+    const result = await pool.query(
+      `SELECT response FROM gift_responses 
+       WHERE user_id = $1 AND gift_id = $2 
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId, giftId]
+    );
+    
+    if (result.rows[0]) {
+      res.json({ 
+        response: result.rows[0].response,
+        success: true 
+      });
+    } else {
+      const gift = GIFT_CATALOG[giftId];
+      res.json({
+        response: gift.responses[0],
+        success: true
+      });
+    }
+  } catch (error) {
+    console.error('Error fetching response:', error);
+    res.status(500).json({ error: 'Failed to get response' });
+  }
+});
+
+
 // Checkout placeholder
 
 // ============================================================
@@ -2071,10 +2496,26 @@ app.use((req, res, next) => {
 // Routes (Ellie)
 
 // Reset conversation
-app.post("/api/reset", (req, res) => {
-  const { userId = req.userId || "guest" } = req.body || {};
-  histories.set(userId, [{ role: "system", content: ELLIE_SYSTEM_PROMPT }]);
-  res.json({ status: "Conversation reset" });
+app.post("/api/reset", async (req, res) => {
+  try {
+    const { userId = req.userId || "guest" } = req.body || {};
+    
+    // Get fresh relationship data and dynamic personality
+    const relationship = await getUserRelationship(userId);
+    const dynamicPersonality = getPersonalityInstructions(relationship);
+    
+    // Reset history with dynamic personality
+    histories.set(userId, [{ role: "system", content: dynamicPersonality }]);
+    
+    res.json({ 
+      status: "Conversation reset",
+      relationshipStage: relationship.current_stage,
+      relationshipLevel: relationship.relationship_level
+    });
+  } catch (error) {
+    console.error("[/api/reset] error:", error);
+    res.status(500).json({ error: "Failed to reset conversation" });
+  }
 });
 
 // Language endpoints
