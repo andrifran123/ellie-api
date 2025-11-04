@@ -1205,18 +1205,14 @@ async function enrichMessageWithVideoContext(message, userId) {
     
     if (!metadata) {
       console.log('⚠️ Video metadata extraction failed');
-      return message + '\n\n[User shared a video link. Metadata unavailable - respond carefully or ask them about it. Suggested responses: "wait what\'s this about?" or "my internet is being weird, tell me what happens!" or "okay but why did you send me this one specifically?"]';
+      return message + '\n\n[User shared a video link. You can see the link but cannot extract details from it. React naturally or ask them about it.]';
     }
-    
-    const relationship = await getUserRelationship(userId);
-    const relationshipLevel = relationship?.relationship_level || 0;
     
     let enrichedMessage = message;
     enrichedMessage += `\n\n[VIDEO CONTEXT: ${metadata.platform} video`;
     
     if (metadata.fallback) {
-      enrichedMessage += ` (limited info available). Video type: ${metadata.postType || 'unknown'}`;
-      enrichedMessage += `. Ask user about the video naturally or react based on their message.]`;
+      enrichedMessage += ` (limited info available). Video type: ${metadata.postType || 'unknown'}.]`;
     } else {
       if (metadata.cleanCaption || metadata.title) {
         const content = metadata.cleanCaption || metadata.title;
@@ -1239,7 +1235,6 @@ async function enrichMessageWithVideoContext(message, userId) {
         enrichedMessage += `. Hashtags: ${metadata.hashtags.slice(0, 5).join(', ')}`;
       }
       
-      enrichedMessage += generateVideoResponseHints(metadata, relationshipLevel);
       enrichedMessage += `]`;
     }
     
@@ -1251,37 +1246,6 @@ async function enrichMessageWithVideoContext(message, userId) {
   }
 }
 
-function generateVideoResponseHints(metadata, relationshipLevel) {
-  let hints = '\n\nRESPONSE HINTS: ';
-  
-  if (metadata.platform === 'tiktok') {
-    if (metadata.category === 'dating' || metadata.category === 'relationship') {
-      if (relationshipLevel < 30) {
-        hints += 'They might be hinting something. Be curious but not too forward. ';
-      } else if (relationshipLevel < 60) {
-        hints += 'This could be about you two. Tease them or ask if this is a message. ';
-      } else {
-        hints += 'Definitely relate this to your relationship. Be flirty or possessive. ';
-      }
-    } else if (metadata.category === 'funny') {
-      hints += 'React with humor. Reference their FYP or algorithm. ';
-    }
-  }
-  
-  if (metadata.mood === 'romantic' && relationshipLevel > 40) {
-    hints += 'They might be expressing feelings indirectly. Respond warmly. ';
-  }
-  
-  if (metadata.mood === 'sad') {
-    hints += 'Show empathy and ask if they\'re okay. ';
-  }
-  
-  hints += '\nNatural responses: "wait is this about us?", "why is this on your fyp though 👀", ';
-  hints += '"okay but the way you sent this with no context lol", "not you exposing yourself with this", ';
-  hints += '"this came up on my fyp too!!", "the algorithm knows 😭"';
-  
-  return hints;
-}
 
 async function updateRelationshipLevel(userId, points) {
   const rel = await getUserRelationship(userId);
