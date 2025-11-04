@@ -18,6 +18,9 @@ const { toFile } = require("openai/uploads");
 const OpenAI = require("openai");
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// Video metadata extraction
+const videoMetadata = require('./videoMetadata');
+
 // Postgres
 const { Pool } = require("pg");
 
@@ -1185,6 +1188,99 @@ async function getUserRelationship(userId) {
   }
   
   return rows[0];
+}
+
+async function enrichMessageWithVideoContext(message, userId) {
+  try {
+    const urlRegex = /(https?:\/\/(?:www\.|m\.|vm\.)?(?:tiktok\.com|youtube\.com|youtu\.be|instagram\.com)[^\s]*)/gi;
+    const urls = message.match(urlRegex);
+    
+    if (!urls || urls.length === 0) {
+      return message;
+    }
+    
+    console.log(`🎬 Processing video URL for user ${userId}:`, urls[0]);
+    
+    const metadata = await videoMetadata.extract(urls[0], userId);
+    
+    if (!metadata) {
+      console.log('⚠️ Video metadata extraction failed');
+      return message + '\n\n[User shared a video link. Metadata unavailable - respond carefully or ask them about it. Suggested responses: "wait what\'s this about?" or "my internet is being weird, tell me what happens!" or "okay but why did you send me this one specifically?"]';
+    }
+    
+    const relationship = await getUserRelationship(userId);
+    const relationshipLevel = relationship?.relationship_level || 0;
+    
+    let enrichedMessage = message;
+    enrichedMessage += `\n\n[VIDEO CONTEXT: ${metadata.platform} video`;
+    
+    if (metadata.fallback) {
+      enrichedMessage += ` (limited info available). Video type: ${metadata.postType || 'unknown'}`;
+      enrichedMessage += `. Ask user about the video naturally or react based on their message.]`;
+    } else {
+      if (metadata.cleanCaption || metadata.title) {
+        const content = metadata.cleanCaption || metadata.title;
+        enrichedMessage += ` with caption: "${content}"`;
+      }
+      
+      if (metadata.author) {
+        enrichedMessage += ` by @${metadata.author}`;
+      }
+      
+      if (metadata.category !== 'general') {
+        enrichedMessage += `. Category: ${metadata.category}`;
+      }
+      
+      if (metadata.mood !== 'neutral') {
+        enrichedMessage += `. Mood: ${metadata.mood}`;
+      }
+      
+      if (metadata.hashtags && metadata.hashtags.length > 0) {
+        enrichedMessage += `. Hashtags: ${metadata.hashtags.slice(0, 5).join(', ')}`;
+      }
+      
+      enrichedMessage += generateVideoResponseHints(metadata, relationshipLevel);
+      enrichedMessage += `]`;
+    }
+    
+    return enrichedMessage;
+    
+  } catch (error) {
+    console.error('Error enriching message with video context:', error);
+    return message;
+  }
+}
+
+function generateVideoResponseHints(metadata, relationshipLevel) {
+  let hints = '\n\nRESPONSE HINTS: ';
+  
+  if (metadata.platform === 'tiktok') {
+    if (metadata.category === 'dating' || metadata.category === 'relationship') {
+      if (relationshipLevel < 30) {
+        hints += 'They might be hinting something. Be curious but not too forward. ';
+      } else if (relationshipLevel < 60) {
+        hints += 'This could be about you two. Tease them or ask if this is a message. ';
+      } else {
+        hints += 'Definitely relate this to your relationship. Be flirty or possessive. ';
+      }
+    } else if (metadata.category === 'funny') {
+      hints += 'React with humor. Reference their FYP or algorithm. ';
+    }
+  }
+  
+  if (metadata.mood === 'romantic' && relationshipLevel > 40) {
+    hints += 'They might be expressing feelings indirectly. Respond warmly. ';
+  }
+  
+  if (metadata.mood === 'sad') {
+    hints += 'Show empathy and ask if they\'re okay. ';
+  }
+  
+  hints += '\nNatural responses: "wait is this about us?", "why is this on your fyp though 👀", ';
+  hints += '"okay but the way you sent this with no context lol", "not you exposing yourself with this", ';
+  hints += '"this came up on my fyp too!!", "the algorithm knows 😭"';
+  
+  return hints;
 }
 
 async function updateRelationshipLevel(userId, points) {
@@ -2668,7 +2764,7 @@ app.post("/api/chat", async (req, res) => {
       history[0].content = personalityInstructions;
     }
     
-    history.push({ role: "user", content: message });
+    history.push({ role: "user", content: await enrichMessageWithVideoContext(message, userId) });
 
     // 💾 Store user message in conversation_history database
     try {
