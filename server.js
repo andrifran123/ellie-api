@@ -30,8 +30,12 @@ const bodyParser = require("body-parser");
 const cookieParser = require("cookie-parser");
 // NEW: for hashing passwords during signup
 const bcrypt = require("bcryptjs");
+
 // NEW: Stripe for gifts (separate from existing billing)
-const stripeGifts = require('stripe')(process.env.STRIPE_GIFT_SECRET_KEY || '');
+// Only initialize if STRIPE_GIFT_SECRET_KEY is provided
+const stripeGifts = process.env.STRIPE_GIFT_SECRET_KEY 
+  ? require('stripe')(process.env.STRIPE_GIFT_SECRET_KEY)
+  : null;
 
 
 const app = express();
@@ -2198,6 +2202,14 @@ app.get('/api/gifts/available', requireAuth, async (req, res) => {
 
 // Purchase gift endpoint
 app.post('/api/purchase-gift', requireAuth, express.json(), async (req, res) => {
+  // Check if Stripe is configured
+  if (!stripeGifts) {
+    return res.status(503).json({ 
+      error: 'Gift system not configured',
+      message: 'The gift system is currently unavailable. Please contact support.'
+    });
+  }
+  
   const { giftId, customMessage } = req.body;
   const userId = req.userId;
   
@@ -2264,6 +2276,11 @@ app.post('/api/purchase-gift', requireAuth, express.json(), async (req, res) => 
 
 // Webhook for Stripe payment confirmation
 app.post('/api/stripe-webhook/gifts', express.raw({ type: 'application/json' }), async (req, res) => {
+  // Check if Stripe is configured
+  if (!stripeGifts) {
+    return res.status(503).json({ error: 'Gift system not configured' });
+  }
+  
   const sig = req.headers['stripe-signature'];
   const webhookSecret = process.env.STRIPE_GIFT_WEBHOOK_SECRET;
   
@@ -4441,6 +4458,11 @@ server.listen(PORT, () => {
     console.log("Â¸Ãƒâ€¦Ã¢â‚¬â„¢Ãƒâ€šÃ‚Â Live web search: ENABLED (Brave)");
   } else {
     console.log("Â¸Ãƒâ€¦Ã¢â‚¬â„¢Ãƒâ€šÃ‚Â Live web search: DISABLED (set BRAVE_API_KEY to enable)");
+  }
+  if (stripeGifts) {
+    console.log("💝 Gift System: ENABLED (Stripe configured)");
+  } else {
+    console.log("💝 Gift System: DISABLED (set STRIPE_GIFT_SECRET_KEY to enable)");
   }
   console.log("================================");
 });
