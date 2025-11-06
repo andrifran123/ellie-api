@@ -41,6 +41,12 @@ const stripeGifts = process.env.STRIPE_GIFT_SECRET_KEY
   : null;
 
 
+
+// ============================================================
+// 🧠 ADVANCED MEMORY SYSTEM IMPORTS
+// ============================================================
+const { createClient } = require('@supabase/supabase-js');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -121,6 +127,400 @@ const PROB_CALLBACK = Number(process.env.PROB_CALLBACK || 0.25);
 const PROB_QUIRKS = Number(process.env.PROB_QUIRKS || 0.25);
 const PROB_IMPERFECTION = Number(process.env.PROB_IMPERFECTION || 0.2);
 const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
+// ============================================================
+// 🧠 ELLIE MEMORY SYSTEM CLASS
+// ============================================================
+
+class EllieMemorySystem {
+  constructor(supabaseUrl, supabaseKey, openaiKey) {
+    // Only initialize if Supabase credentials are provided
+    if (supabaseUrl && supabaseKey) {
+      this.supabase = createClient(supabaseUrl, supabaseKey);
+      this.enabled = true;
+    } else {
+      this.supabase = null;
+      this.enabled = false;
+      console.log(⚠️ Memory System: DISABLED (Supabase credentials not provided)');
+    }
+    
+    this.openai = new OpenAI({ apiKey: openaiKey });
+    
+    // Memory categories with different recall probabilities
+    this.memoryTypes = {
+      FACT: { priority: 0.8, retention: 0.95 },
+      EMOTION: { priority: 0.9, retention: 0.90 },
+      PREFERENCE: { priority: 0.7, retention: 0.98 },
+      EVENT: { priority: 0.6, retention: 0.85 },
+      RELATIONSHIP: { priority: 1.0, retention: 1.0 },
+      TRIGGER: { priority: 0.85, retention: 0.92 },
+      SHARED_EXPERIENCE: { priority: 0.95, retention: 0.97 },
+      PROMISE: { priority: 0.88, retention: 0.93 },
+      INSIDE_JOKE: { priority: 0.92, retention: 0.99 }
+    };
+
+    // Mood state tracking
+    this.moodStates = {
+      baseline: { arousal: 0.5, valence: 0.5 },
+      current: { arousal: 0.5, valence: 0.5 },
+      history: []
+    };
+
+    // Emotional triggers based on memory
+    this.emotionalTriggers = new Map();
+  }
+
+  // ============================================================
+  // MEMORY EXTRACTION & STORAGE
+  // ============================================================
+
+  async extractMemories(userId, userMessage, ellieResponse, context = {}) {
+    if (!this.enabled) return null;
+    
+    try {
+      // Extract facts, emotions, and important details from conversation
+      const extractionPrompt = `
+        Analyze this conversation exchange and extract important memories.
+        
+        User said: "${userMessage}"
+        Ellie responded: "${ellieResponse}"
+        
+        Current relationship level: ${context.relationshipLevel || 0}
+        Current mood: ${context.mood || 'normal'}
+        
+        Extract the following (return as JSON):
+        1. facts: Array of factual information about the user (allergies, preferences, job, hobbies, etc.)
+        2. emotions: Array of emotional states or feelings expressed
+        3. events: Array of events mentioned (past or future)
+        4. preferences: Array of likes/dislikes expressed
+        5. triggers: Array of topics that caused strong reactions
+        6. relationship_notes: Any relationship-relevant information
+        7. promises: Things either party said they'd do or remember
+        8. shared_experiences: Moments that create inside jokes or bonds
+        
+        For each item include:
+        - content: The actual information
+        - confidence: 0-1 how certain we are
+        - emotional_weight: -1 to 1 (negative to positive)
+        - importance: 0-1 how important to remember
+        
+        Be very selective - only extract truly memorable/important information.
+        Format: { facts: [], emotions: [], events: [], preferences: [], triggers: [], relationship_notes: [], promises: [], shared_experiences: [] }
+      `;
+
+      const extraction = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: 'You are a memory extraction system. Extract only important, memorable information.' },
+          { role: 'user', content: extractionPrompt }
+        ],
+        temperature: 0.3,
+        response_format: { type: "json_object" }
+      });
+
+      const memories = JSON.parse(extraction.choices[0].message.content);
+      
+      // Store memories in database
+      await this.storeMemories(userId, memories, context);
+      
+      // Update mood based on emotional content
+      await this.updateMoodFromMemories(userId, memories);
+      
+      return memories;
+    } catch (error) {
+      console.error('Memory extraction error:', error);
+      return null;
+    }
+  }
+
+  async storeMemories(userId, memories, context) {
+    if (!this.enabled) return;
+    
+    const timestamp = new Date().toISOString();
+    
+    // Store all memory types
+    const memoryTypes = ['facts', 'emotions', 'events', 'preferences', 'triggers', 
+                        'relationship_notes', 'promises', 'shared_experiences'];
+    
+    for (const type of memoryTypes) {
+      for (const memory of memories[type] || []) {
+        if (memory.confidence > 0.5) {
+          try {
+            // Generate embedding for semantic search
+            const embedding = await this.generateEmbedding(memory.content);
+            
+            if (embedding) {
+              // Store in database
+              await pool.query(
+                `INSERT INTO user_memories 
+                 (user_id, memory_type, content, confidence, emotional_weight, 
+                  importance, embedding, context_tags, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                 ON CONFLICT DO NOTHING`,
+                [
+                  userId,
+                  type.slice(0, -1), // Remove 's' from plural
+                  memory.content,
+                  memory.confidence,
+                  memory.emotional_weight || 0,
+                  memory.importance || 0.5,
+                  JSON.stringify(embedding),
+                  JSON.stringify(context.tags || [])
+                ]
+              );
+            }
+          } catch (error) {
+            // Silently handle if table doesn't exist yet
+            if (error.code !== '42P01') {
+              console.error('Memory storage error:', error);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  async generateEmbedding(text) {
+    try {
+      const response = await this.openai.embeddings.create({
+        model: "text-embedding-3-small",
+        input: text,
+      });
+      return response.data[0].embedding;
+    } catch (error) {
+      console.error('Embedding generation error:', error);
+      return null;
+    }
+  }
+
+  async findSimilarMemory(userId, content, memoryType) {
+    if (!this.enabled) return null;
+    
+    try {
+      const embedding = await this.generateEmbedding(content);
+      if (!embedding) return null;
+
+      // Use cosine similarity search
+      const result = await pool.query(
+        `SELECT id, content, 
+          1 - (embedding <=> $1::vector) as similarity
+         FROM user_memories
+         WHERE user_id = $2 
+           AND memory_type = $3
+           AND is_active = true
+         ORDER BY similarity DESC
+         LIMIT 1`,
+        [JSON.stringify(embedding), userId, memoryType]
+      );
+
+      if (result.rows.length > 0 && result.rows[0].similarity > 0.85) {
+        return result.rows[0];
+      }
+      return null;
+    } catch (error) {
+      // Silently handle if table doesn't exist
+      if (error.code !== '42P01') {
+        console.error('Similar memory search error:', error);
+      }
+      return null;
+    }
+  }
+
+  // ============================================================
+  // MEMORY RECALL & CONTEXT BUILDING
+  // ============================================================
+
+  async recallRelevantMemories(userId, currentMessage, options = {}) {
+    if (!this.enabled) return [];
+    
+    const limit = options.limit || 10;
+    const minImportance = options.minImportance || 0.3;
+    
+    try {
+      // Generate embedding for current message
+      const messageEmbedding = await this.generateEmbedding(currentMessage);
+      
+      if (!messageEmbedding) return [];
+
+      // Semantic search with recency bias
+      const result = await pool.query(
+        `SELECT 
+          m.*,
+          1 - (m.embedding <=> $1::vector) as semantic_similarity,
+          EXTRACT(EPOCH FROM (NOW() - m.created_at)) / 86400 as days_old
+         FROM user_memories m
+         WHERE m.user_id = $2
+           AND m.is_active = true
+           AND m.importance >= $3
+         ORDER BY 
+           (1 - (m.embedding <=> $1::vector)) * 0.7 + 
+           (1 / (1 + EXTRACT(EPOCH FROM (NOW() - m.created_at)) / 86400)) * 0.3 DESC
+         LIMIT $4`,
+        [JSON.stringify(messageEmbedding), userId, minImportance, limit]
+      );
+
+      return result.rows;
+    } catch (error) {
+      // Silently handle if table doesn't exist
+      if (error.code !== '42P01') {
+        console.error('Memory recall error:', error);
+      }
+      return [];
+    }
+  }
+
+  async buildConversationContext(userId, currentMessage) {
+    if (!this.enabled) return null;
+    
+    try {
+      // Get relevant memories
+      const memories = await this.recallRelevantMemories(userId, currentMessage);
+      
+      // Get emotional profile
+      const emotionalProfile = await this.getEmotionalProfile(userId);
+      
+      // Get relationship history
+      const relationship = await pool.query(
+        'SELECT * FROM user_relationships WHERE user_id = $1',
+        [userId]
+      );
+
+      // Get recent promises
+      const promises = await pool.query(
+        `SELECT * FROM user_memories 
+         WHERE user_id = $1 AND memory_type = 'promise' 
+           AND is_active = true
+         ORDER BY created_at DESC LIMIT 3`,
+        [userId]
+      );
+
+      return {
+        relevantMemories: memories,
+        emotionalProfile,
+        relationshipData: relationship.rows[0] || {},
+        activePromises: promises.rows,
+        moodState: this.moodStates.current
+      };
+    } catch (error) {
+      console.error('Context building error:', error);
+      return null;
+    }
+  }
+
+  // ============================================================
+  // EMOTIONAL PROCESSING
+  // ============================================================
+
+  async updateMoodFromMemories(userId, memories) {
+    const emotions = memories.emotions || [];
+    if (emotions.length === 0) return;
+
+    // Calculate mood shift based on extracted emotions
+    const avgValence = emotions.reduce((sum, e) => 
+      sum + (e.emotional_weight || 0), 0) / emotions.length;
+    
+    const avgArousal = emotions.reduce((sum, e) => 
+      sum + Math.abs(e.emotional_weight || 0), 0) / emotions.length;
+
+    // Update current mood with decay towards baseline
+    const decayFactor = 0.3;
+    this.moodStates.current.valence = 
+      this.moodStates.current.valence * (1 - decayFactor) + 
+      avgValence * decayFactor;
+    
+    this.moodStates.current.arousal = 
+      this.moodStates.current.arousal * (1 - decayFactor) + 
+      avgArousal * decayFactor;
+
+    // Store mood history
+    this.moodStates.history.push({
+      timestamp: new Date(),
+      valence: this.moodStates.current.valence,
+      arousal: this.moodStates.current.arousal
+    });
+
+    // Keep only last 100 mood states
+    if (this.moodStates.history.length > 100) {
+      this.moodStates.history.shift();
+    }
+  }
+
+  async getEmotionalProfile(userId) {
+    if (!this.enabled) {
+      return {
+        dominantEmotion: 'neutral',
+        emotionalVolatility: 0.5,
+        recentEmotions: {},
+        currentMood: this.moodStates.current
+      };
+    }
+    
+    try {
+      const result = await pool.query(
+        `SELECT 
+          memory_type,
+          AVG(emotional_weight) as avg_emotion,
+          COUNT(*) as count,
+          AVG(importance) as avg_importance
+         FROM user_memories
+         WHERE user_id = $1 
+           AND memory_type IN ('emotion', 'trigger')
+           AND is_active = true
+         GROUP BY memory_type`,
+        [userId]
+      );
+
+      const emotionData = result.rows.reduce((acc, row) => {
+        acc[row.memory_type] = {
+          average: parseFloat(row.avg_emotion),
+          count: parseInt(row.count),
+          importance: parseFloat(row.avg_importance)
+        };
+        return acc;
+      }, {});
+
+      // Calculate emotional volatility
+      const emotionCounts = result.rows.reduce((sum, row) => sum + parseInt(row.count), 0);
+      const emotionalVolatility = emotionCounts > 10 ? 
+        Math.min(emotionCounts / 100, 1) : 0.3;
+
+      return {
+        dominantEmotion: this.moodStates.current.valence > 0.6 ? 'positive' :
+                        this.moodStates.current.valence < 0.4 ? 'negative' : 'neutral',
+        emotionalVolatility,
+        recentEmotions: emotionData,
+        currentMood: this.moodStates.current
+      };
+    } catch (error) {
+      // Silently handle if table doesn't exist
+      if (error.code !== '42P01') {
+        console.error('Emotional profile error:', error);
+      }
+      return {
+        dominantEmotion: 'neutral',
+        emotionalVolatility: 0.5,
+        recentEmotions: {},
+        currentMood: this.moodStates.current
+      };
+    }
+  }
+}
+
+// Initialize memory system (will be disabled if Supabase not configured)
+let memorySystem = null;
+try {
+  memorySystem = new EllieMemorySystem(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_KEY,
+    process.env.OPENAI_API_KEY
+  );
+  if (memorySystem.enabled) {
+    console.log('🧠 Advanced Memory System: ENABLED');
+  }
+} catch (error) {
+  console.error('Memory system initialization error:', error);
+  console.log('⚠️ Memory System: DISABLED');
+}
+
 
 // ============================================================
 // 🎮 MANUAL OVERRIDE SYSTEM - STORAGE
@@ -4634,6 +5034,121 @@ setInterval(cleanupInactiveChatHistory, 10 * 60 * 1000);
 setTimeout(cleanupInactiveChatHistory, 30000); // 30 seconds after startup
 
 
+
+// ============================================================
+// MEMORY SYSTEM PERIODIC JOBS
+// ============================================================
+
+// Memory decay job (run daily) - Only if memory system is enabled
+if (memorySystem && memorySystem.enabled) {
+  setInterval(async () => {
+    try {
+      // Decay old memories based on retention scores
+      await pool.query(`
+        UPDATE user_memories 
+        SET importance = importance * 0.95,
+            access_count = access_count * 0.9
+        WHERE created_at < NOW() - INTERVAL '7 days'
+          AND is_active = true
+      `);
+      console.log('🧠 Memory decay process completed');
+    } catch (error) {
+      if (error.code !== '42P01') {
+        console.error('Memory decay error:', error);
+      }
+    }
+  }, 24 * 60 * 60 * 1000); // Run daily
+}
+
+// Emotion processing job (run every 5 minutes) - Only if memory system is enabled
+if (memorySystem && memorySystem.enabled) {
+  setInterval(async () => {
+    try {
+      const users = await pool.query(
+        `SELECT DISTINCT user_id FROM conversation_context 
+         WHERE timestamp > NOW() - INTERVAL '5 minutes'`
+      );
+      
+      for (const user of users.rows) {
+        const profile = await memorySystem.getEmotionalProfile(user.user_id);
+        
+        await pool.query(
+          `INSERT INTO user_emotional_profile 
+           (user_id, dominant_emotion, emotional_intensity, emotional_stability, mood_history, updated_at)
+           VALUES ($1, $2, $3, $4, $5, NOW())
+           ON CONFLICT (user_id) DO UPDATE
+           SET dominant_emotion = $2, 
+               emotional_intensity = $3,
+               emotional_stability = $4,
+               mood_history = $5,
+               updated_at = NOW()`,
+          [
+            user.user_id,
+            profile.dominantEmotion,
+            profile.emotionalVolatility,
+            1 - profile.emotionalVolatility,
+            JSON.stringify(profile.recentEmotions || [])
+          ]
+        );
+      }
+    } catch (error) {
+      if (error.code !== '42P01') {
+        console.error('Emotion processing error:', error);
+      }
+    }
+  }, 5 * 60 * 1000); // Run every 5 minutes
+}
+
+// Memory summary update job (run every hour) - Only if memory system is enabled
+if (memorySystem && memorySystem.enabled) {
+  setInterval(async () => {
+    try {
+      const users = await pool.query(
+        `SELECT DISTINCT user_id FROM user_memories 
+         WHERE created_at > NOW() - INTERVAL '1 hour'`
+      );
+      
+      for (const user of users.rows) {
+        const memories = await pool.query(
+          `SELECT * FROM user_memories 
+           WHERE user_id = $1 AND is_active = true
+           ORDER BY created_at DESC
+           LIMIT 100`,
+          [user.user_id]
+        );
+        
+        if (memories.rows.length > 0) {
+          const topics = [...new Set(memories.rows.map(m => m.memory_type))];
+          const insideJokes = memories.rows
+            .filter(m => m.memory_type === 'inside_joke')
+            .map(m => m.content);
+          
+          await pool.query(
+            `INSERT INTO user_memory_summary 
+             (user_id, total_memories, dominant_topics, inside_jokes, updated_at)
+             VALUES ($1, $2, $3, $4, NOW())
+             ON CONFLICT (user_id) DO UPDATE
+             SET total_memories = $2,
+                 dominant_topics = $3,
+                 inside_jokes = $4,
+                 updated_at = NOW()`,
+            [
+              user.user_id,
+              memories.rows.length,
+              topics,
+              insideJokes
+            ]
+          );
+        }
+      }
+    } catch (error) {
+      if (error.code !== '42P01') {
+        console.error('Memory summary update error:', error);
+      }
+    }
+  }, 60 * 60 * 1000); // Run every hour
+}
+
 console.log("✅ Live User Monitoring & Manual Override System initialized");
 
 server.listen(PORT, () => {
@@ -4650,6 +5165,11 @@ server.listen(PORT, () => {
     console.log("💝 Gift System: ENABLED (Stripe configured)");
   } else {
     console.log("💝 Gift System: DISABLED (set STRIPE_GIFT_SECRET_KEY to enable)");
+  }
+  if (memorySystem && memorySystem.enabled) {
+    console.log("🧠 Memory System: ENABLED (Supabase configured)");
+  } else {
+    console.log("🧠 Memory System: DISABLED (set SUPABASE_URL and SUPABASE_KEY to enable)");
   }
   console.log("================================");
 });
