@@ -3304,8 +3304,8 @@ app.post("/api/chat", async (req, res) => {
     if (memorySystem && memorySystem.enabled) {
       try {
         const relevantMemories = await memorySystem.recallRelevantMemories(userId, message, {
-          limit: 8,
-          minImportance: 0.4
+          limit: 5,           // Reduced from 8 for speed
+          minImportance: 0.6  // Only very important memories
         });
         
         if (relevantMemories && relevantMemories.length > 0) {
