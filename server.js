@@ -3417,7 +3417,7 @@ app.post("/api/chat", async (req, res) => {
     if (memorySystem && memorySystem.enabled) {
       try {
         await memorySystem.extractMemories(userId, message, reply, {
-          relationshipLevel: updatedRelationship?.relationship_level || relationship.relationship_level,
+          relationshipLevel: relationship?.relationship_level || 0,
           mood: mood,
           tags: ['chat']
         });
