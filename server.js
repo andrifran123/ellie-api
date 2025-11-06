@@ -147,7 +147,10 @@ function detectNSFW(message) {
   const nsfwKeywords = [
     // Explicit sexual
     'fuck', 'fucking', 'fucked', 'dick', 'cock', 'pussy', 'cum', 'cumming',
-    'sex', 'horny', 'masturbat', 'nude', 'naked', 'porn',
+    'sex', 'horny', 'masturbat', 'nude', 'naked', 'porn', 'nude', 'what do you want', 'do to you', 
+  'do to me', 'want me to do', 'make love', 'touch me',
+  'touch you', 'turn me on', 'turned on', 'hard for',
+  'wet for', 'ready for you', 'want you', 'need you'
     // Sexual acts
     'suck', 'lick', 'finger', 'blow job', 'blowjob', 'handjob', 'anal',
     // Body parts (sexual context)
@@ -156,7 +159,11 @@ function detectNSFW(message) {
     'bedroom', 'shower together', 'bed', 'undress', 'clothes off', 'strip',
     'make love', 'fuck me', 'touch me', 'touch yourself',
     // Roleplay sexual
-    'daddy', 'mommy', 'spank', 'submissive', 'dominant', 'bondage'
+    'daddy', 'mommy', 'spank', 'submissive', 'dominant', 'bondage' , 'Anal' , 'Facefuck' , 'BDSM' , 'Hogtied'
+  
+
+
+
   ];
   
   const lower = message.toLowerCase();
