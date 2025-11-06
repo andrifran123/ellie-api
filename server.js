@@ -168,11 +168,11 @@ async function getUserTier(userId, pool) {
   try {
     // Check if user has active subscription
     const subResult = await pool.query(
-      `SELECT status, plan_name FROM subscriptions 
-       WHERE user_id = $1 AND status = 'active' 
-       ORDER BY created_at DESC LIMIT 1`,
-      [userId]
-    );
+  `SELECT status FROM subscriptions 
+   WHERE user_id = $1 AND status = 'active' 
+   ORDER BY created_at DESC LIMIT 1`,
+  [userId]
+);
     
     if (subResult.rows.length > 0) {
       return 'paid';
