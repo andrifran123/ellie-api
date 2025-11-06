@@ -521,6 +521,223 @@ try {
   console.log('⚠️ Memory System: DISABLED');
 }
 
+// ============================================================
+// 🎭 PERSONALITY EVOLUTION SYSTEM
+// ============================================================
+
+class PersonalityEvolution {
+  async evolveFromMemories(userId, memories) {
+    const sharedExperiences = memories.filter(m => m.memory_type === 'shared_experience');
+    const insideJokes = memories.filter(m => m.memory_type === 'inside_joke');
+    
+    // Build personality modifiers
+    const modifiers = {
+      humor_style: this.adaptHumorStyle(memories),
+      communication_style: this.adaptCommunicationStyle(memories),
+      emotional_availability: this.calculateEmotionalAvailability(memories),
+      shared_references: insideJokes.map(j => j.content),
+      mirrored_interests: this.extractInterests(memories)
+    };
+    
+    return modifiers;
+  }
+
+  adaptHumorStyle(memories) {
+    const positiveMemories = memories.filter(m => m.emotional_weight > 0.5);
+    const jokes = memories.filter(m => 
+      m.content.toLowerCase().includes('laugh') || 
+      m.content.toLowerCase().includes('funny')
+    );
+    
+    if (jokes.length > 5) return 'playful';
+    if (positiveMemories.length > 10) return 'warm';
+    return 'gentle';
+  }
+
+  adaptCommunicationStyle(memories) {
+    const avgLength = memories.reduce((sum, m) => sum + m.content.length, 0) / memories.length;
+    
+    if (avgLength > 100) return 'detailed';
+    if (avgLength < 30) return 'concise';
+    return 'balanced';
+  }
+
+  calculateEmotionalAvailability(memories) {
+    const emotionalMemories = memories.filter(m => Math.abs(m.emotional_weight) > 0.6);
+    return Math.min(emotionalMemories.length / memories.length, 1.0);
+  }
+
+  extractInterests(memories) {
+    const interests = new Set();
+    const keywords = ['like', 'love', 'enjoy', 'favorite', 'into'];
+    
+    memories.forEach(m => {
+      keywords.forEach(keyword => {
+        if (m.content.toLowerCase().includes(keyword)) {
+          const words = m.content.split(' ');
+          const idx = words.findIndex(w => w.toLowerCase().includes(keyword));
+          if (idx !== -1 && idx < words.length - 1) {
+            interests.add(words[idx + 1]);
+          }
+        }
+      });
+    });
+    
+    return Array.from(interests);
+  }
+}
+
+// ============================================================
+// ✍️ TEXT MICRO-EXPRESSIONS SYSTEM
+// ============================================================
+
+class TextMicroExpressions {
+  addEmotionalNuance(message, mood, relationshipLevel) {
+    const expressions = {
+      nervous: {
+        patterns: ["...", "um", "I mean", "actually", "never mind"],
+        typos: true,
+        backtracking: true
+      },
+      excited: {
+        patterns: ["!!", "omg", "ahhhh", "literally"],
+        caps: 0.1,  // 10% chance of CAPS
+        elongation: true  // "sooooo", "yessss"
+      },
+      vulnerable: {
+        patterns: ["🥺", "...", "maybe", "I guess", "if that's okay"],
+        softer: true,
+        questioning: true
+      },
+      flirty: {
+        patterns: ["😏", "hehe", "maybe~", "interesting..."],
+        teasing: true,
+        playful_punctuation: true
+      },
+      playful: {
+        patterns: ["lol", "haha", "😂", "lmao"],
+        elongation: true
+      },
+      distant: {
+        patterns: ["...", "idk", "whatever"],
+        shorter: true
+      },
+      normal: {
+        patterns: [],
+        elongation: false
+      }
+    };
+    
+    const expr = expressions[mood] || expressions.normal;
+    if (expr && Math.random() < 0.3) {
+      message = this.applyExpression(message, expr);
+    }
+    
+    // Relationship-based modifications
+    if (relationshipLevel > 60) {
+      message = this.addIntimacy(message);
+    }
+    
+    return message;
+  }
+  
+  applyExpression(message, expr) {
+    if (expr.elongation && Math.random() < 0.2) {
+      message = message.replace(/\bso\b/g, 'sooo').replace(/\byes\b/g, 'yessss');
+    }
+    
+    if (expr.caps && Math.random() < expr.caps) {
+      const words = message.split(' ');
+      const idx = Math.floor(Math.random() * words.length);
+      words[idx] = words[idx].toUpperCase();
+      message = words.join(' ');
+    }
+    
+    if (expr.patterns && expr.patterns.length > 0 && Math.random() < 0.3) {
+      const pattern = expr.patterns[Math.floor(Math.random() * expr.patterns.length)];
+      message += ' ' + pattern;
+    }
+    
+    return message;
+  }
+  
+  addIntimacy(message) {
+    const intimacyMarkers = ['babe', 'honey', 'sweetie', 'love'];
+    if (Math.random() < 0.1) {
+      const marker = intimacyMarkers[Math.floor(Math.random() * intimacyMarkers.length)];
+      message = message.replace(/\byou\b/i, marker);
+    }
+    return message;
+  }
+  
+  addTypingPatterns(message, isNervous) {
+    if (isNervous && Math.random() < 0.2) {
+      return message + "... wait no, what I meant was...";
+    }
+    return message;
+  }
+}
+
+// ============================================================
+// 💭 DREAM SYSTEM
+// ============================================================
+
+class DreamSystem {
+  async generateDreamSequence(userId, memories) {
+    const significantMemories = memories.filter(m => m.importance > 0.7);
+    
+    if (significantMemories.length === 0) return null;
+    
+    const randomMemory = significantMemories[Math.floor(Math.random() * significantMemories.length)];
+    
+    const dreamTemplates = [
+      "i had the weirdest dream about {memory} last night...",
+      "you were in my dream! we were {memory}",
+      "i dreamt about that time you mentioned {memory}",
+      "woke up thinking about {memory} for some reason"
+    ];
+    
+    // Only mention dreams occasionally and at appropriate times
+    const shouldMentionDream = Math.random() < 0.02 && this.isAppropriateTime();
+    
+    if (shouldMentionDream && randomMemory) {
+      return dreamTemplates[Math.floor(Math.random() * dreamTemplates.length)]
+        .replace('{memory}', randomMemory.content);
+    }
+    
+    return null;
+  }
+  
+  isAppropriateTime() {
+    const hour = new Date().getHours();
+    // Mention dreams in morning or late night
+    return hour < 10 || hour > 22;
+  }
+  
+  generateRandomThoughts(memories, mood) {
+    const thoughts = [
+      "i was just thinking about you actually...",
+      "you randomly popped into my head earlier",
+      "saw something that reminded me of you today",
+      "been thinking about what you said..."
+    ];
+    
+    if (mood === 'vulnerable' && Math.random() < 0.1) {
+      return thoughts[Math.floor(Math.random() * thoughts.length)];
+    }
+    
+    return null;
+  }
+}
+
+// Initialize enhancement systems
+const personalityEvolution = new PersonalityEvolution();
+const textMicroExpressions = new TextMicroExpressions();
+const dreamSystem = new DreamSystem();
+
+console.log('✅ Enhancement Systems initialized: Personality Evolution, Text Micro-Expressions, Dream System');
+
+
 
 // ============================================================
 // 🎮 MANUAL OVERRIDE SYSTEM - STORAGE
@@ -3379,6 +3596,44 @@ app.post("/api/chat", async (req, res) => {
 
     const reply = completion.choices[0]?.message?.content || "...";
     
+    let enhancedReply = reply;
+    
+    // 💭 Check for dream/thought generation (before micro-expressions)
+    if (memorySystem && memorySystem.enabled) {
+      try {
+        const memories = await memorySystem.recallRelevantMemories(userId, message, { limit: 10 });
+        
+        // Generate dream sequence
+        const dreamMessage = await dreamSystem.generateDreamSequence(userId, memories);
+        if (dreamMessage) {
+          enhancedReply = dreamMessage;
+          console.log(`💭 Generated dream sequence for ${userId}`);
+        }
+        
+        // Generate random thoughts (if not dream)
+        if (!dreamMessage) {
+          const thoughtMessage = dreamSystem.generateRandomThoughts(memories, mood);
+          if (thoughtMessage) {
+            enhancedReply = thoughtMessage + " " + enhancedReply;
+          }
+        }
+      } catch (dreamErr) {
+        console.error('Dream system error:', dreamErr);
+      }
+    }
+    
+    // ✍️ Apply text micro-expressions
+    try {
+      enhancedReply = textMicroExpressions.addEmotionalNuance(
+        enhancedReply, 
+        mood || 'normal',
+        relationship?.relationship_level || 0
+      );
+    } catch (microErr) {
+      console.error('Micro-expression error:', microErr);
+    }
+    
+    
     // ✅ FINAL CHECK: Verify manual override wasn't activated during generation
     if (isInManualOverride(userId)) {
       console.log(`🛑 Manual override activated during generation for ${userId} - discarding API response`);
@@ -3400,14 +3655,14 @@ app.post("/api/chat", async (req, res) => {
       });
     }
     
-    history.push({ role: "assistant", content: reply });
+    history.push({ role: "assistant", content: enhancedReply });
 
     // 💾 Store assistant reply in conversation_history database
     try {
       await pool.query(
         `INSERT INTO conversation_history (user_id, role, content, created_at)
          VALUES ($1, 'assistant', $2, NOW())`,
-        [userId, reply]
+        [userId, enhancedReply]
       );
     } catch (historyErr) {
       console.warn(`⚠️ Could not store assistant reply:`, historyErr.message);
@@ -3416,7 +3671,7 @@ app.post("/api/chat", async (req, res) => {
     // 🧠 EXTRACT AND STORE NEW MEMORIES (if memory system enabled)
     if (memorySystem && memorySystem.enabled) {
       try {
-        await memorySystem.extractMemories(userId, message, reply, {
+        await memorySystem.extractMemories(userId, message, enhancedReply, {
           relationshipLevel: relationship?.relationship_level || 0,
           mood: mood,
           tags: ['chat']
@@ -3435,7 +3690,7 @@ app.post("/api/chat", async (req, res) => {
     const updatedRelationship = await getUserRelationship(userId);
 
     res.json({
-      reply,
+      reply: enhancedReply,
       language: prefCode,
       relationshipStatus: {
         level: updatedRelationship.relationship_level,
