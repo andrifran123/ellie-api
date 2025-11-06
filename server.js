@@ -3299,6 +3299,27 @@ app.post("/api/chat", async (req, res) => {
     // Check for jealousy triggers
     const jealousyTrigger = await getJealousyTrigger(userId);
     
+    // 🧠 RECALL RELEVANT MEMORIES (if memory system enabled)
+    let memoriesContext = '';
+    if (memorySystem && memorySystem.enabled) {
+      try {
+        const relevantMemories = await memorySystem.recallRelevantMemories(userId, message, {
+          limit: 8,
+          minImportance: 0.4
+        });
+        
+        if (relevantMemories && relevantMemories.length > 0) {
+          memoriesContext = '\n\n🧠 WHAT YOU REMEMBER ABOUT THEM:\n';
+          for (const memory of relevantMemories) {
+            memoriesContext += `- ${memory.content} (${memory.memory_type})\n`;
+          }
+          memoriesContext += '\n⚠️ USE THESE MEMORIES NATURALLY - Don\'t say "I remember" or "you told me". Just know these facts!';
+        }
+      } catch (memErr) {
+        console.error('Memory recall error:', memErr);
+      }
+    }
+    
     // Get dynamic personality based on relationship stage
     const personalityInstructions = getPersonalityInstructions(relationship);
 
@@ -3340,6 +3361,11 @@ app.post("/api/chat", async (req, res) => {
     // Add jealousy trigger if available
     if (jealousyTrigger) {
       finalSystemMsg += `\n\nMENTION THIS CASUALLY: ${jealousyTrigger}`;
+    }
+    
+    // Add recalled memories if available
+    if (memoriesContext) {
+      finalSystemMsg += memoriesContext;
     }
 
     history[0].content = finalSystemMsg;
@@ -3385,6 +3411,19 @@ app.post("/api/chat", async (req, res) => {
       );
     } catch (historyErr) {
       console.warn(`⚠️ Could not store assistant reply:`, historyErr.message);
+    }
+
+    // 🧠 EXTRACT AND STORE NEW MEMORIES (if memory system enabled)
+    if (memorySystem && memorySystem.enabled) {
+      try {
+        await memorySystem.extractMemories(userId, message, reply, {
+          relationshipLevel: updatedRelationship?.relationship_level || relationship.relationship_level,
+          mood: mood,
+          tags: ['chat']
+        });
+      } catch (memExtractErr) {
+        console.error('Memory extraction error:', memExtractErr);
+      }
     }
 
     if (history.length > MAX_HISTORY_MESSAGES) {
