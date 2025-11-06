@@ -145,26 +145,17 @@ function detectNSFW(message) {
   if (!message || typeof message !== 'string') return false;
   
   const nsfwKeywords = [
-    // Explicit sexual
-    'fuck', 'fucking', 'fucked', 'dick', 'cock', 'pussy', 'cum', 'cumming',
-    'sex', 'horny', 'masturbat', 'nude', 'naked', 'porn', 'nude', 'what do you want', 'do to you', 
-  'do to me', 'want me to do', 'make love', 'touch me',
-  'touch you', 'turn me on', 'turned on', 'hard for',
+  'fuck', 'fucking', 'fucked', 'dick', 'cock', 'pussy', 'cum', 'cumming',
+  'sex', 'horny', 'masturbat', 'nude', 'naked', 'porn',
+  'suck', 'lick', 'finger', 'blow job', 'blowjob', 'handjob', 'anal',
+  'tits', 'boobs', 'nipples', 'ass', 'penis', 'vagina', 'clit',
+  'bedroom', 'shower together', 'bed', 'undress', 'clothes off', 'strip',
+  'make love', 'fuck me', 'touch me', 'touch yourself', 'touch you',
+  'daddy', 'mommy', 'spank', 'submissive', 'dominant', 'bondage'
   'wet for', 'ready for you', 'want you', 'need you'
-    // Sexual acts
-    'suck', 'lick', 'finger', 'blow job', 'blowjob', 'handjob', 'anal',
-    // Body parts (sexual context)
-    'tits', 'boobs', 'nipples', 'ass', 'penis', 'vagina', 'clit',
-    // Intimate scenarios
-    'bedroom', 'shower together', 'bed', 'undress', 'clothes off', 'strip',
-    'make love', 'fuck me', 'touch me', 'touch yourself',
-    // Roleplay sexual
-    'daddy', 'mommy', 'spank', 'submissive', 'dominant', 'bondage' , 'Anal' , 'Facefuck' , 'BDSM' , 'Hogtied'
-  
-
-
-
-  ];
+   'do to me', 'want me to do', 'make love', 'touch me'
+   
+];
   
   const lower = message.toLowerCase();
   return nsfwKeywords.some(keyword => lower.includes(keyword));
