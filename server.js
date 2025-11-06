@@ -18,6 +18,14 @@ const { toFile } = require("openai/uploads");
 const OpenAI = require("openai");
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// Groq API (for free tier and normal chat)
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
+
+// OpenRouter API (for NSFW content)
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+
 // Video metadata extraction
 const videoMetadata = require('./videoMetadata');
 
@@ -127,6 +135,158 @@ const PROB_CALLBACK = Number(process.env.PROB_CALLBACK || 0.25);
 const PROB_QUIRKS = Number(process.env.PROB_QUIRKS || 0.25);
 const PROB_IMPERFECTION = Number(process.env.PROB_IMPERFECTION || 0.2);
 const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
+
+// ============================================================
+// 🔀 HYBRID MODEL ROUTING SYSTEM
+// ============================================================
+
+// NSFW keyword detection
+function detectNSFW(message) {
+  if (!message || typeof message !== 'string') return false;
+  
+  const nsfwKeywords = [
+    // Explicit sexual
+    'fuck', 'fucking', 'fucked', 'dick', 'cock', 'pussy', 'cum', 'cumming',
+    'sex', 'horny', 'masturbat', 'nude', 'naked', 'porn',
+    // Sexual acts
+    'suck', 'lick', 'finger', 'blow job', 'blowjob', 'handjob', 'anal',
+    // Body parts (sexual context)
+    'tits', 'boobs', 'nipples', 'ass', 'penis', 'vagina', 'clit',
+    // Intimate scenarios
+    'bedroom', 'shower together', 'bed', 'undress', 'clothes off', 'strip',
+    'make love', 'fuck me', 'touch me', 'touch yourself',
+    // Roleplay sexual
+    'daddy', 'mommy', 'spank', 'submissive', 'dominant', 'bondage'
+  ];
+  
+  const lower = message.toLowerCase();
+  return nsfwKeywords.some(keyword => lower.includes(keyword));
+}
+
+// Check user subscription tier
+async function getUserTier(userId, pool) {
+  try {
+    // Check if user has active subscription
+    const subResult = await pool.query(
+      `SELECT status, plan_name FROM subscriptions 
+       WHERE user_id = $1 AND status = 'active' 
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    );
+    
+    if (subResult.rows.length > 0) {
+      return 'paid';
+    }
+    
+    // Check relationship level as fallback
+    const relResult = await pool.query(
+      `SELECT relationship_level FROM user_relationships 
+       WHERE user_id = $1`,
+      [userId]
+    );
+    
+    const level = relResult.rows[0]?.relationship_level || 0;
+    
+    // Stranger phase (0-20) = free tier
+    // Friend+ (21+) = paid tier
+    return level >= 21 ? 'paid' : 'free';
+  } catch (error) {
+    console.error('Error checking user tier:', error);
+    return 'free'; // Default to free on error
+  }
+}
+
+// Call Groq API (Llama 70B)
+async function callGroq(messages, temperature = 0.8) {
+  try {
+    const response = await fetch(GROQ_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: messages,
+        temperature: temperature,
+        max_tokens: 800
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Groq API error: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    return data.choices[0].message.content;
+  } catch (error) {
+    console.error('Groq API call failed:', error);
+    throw error;
+  }
+}
+
+// Call OpenRouter API (Mythomax 13B)
+async function callMythomax(messages, temperature = 0.9) {
+  try {
+    const response = await fetch(OPENROUTER_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://yourdomain.com', // Optional: replace with your domain
+      },
+      body: JSON.stringify({
+        model: "gryphe/mythomax-l2-13b",
+        messages: messages,
+        temperature: temperature,
+        max_tokens: 800
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`OpenRouter API error: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    return data.choices[0].message.content;
+  } catch (error) {
+    console.error('OpenRouter API call failed:', error);
+    throw error;
+  }
+}
+
+// Main routing function - decides which model to use
+async function getHybridResponse(userId, userMessage, messages, pool) {
+  try {
+    // 1. Check user tier
+    const userTier = await getUserTier(userId, pool);
+    
+    // 2. Detect NSFW content
+    const isNSFW = detectNSFW(userMessage);
+    
+    // 3. Route based on tier and content
+    if (userTier === 'free') {
+      // Free users always use Groq (no NSFW blocking for free tier)
+      console.log(`[Routing] Free user -> Groq Llama 70B`);
+      return await callGroq(messages);
+    } else {
+      // Paid users
+      if (isNSFW) {
+        console.log(`[Routing] Paid user + NSFW -> OpenRouter Mythomax 13B`);
+        return await callMythomax(messages);
+      } else {
+        console.log(`[Routing] Paid user + Normal -> Groq Llama 70B (FREE)`);
+        return await callGroq(messages);
+      }
+    }
+  } catch (error) {
+    console.error('Hybrid routing error:', error);
+    // Fallback to Groq on error
+    console.log('[Routing] Fallback to Groq due to error');
+    return await callGroq(messages);
+  }
+}
+
 // ============================================================
 // 🧠 ELLIE MEMORY SYSTEM CLASS
 // ============================================================
@@ -3764,14 +3924,22 @@ app.post("/api/chat", async (req, res) => {
 
     history[0].content = finalSystemMsg;
 
-    const completion = await client.chat.completions.create({
-      model: CHAT_MODEL,
-      messages: history.slice(-20),
-      temperature: 0.9,
-      max_tokens: 500,
-    });
-
-    const reply = completion.choices[0]?.message?.content || "...";
+    // 🔀 HYBRID MODEL ROUTING
+    // Route to Groq (free) or Mythomax (NSFW) based on user tier and content
+    let reply;
+    try {
+      reply = await getHybridResponse(userId, message, history.slice(-20), pool);
+    } catch (routingError) {
+      console.error('❌ Hybrid routing failed, falling back to OpenAI:', routingError);
+      // Fallback to OpenAI if routing fails
+      const completion = await client.chat.completions.create({
+        model: CHAT_MODEL,
+        messages: history.slice(-20),
+        temperature: 0.9,
+        max_tokens: 500,
+      });
+      reply = completion.choices[0]?.message?.content || "...";
+    }
     
     let enhancedReply = reply;
     
@@ -5773,6 +5941,18 @@ server.listen(PORT, () => {
     console.log("🧠 Memory System: ENABLED (Supabase configured)");
   } else {
     console.log("🧠 Memory System: DISABLED (set SUPABASE_URL and SUPABASE_KEY to enable)");
+  }
+  if (GROQ_API_KEY && OPENROUTER_API_KEY) {
+    console.log("🔀 Hybrid Routing: ENABLED (Groq + OpenRouter)");
+    console.log("   ├─ Free tier: Groq Llama 70B (FREE)");
+    console.log("   ├─ Paid normal: Groq Llama 70B (FREE)");
+    console.log("   └─ Paid NSFW: OpenRouter Mythomax 13B");
+  } else if (GROQ_API_KEY) {
+    console.log("🔀 Hybrid Routing: PARTIAL (Groq only - no NSFW model)");
+  } else if (OPENROUTER_API_KEY) {
+    console.log("🔀 Hybrid Routing: PARTIAL (OpenRouter only - no free tier)");
+  } else {
+    console.log("🔀 Hybrid Routing: DISABLED (using OpenAI fallback)");
   }
   console.log("================================");
 });
