@@ -144,17 +144,16 @@ const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
 function detectNSFW(message) {
   if (!message || typeof message !== 'string') return false;
   
-  const nsfwKeywords = [
+ const nsfwKeywords = [
   'fuck', 'fucking', 'fucked', 'dick', 'cock', 'pussy', 'cum', 'cumming',
   'sex', 'horny', 'masturbat', 'nude', 'naked', 'porn',
   'suck', 'lick', 'finger', 'blow job', 'blowjob', 'handjob', 'anal',
   'tits', 'boobs', 'nipples', 'ass', 'penis', 'vagina', 'clit',
   'bedroom', 'shower together', 'bed', 'undress', 'clothes off', 'strip',
   'make love', 'fuck me', 'touch me', 'touch yourself', 'touch you',
-  'daddy', 'mommy', 'spank', 'submissive', 'dominant', 'bondage'
-  'wet for', 'ready for you', 'want you', 'need you'
-   'do to me', 'want me to do', 'make love', 'touch me'
-   
+  'daddy', 'mommy', 'spank', 'submissive', 'dominant', 'bondage',
+  'wet for', 'ready for you', 'want you', 'need you',
+  'do to me', 'want me to do', 'turn me on', 'turned on'
 ];
   
   const lower = message.toLowerCase();
