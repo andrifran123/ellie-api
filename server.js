@@ -393,16 +393,22 @@ class EllieMemorySystem {
         }
       }
 
-      // Update access patterns
+      // Update access patterns (optional - gracefully handle if columns don't exist)
       const memoryIds = memories.map(m => m.id);
       if (memoryIds.length > 0) {
-        await pool.query(
-          `UPDATE user_memories 
-           SET access_count = access_count + 1,
-               last_accessed = NOW()
-           WHERE id = ANY($1)`,
-          [memoryIds]
-        );
+        try {
+          await pool.query(
+            `UPDATE user_memories 
+             SET access_count = access_count + 1
+             WHERE id = ANY($1)`,
+            [memoryIds]
+          );
+        } catch (updateErr) {
+          // Silently ignore if access_count column doesn't exist
+          if (updateErr.code !== '42703') {
+            console.warn('⚠️ Could not update memory access patterns:', updateErr.message);
+          }
+        }
       }
 
       // Sort by combined score and limit
