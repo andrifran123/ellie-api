@@ -140,7 +140,7 @@ class EllieMemorySystem {
     } else {
       this.supabase = null;
       this.enabled = false;
-      console.log(⚠️ Memory System: DISABLED (Supabase credentials not provided)');
+      console.log('⚠️ Memory System: DISABLED (Supabase credentials not provided)');
     }
     
     this.openai = new OpenAI({ apiKey: openaiKey });
