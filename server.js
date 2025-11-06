@@ -339,7 +339,14 @@ class EllieMemorySystem {
       // Generate embedding for current message
       const messageEmbedding = await this.generateEmbedding(currentMessage);
       
-      if (!messageEmbedding) return [];
+      if (!messageEmbedding) {
+        console.warn('⚠️ Memory recall: Failed to generate embedding');
+        return [];
+      }
+
+      // 🆕 Extract keywords for fallback matching
+      const keywords = this.extractKeywords(currentMessage);
+      console.log(`🔍 Memory recall for user ${userId}:`, { message: currentMessage, keywords });
 
       // Semantic search with recency bias
       const result = await pool.query(
@@ -355,17 +362,113 @@ class EllieMemorySystem {
            (1 - (m.embedding <=> $1::vector)) * 0.7 + 
            (1 / (1 + EXTRACT(EPOCH FROM (NOW() - m.created_at)) / 86400)) * 0.3 DESC
          LIMIT $4`,
-        [JSON.stringify(messageEmbedding), userId, minImportance, limit]
+        [JSON.stringify(messageEmbedding), userId, minImportance, limit * 2] // Get 2x to allow filtering
       );
 
-      return result.rows;
+      let memories = result.rows;
+
+      // 🆕 KEYWORD BOOST: Find memories with keyword matches
+      if (keywords.length > 0) {
+        const keywordResult = await pool.query(
+          `SELECT m.*, 0.9 as semantic_similarity
+           FROM user_memories m
+           WHERE m.user_id = $1
+             AND m.is_active = true
+             AND (
+               ${keywords.map((_, i) => `LOWER(m.content) LIKE LOWER($${i + 2})`).join(' OR ')}
+             )
+           LIMIT $${keywords.length + 2}`,
+          [userId, ...keywords.map(k => `%${k}%`), 5]
+        );
+
+        // Merge keyword matches with semantic matches
+        const uniqueKeywordMemories = keywordResult.rows.filter(r => 
+          !memories.some(m => m.id === r.id)
+        );
+
+        memories = [...uniqueKeywordMemories, ...memories];
+        
+        if (uniqueKeywordMemories.length > 0) {
+          console.log(`✨ Found ${uniqueKeywordMemories.length} keyword-matched memories`);
+        }
+      }
+
+      // Update access patterns
+      const memoryIds = memories.map(m => m.id);
+      if (memoryIds.length > 0) {
+        await pool.query(
+          `UPDATE user_memories 
+           SET access_count = access_count + 1,
+               last_accessed = NOW()
+           WHERE id = ANY($1)`,
+          [memoryIds]
+        );
+      }
+
+      // Sort by combined score and limit
+      memories = memories
+        .sort((a, b) => {
+          const scoreA = (a.semantic_similarity || 0) * a.importance;
+          const scoreB = (b.semantic_similarity || 0) * b.importance;
+          return scoreB - scoreA;
+        })
+        .slice(0, limit);
+
+      console.log(`🧠 Recalled ${memories.length} memories for "${currentMessage}"`);
+      if (memories.length > 0) {
+        console.log('📝 Memory types:', memories.map(m => `${m.memory_type}(${m.semantic_similarity?.toFixed(2)})`));
+      }
+
+      return memories;
+
     } catch (error) {
-      // Silently handle if table doesn't exist
-      if (error.code !== '42P01') {
-        console.error('Memory recall error:', error);
+      // Better error handling
+      if (error.code === '42P01') {
+        console.warn('⚠️ Memory table does not exist yet');
+      } else if (error.code === '42883') {
+        console.error('❌ Memory recall: Vector extension not installed. Run: CREATE EXTENSION IF NOT EXISTS vector;');
+      } else {
+        console.error('❌ Memory recall error:', {
+          message: error.message,
+          code: error.code,
+          userId,
+          currentMessage: currentMessage.substring(0, 50)
+        });
       }
       return [];
     }
+  }
+
+  // 🆕 Helper method to extract keywords for matching
+  extractKeywords(text) {
+    if (!text || typeof text !== 'string') return [];
+    
+    const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'my', 'your', 'his', 'her', 'its', 'our', 'their', 'me', 'him', 'us', 'them', 'this', 'that', 'these', 'those', 'what', 'which', 'who', 'when', 'where', 'why', 'how', 'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'am', 'going', 'im']);
+    
+    // Extract words, normalize
+    const words = text
+      .toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter(word => word.length > 2 && !stopWords.has(word));
+    
+    // Add related terms mapping
+    const relatedTerms = {
+      'china': ['chinese', 'china'],
+      'chinese': ['china', 'chinese'],
+      'allergy': ['allergic', 'allergies', 'allergy'],
+      'allergic': ['allergy', 'allergies', 'allergic'],
+      'food': ['eat', 'eating', 'meal', 'food'],
+    };
+    
+    const expandedKeywords = new Set(words);
+    words.forEach(word => {
+      if (relatedTerms[word]) {
+        relatedTerms[word].forEach(related => expandedKeywords.add(related));
+      }
+    });
+    
+    return Array.from(expandedKeywords);
   }
 
   async buildConversationContext(userId, currentMessage) {
@@ -3521,19 +3624,87 @@ app.post("/api/chat", async (req, res) => {
     if (memorySystem && memorySystem.enabled) {
       try {
         const relevantMemories = await memorySystem.recallRelevantMemories(userId, message, {
-          limit: 5,           // Reduced from 8 for speed
-          minImportance: 0.6  // Only very important memories
+          limit: 8,            // 🔧 INCREASED from 5 to 8
+          minImportance: 0.3   // 🔧 LOWERED from 0.6 to 0.3
         });
         
         if (relevantMemories && relevantMemories.length > 0) {
+          // Group memories by type for better organization
+          const memoryGroups = {
+            fact: [],
+            preference: [],
+            emotion: [],
+            event: [],
+            relationship: [],
+            promise: [],
+            other: []
+          };
+          
+          relevantMemories.forEach(mem => {
+            const type = mem.memory_type || 'other';
+            if (memoryGroups[type]) {
+              memoryGroups[type].push(mem);
+            } else {
+              memoryGroups.other.push(mem);
+            }
+          });
+          
           memoriesContext = '\n\n🧠 WHAT YOU REMEMBER ABOUT THEM:\n';
-          for (const memory of relevantMemories) {
-            memoriesContext += `- ${memory.content} (${memory.memory_type})\n`;
+          
+          // Prioritize important facts and preferences
+          if (memoryGroups.fact.length > 0) {
+            memoriesContext += '📋 Facts:\n';
+            memoryGroups.fact.forEach(m => {
+              memoriesContext += `  • ${m.content}\n`;
+            });
           }
-          memoriesContext += '\n⚠️ USE THESE MEMORIES NATURALLY - Don\'t say "I remember" or "you told me". Just know these facts!';
+          
+          if (memoryGroups.preference.length > 0) {
+            memoriesContext += '❤️ Preferences:\n';
+            memoryGroups.preference.forEach(m => {
+              memoriesContext += `  • ${m.content}\n`;
+            });
+          }
+          
+          if (memoryGroups.emotion.length > 0) {
+            memoriesContext += '😊 Emotional context:\n';
+            memoryGroups.emotion.forEach(m => {
+              memoriesContext += `  • ${m.content}\n`;
+            });
+          }
+          
+          if (memoryGroups.promise.length > 0) {
+            memoriesContext += '🤝 Promises:\n';
+            memoryGroups.promise.forEach(m => {
+              memoriesContext += `  • ${m.content}\n`;
+            });
+          }
+          
+          // Add other relevant memories
+          const otherMems = [...memoryGroups.event, ...memoryGroups.relationship, ...memoryGroups.other];
+          if (otherMems.length > 0) {
+            otherMems.slice(0, 3).forEach(m => {
+              memoriesContext += `  • ${m.content}\n`;
+            });
+          }
+          
+          memoriesContext += '\n⚠️ CRITICAL: When relevant to conversation, USE these memories NATURALLY!\n';
+          memoriesContext += '   - DON\'t say "I remember" or "you told me"\n';
+          memoriesContext += '   - Just KNOW these facts and reference them casually\n';
+          memoriesContext += '   - Especially mention safety-related info (allergies, health) when relevant!\n';
+          
+          console.log(`✅ Added ${relevantMemories.length} memories to context for user ${userId}`);
+        } else {
+          console.log(`ℹ️ No relevant memories found for user ${userId} message: "${message.substring(0, 50)}"`);
         }
       } catch (memErr) {
-        console.error('Memory recall error:', memErr);
+        console.error('❌ Memory recall error:', {
+          error: memErr.message,
+          stack: memErr.stack,
+          userId,
+          message: message.substring(0, 50)
+        });
+        // Continue without memories rather than failing the request
       }
     }
     
@@ -5486,6 +5657,96 @@ if (memorySystem && memorySystem.enabled) {
 }
 
 console.log("✅ Live User Monitoring & Manual Override System initialized");
+
+// ============================================================
+// 🧪 TESTING ENDPOINT FOR MEMORY RECALL
+// ============================================================
+
+app.get('/api/test-memory/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { message } = req.query;
+    
+    if (!message) {
+      return res.status(400).json({ error: 'message query parameter required' });
+    }
+    
+    if (!memorySystem || !memorySystem.enabled) {
+      return res.json({ 
+        error: 'Memory system not enabled',
+        memories: [] 
+      });
+    }
+    
+    const memories = await memorySystem.recallRelevantMemories(userId, message, {
+      limit: 10,
+      minImportance: 0.2
+    });
+    
+    res.json({
+      userId,
+      message,
+      memoriesFound: memories.length,
+      memories: memories.map(m => ({
+        content: m.content,
+        type: m.memory_type,
+        importance: m.importance,
+        similarity: m.semantic_similarity,
+        created: m.created_at
+      }))
+    });
+  } catch (error) {
+    console.error('Test memory error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================
+// 🔧 GLOBAL ERROR HANDLERS
+// ============================================================
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('❌ Global error handler:', {
+    error: err.message,
+    stack: err.stack,
+    url: req.url,
+    method: req.method,
+    body: req.body
+  });
+
+  // Don't leak error details in production
+  const isDev = process.env.NODE_ENV !== 'production';
+  
+  res.status(err.status || 500).json({
+    error: isDev ? err.message : 'Internal server error',
+    ...(isDev && { stack: err.stack })
+  });
+});
+
+// Handle 404s
+app.use((req, res) => {
+  res.status(404).json({ error: 'Route not found' });
+});
+
+// Unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Promise Rejection:', {
+    reason,
+    promise
+  });
+});
+
+// Uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', {
+    error: error.message,
+    stack: error.stack
+  });
+  
+  // Graceful shutdown
+  process.exit(1);
+});
 
 server.listen(PORT, () => {
   console.log("================================");
