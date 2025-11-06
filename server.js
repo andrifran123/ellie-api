@@ -164,21 +164,10 @@ function detectNSFW(message) {
 }
 
 // Check user subscription tier
+// Check user subscription tier
 async function getUserTier(userId, pool) {
   try {
-    // Check if user has active subscription
-    const subResult = await pool.query(
-  `SELECT status FROM subscriptions 
-   WHERE user_id = $1 AND status = 'active' 
-   ORDER BY created_at DESC LIMIT 1`,
-  [userId]
-);
-    
-    if (subResult.rows.length > 0) {
-      return 'paid';
-    }
-    
-    // Check relationship level as fallback
+    // Just check relationship level (simpler, always works)
     const relResult = await pool.query(
       `SELECT relationship_level FROM user_relationships 
        WHERE user_id = $1`,
@@ -195,7 +184,6 @@ async function getUserTier(userId, pool) {
     return 'free'; // Default to free on error
   }
 }
-
 // Call Groq API (Llama 70B)
 async function callGroq(messages, temperature = 0.8) {
   try {
