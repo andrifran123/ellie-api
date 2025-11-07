@@ -55,6 +55,198 @@ const stripeGifts = process.env.STRIPE_GIFT_SECRET_KEY
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 
+// ============================================================
+// 📦 TABLE INTEGRATION FUNCTIONS
+// ============================================================
+
+// 1. ACTIVE USER ENHANCEMENTS
+async function applyEnhancement(pool, userId, enhancementType, durationMinutes = 60) {
+  const expiresAt = new Date(Date.now() + durationMinutes * 60 * 1000);
+  await pool.query(
+    `INSERT INTO active_user_enhancements (user_id, enhancement_type, expires_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, enhancement_type) DO UPDATE SET expires_at = $3`,
+    [userId, enhancementType, expiresAt]
+  );
+  return { enhancementType, expiresAt };
+}
+
+async function getActiveEnhancements(pool, userId) {
+  await pool.query(`DELETE FROM active_user_enhancements WHERE user_id = $1 AND expires_at < NOW()`, [userId]);
+  const result = await pool.query(`SELECT * FROM active_user_enhancements WHERE user_id = $1 AND expires_at > NOW()`, [userId]);
+  return result.rows;
+}
+
+// 2. CONVERSATION MEMORIES
+async function saveConversationMemory(pool, userId, snippet, emotionalWeight = 0.5, tags = []) {
+  await pool.query(
+    `INSERT INTO conversation_memories (user_id, memory_snippet, emotional_weight, tags) VALUES ($1, $2, $3, $4)`,
+    [userId, snippet, emotionalWeight, tags]
+  );
+}
+
+async function getConversationMemories(pool, userId, limit = 10) {
+  const result = await pool.query(
+    `SELECT * FROM conversation_memories WHERE user_id = $1 ORDER BY emotional_weight DESC, created_at DESC LIMIT $2`,
+    [userId, limit]
+  );
+  return result.rows;
+}
+
+// 3. GIFT FUNCTIONS
+async function getGiftHint(pool, relationshipLevel) {
+  const result = await pool.query(
+    `SELECT hint_text, gift_id FROM gift_hint_templates WHERE relationship_level_required <= $1 ORDER BY RANDOM() LIMIT 1`,
+    [relationshipLevel]
+  );
+  return result.rows[0] || null;
+}
+
+async function updateGiftStatistics(pool, userId, giftId, amount) {
+  await pool.query(
+    `INSERT INTO gift_statistics (user_id, total_gifts_sent, total_spent, favorite_gift_id, last_gift_date)
+     VALUES ($1, 1, $2, $3, NOW())
+     ON CONFLICT (user_id) DO UPDATE
+     SET total_gifts_sent = gift_statistics.total_gifts_sent + 1,
+         total_spent = gift_statistics.total_spent + $2,
+         last_gift_date = NOW(),
+         avg_gift_value = (gift_statistics.total_spent + $2) / (gift_statistics.total_gifts_sent + 1),
+         updated_at = NOW()`,
+    [userId, amount, giftId]
+  );
+}
+
+async function getGiftStatistics(pool, userId) {
+  const result = await pool.query(`SELECT * FROM gift_statistics WHERE user_id = $1`, [userId]);
+  return result.rows[0] || null;
+}
+
+async function recordGiftHistory(pool, userId, giftId, giftName, amount, reaction, relationshipImpact) {
+  await pool.query(
+    `INSERT INTO user_gift_history (user_id, gift_id, gift_name, amount, ellie_reaction, relationship_impact)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [userId, giftId, giftName, amount, reaction, relationshipImpact]
+  );
+}
+
+async function getGiftHistory(pool, userId, limit = 20) {
+  const result = await pool.query(`SELECT * FROM user_gift_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`, [userId, limit]);
+  return result.rows;
+}
+
+// 4. OTHER FUNCTIONS
+async function logMemorySync(pool, userId, syncType, recordsProcessed) {
+  try {
+    await pool.query(`INSERT INTO memory_sync (user_id, sync_type, records_processed) VALUES ($1, $2, $3)`, [userId, syncType, recordsProcessed]);
+  } catch (error) {}
+}
+
+async function saveSpecialMessage(pool, userId, messageType, content, metadata = {}) {
+  await pool.query(`INSERT INTO messages (user_id, message_type, content, metadata) VALUES ($1, $2, $3, $4)`, [userId, messageType, content, JSON.stringify(metadata)]);
+}
+
+async function getUnreadMessages(pool, userId, messageType = null) {
+  const query = messageType
+    ? `SELECT * FROM messages WHERE user_id = $1 AND message_type = $2 AND read_at IS NULL ORDER BY created_at DESC`
+    : `SELECT * FROM messages WHERE user_id = $1 AND read_at IS NULL ORDER BY created_at DESC`;
+  const params = messageType ? [userId, messageType] : [userId];
+  const result = await pool.query(query, params);
+  return result.rows;
+}
+
+async function markMessageRead(pool, messageId) {
+  await pool.query(`UPDATE messages SET read_at = NOW() WHERE id = $1`, [messageId]);
+}
+
+async function logMemoryRecall(pool, userId, memoryId, context, success = true) {
+  try {
+    await pool.query(`INSERT INTO recall_log (user_id, memory_id, recall_context, recall_success) VALUES ($1, $2, $3, $4)`, [userId, memoryId, context, success]);
+  } catch (error) {}
+}
+
+async function getRecallStats(pool, userId, days = 7) {
+  const result = await pool.query(
+    `SELECT COUNT(*) as total_recalls, SUM(CASE WHEN recall_success THEN 1 ELSE 0 END) as successful_recalls,
+     COUNT(DISTINCT memory_id) as unique_memories_recalled FROM recall_log 
+     WHERE user_id = $1 AND created_at > NOW() - INTERVAL '${days} days'`,
+    [userId]
+  );
+  return result.rows[0];
+}
+
+async function makePromise(pool, userId, promiseText, promiseType = 'general', dueDate = null) {
+  const result = await pool.query(`INSERT INTO user_promises (user_id, promise_text, promise_type, due_date) VALUES ($1, $2, $3, $4) RETURNING id`, [userId, promiseText, promiseType, dueDate]);
+  return result.rows[0].id;
+}
+
+async function fulfillPromise(pool, promiseId) {
+  await pool.query(`UPDATE user_promises SET status = 'fulfilled', fulfilled_at = NOW() WHERE id = $1`, [promiseId]);
+}
+
+async function getPendingPromises(pool, userId) {
+  const result = await pool.query(`SELECT * FROM user_promises WHERE user_id = $1 AND status = 'pending' ORDER BY due_date ASC NULLS LAST, created_at ASC`, [userId]);
+  return result.rows;
+}
+
+async function updateUserState(pool, userId, updates) {
+  const { currentMood, isOnline, preferences, flags } = updates;
+  await pool.query(
+    `INSERT INTO user_state (user_id, current_mood, is_online, preferences, flags, updated_at)
+     VALUES ($1, $2, $3, $4, $5, NOW())
+     ON CONFLICT (user_id) DO UPDATE
+     SET current_mood = COALESCE($2, user_state.current_mood), is_online = COALESCE($3, user_state.is_online),
+         preferences = COALESCE($4, user_state.preferences), flags = COALESCE($5, user_state.flags),
+         last_seen = NOW(), updated_at = NOW()`,
+    [userId, currentMood || null, isOnline !== undefined ? isOnline : null,
+     preferences ? JSON.stringify(preferences) : null, flags ? JSON.stringify(flags) : null]
+  );
+}
+
+async function getUserState(pool, userId) {
+  const result = await pool.query(`SELECT * FROM user_state WHERE user_id = $1`, [userId]);
+  return result.rows[0] || null;
+}
+
+async function setUserOnline(pool, userId, isOnline = true) {
+  try {
+    await pool.query(`INSERT INTO user_state (user_id, is_online, last_seen) VALUES ($1, $2, NOW())
+     ON CONFLICT (user_id) DO UPDATE SET is_online = $2, last_seen = NOW()`, [userId, isOnline]);
+  } catch (error) {}
+}
+
+// INTEGRATION HELPERS
+async function detectAndSaveMemorableConversation(pool, userId, userMessage, ellieResponse) {
+  try {
+    const memorableKeywords = ['love', 'first time', 'never forget', 'remember when', 'important', 'special'];
+    const isMemorable = memorableKeywords.some(keyword => userMessage.toLowerCase().includes(keyword) || ellieResponse.toLowerCase().includes(keyword));
+    if (isMemorable) {
+      const snippet = `User: ${userMessage.substring(0, 100)}... | Ellie: ${ellieResponse.substring(0, 100)}...`;
+      await saveConversationMemory(pool, userId, snippet, 0.8, ['memorable', 'special']);
+    }
+  } catch (error) {}
+}
+
+async function enhancedGiftFlow(pool, userId, giftId, giftName, amount) {
+  await updateGiftStatistics(pool, userId, giftId, amount);
+  const reaction = "Thank you so much! This is beautiful! 💕";
+  const relationshipImpact = amount / 10;
+  await recordGiftHistory(pool, userId, giftId, giftName, amount, reaction, relationshipImpact);
+  if (amount >= 20) await applyEnhancement(pool, userId, 'response_quality_boost', 120);
+  return { reaction, relationshipImpact };
+}
+
+async function detectPromises(pool, userId, ellieResponse) {
+  try {
+    const promisePatterns = [/I (promise|swear|guarantee) (I will|I'll|to)/i, /I'll (definitely|surely|certainly)/i, /I will (remember|call|message|text|help)/i];
+    for (const pattern of promisePatterns) {
+      if (pattern.test(ellieResponse)) {
+        await makePromise(pool, userId, ellieResponse, 'auto_detected');
+        break;
+      }
+    }
+  } catch (error) {}
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -1977,6 +2169,144 @@ async function initDB() {
   await pool.query(`ALTER TABLE user_relationships ADD COLUMN IF NOT EXISTS total_gifts_value FLOAT DEFAULT 0;`);
   await pool.query(`ALTER TABLE user_relationships ADD COLUMN IF NOT EXISTS last_gift_received TIMESTAMP;`);
 
+  // ============================================================
+  // 🆕 NEW TABLES FOR ENHANCED FUNCTIONALITY
+  // ============================================================
+
+  // 1. Active User Enhancements
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS active_user_enhancements (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) REFERENCES user_relationships(user_id),
+      enhancement_type VARCHAR(100) NOT NULL,
+      multiplier FLOAT DEFAULT 1.5,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, enhancement_type)
+    )
+  `);
+
+  // 2. Conversation Memories
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversation_memories (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) NOT NULL,
+      conversation_id TEXT,
+      memory_snippet TEXT NOT NULL,
+      emotional_weight FLOAT DEFAULT 0.5,
+      tags TEXT[],
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS conv_memories_user_idx ON conversation_memories(user_id, created_at DESC);`);
+
+  // 3. Gift Hint Templates
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gift_hint_templates (
+      id SERIAL PRIMARY KEY,
+      hint_text TEXT NOT NULL,
+      gift_id VARCHAR(100) NOT NULL,
+      relationship_level_required INTEGER DEFAULT 0,
+      hint_type VARCHAR(50) DEFAULT 'subtle',
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  // 4. Gift Statistics
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gift_statistics (
+      user_id VARCHAR(100) PRIMARY KEY,
+      total_gifts_sent INTEGER DEFAULT 0,
+      total_spent FLOAT DEFAULT 0,
+      favorite_gift_id VARCHAR(100),
+      last_gift_date TIMESTAMP,
+      avg_gift_value FLOAT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  // 5. Memory Sync
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS memory_sync (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) NOT NULL,
+      sync_type VARCHAR(50) NOT NULL,
+      last_synced TIMESTAMP DEFAULT NOW(),
+      sync_status VARCHAR(50) DEFAULT 'success',
+      records_processed INTEGER DEFAULT 0
+    )
+  `);
+
+  // 6. Messages
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) NOT NULL,
+      message_type VARCHAR(50) DEFAULT 'chat',
+      content TEXT NOT NULL,
+      metadata JSONB,
+      read_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS messages_user_type_idx ON messages(user_id, message_type);`);
+
+  // 7. Recall Log
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS recall_log (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) NOT NULL,
+      memory_id INTEGER,
+      recall_context TEXT,
+      recall_success BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  // 8. User Gift History
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_gift_history (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) NOT NULL,
+      gift_id VARCHAR(100) NOT NULL,
+      gift_name TEXT,
+      amount FLOAT NOT NULL,
+      ellie_reaction TEXT,
+      relationship_impact FLOAT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  // 9. User Promises
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_promises (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) NOT NULL,
+      promise_text TEXT NOT NULL,
+      promise_type VARCHAR(50) DEFAULT 'general',
+      status VARCHAR(50) DEFAULT 'pending',
+      due_date TIMESTAMP,
+      fulfilled_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  // 10. User State
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_state (
+      user_id VARCHAR(100) PRIMARY KEY,
+      current_mood VARCHAR(50) DEFAULT 'neutral',
+      is_online BOOLEAN DEFAULT FALSE,
+      last_seen TIMESTAMP DEFAULT NOW(),
+      preferences JSONB DEFAULT '{}',
+      flags JSONB DEFAULT '{}',
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  console.log("✅ All 25 tables created (including 10 new enhanced tables)!");
   console.log("âœ“ Facts, Emotions, Users, Login codes, Subscriptions, Relationships tables ready");
 }
 
@@ -5859,6 +6189,281 @@ app.get('/api/test-memory/:userId', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+
+// ============================================================
+// 🆕 NEW TABLE API ENDPOINTS
+// ============================================================
+
+// 1. ENHANCEMENTS
+app.get('/api/enhancements/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const enhancements = await getActiveEnhancements(pool, userId);
+    res.json({ userId, enhancements, count: enhancements.length });
+  } catch (error) {
+    console.error('Get enhancements error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/enhancements/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { enhancementType, durationMinutes } = req.body;
+    const enhancement = await applyEnhancement(pool, userId, enhancementType, durationMinutes);
+    res.json({ success: true, enhancement });
+  } catch (error) {
+    console.error('Apply enhancement error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 2. CONVERSATION MEMORIES
+app.get('/api/conversation-memories/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const limit = parseInt(req.query.limit) || 10;
+    const memories = await getConversationMemories(pool, userId, limit);
+    res.json({ userId, memories, count: memories.length });
+  } catch (error) {
+    console.error('Get conversation memories error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/conversation-memories/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { snippet, emotionalWeight, tags } = req.body;
+    await saveConversationMemory(pool, userId, snippet, emotionalWeight, tags);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Save conversation memory error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 3. GIFT HINTS
+app.get('/api/gift-hint/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const relResult = await pool.query('SELECT relationship_level FROM user_relationships WHERE user_id = $1', [userId]);
+    const relationshipLevel = relResult.rows[0]?.relationship_level || 0;
+    const hint = await getGiftHint(pool, relationshipLevel);
+    res.json({
+      userId,
+      relationshipLevel,
+      hint: hint ? hint.hint_text : "I'm happy with anything you give me! 💕",
+      suggestedGift: hint?.gift_id
+    });
+  } catch (error) {
+    console.error('Get gift hint error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 4. GIFT STATISTICS
+app.get('/api/gift-stats/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const stats = await getGiftStatistics(pool, userId);
+    res.json({
+      userId,
+      stats: stats || { totalGiftsSent: 0, totalSpent: 0, avgGiftValue: 0, favoriteGift: null, lastGiftDate: null }
+    });
+  } catch (error) {
+    console.error('Get gift stats error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 5. GIFT HISTORY
+app.get('/api/gift-history/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const limit = parseInt(req.query.limit) || 20;
+    const history = await getGiftHistory(pool, userId, limit);
+    res.json({ userId, history, count: history.length });
+  } catch (error) {
+    console.error('Get gift history error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 6. MESSAGES
+app.get('/api/messages/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { messageType } = req.query;
+    const messages = await getUnreadMessages(pool, userId, messageType);
+    res.json({ userId, messages, count: messages.length });
+  } catch (error) {
+    console.error('Get messages error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/messages/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { messageType, content, metadata } = req.body;
+    await saveSpecialMessage(pool, userId, messageType, content, metadata);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Save message error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/messages/:messageId/read', async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    await markMessageRead(pool, parseInt(messageId));
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Mark message read error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 7. RECALL STATS
+app.get('/api/recall-stats/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const days = parseInt(req.query.days) || 7;
+    const stats = await getRecallStats(pool, userId, days);
+    res.json({ userId, period: `${days} days`, stats });
+  } catch (error) {
+    console.error('Get recall stats error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 8. PROMISES
+app.get('/api/promises/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const promises = await getPendingPromises(pool, userId);
+    res.json({ userId, promises, count: promises.length });
+  } catch (error) {
+    console.error('Get promises error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/promises/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { promiseText, promiseType, dueDate } = req.body;
+    const promiseId = await makePromise(pool, userId, promiseText, promiseType, dueDate);
+    res.json({ success: true, promiseId });
+  } catch (error) {
+    console.error('Create promise error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/promises/:promiseId/fulfill', async (req, res) => {
+  try {
+    const { promiseId } = req.params;
+    await fulfillPromise(pool, parseInt(promiseId));
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Fulfill promise error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 9. USER STATE
+app.get('/api/user-state/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const state = await getUserState(pool, userId);
+    res.json({
+      userId,
+      state: state || { currentMood: 'neutral', isOnline: false, lastSeen: null, preferences: {}, flags: {} }
+    });
+  } catch (error) {
+    console.error('Get user state error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/user-state/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const updates = req.body;
+    await updateUserState(pool, userId, updates);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update user state error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/user-state/:userId/online', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { isOnline } = req.body;
+    await setUserOnline(pool, userId, isOnline);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Set user online error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 10. DASHBOARD - Complete user profile
+app.get('/api/dashboard/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const [
+      relationship,
+      state,
+      giftStats,
+      giftHistory,
+      promises,
+      enhancements,
+      conversationMemories,
+      unreadMessages,
+      recallStats
+    ] = await Promise.all([
+      pool.query('SELECT * FROM user_relationships WHERE user_id = $1', [userId]),
+      getUserState(pool, userId),
+      getGiftStatistics(pool, userId),
+      getGiftHistory(pool, userId, 5),
+      getPendingPromises(pool, userId),
+      getActiveEnhancements(pool, userId),
+      getConversationMemories(pool, userId, 5),
+      getUnreadMessages(pool, userId),
+      getRecallStats(pool, userId, 7)
+    ]);
+    
+    res.json({
+      userId,
+      relationship: relationship.rows[0],
+      currentState: state,
+      gifts: {
+        statistics: giftStats,
+        recentHistory: giftHistory
+      },
+      promises: promises,
+      activeEnhancements: enhancements,
+      memorableConversations: conversationMemories,
+      unreadMessages: unreadMessages,
+      memoryRecallStats: recallStats
+    });
+    
+  } catch (error) {
+    console.error('Dashboard error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+console.log("✅ All new table endpoints initialized!");
+
 
 // ============================================================
 // 🔧 GLOBAL ERROR HANDLERS
