@@ -6808,7 +6808,7 @@ app.get('/api/memory-queue/status/:userId', (req, res) => {
 
 
 // ============================================================
-// 🔧 GLOBAL ERROR HANDLERS
+// 🔧 GLOBAL ERROR HANDLERS!
 // ============================================================
 
 // Error handling middleware
