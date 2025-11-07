@@ -4122,14 +4122,12 @@ app.post("/api/chat", async (req, res) => {
       calculateEmotionalInvestment(userId, message)
     ]);
     
-    // Update relationship level based on interaction
-    await updateRelationshipLevel(userId, 1); // +1 point per message
-    
-    // Get current mood
-    const mood = await getMoodVariance(userId);
-    
-    // Check for jealousy triggers
-    const jealousyTrigger = await getJealousyTrigger(userId);
+    // ⚡ PARALLEL: Run these 3 operations at the same time instead of sequentially
+    const [_, mood, jealousyTrigger] = await Promise.all([
+      updateRelationshipLevel(userId, 1),
+      getMoodVariance(userId),
+      getJealousyTrigger(userId)
+    ]);
     
     // 🧠 RECALL RELEVANT MEMORIES (if memory system enabled)
     let memoriesContext = '';
@@ -4231,14 +4229,19 @@ app.post("/api/chat", async (req, res) => {
     // ⚡ MOVED TO BACKGROUND:     if (extractedFacts?.length) await saveFacts(userId, extractedFacts, message);
     // ⚡ MOVED TO BACKGROUND:     if (overallEmotion) await saveEmotion(userId, overallEmotion, message);
 
-    const history = await getHistory(userId);
+    // ⚡ PARALLEL: Get history, language, and enrich message at the same time
+    const [history, prefCode, enrichedMessage] = await Promise.all([
+      getHistory(userId),
+      getPreferredLanguage(userId),
+      enrichMessageWithVideoContext(message, userId)
+    ]);
     
     // Update system prompt with dynamic personality
     if (history[0]?.role === 'system') {
       history[0].content = personalityInstructions;
     }
     
-    history.push({ role: "user", content: await enrichMessageWithVideoContext(message, userId) });
+    history.push({ role: "user", content: enrichedMessage });
 
     // 💾 Store user message in conversation_history database
     try {
@@ -4251,7 +4254,6 @@ app.post("/api/chat", async (req, res) => {
       console.warn(`⚠️ Could not store user message:`, historyErr.message);
     }
 
-    const prefCode = await getPreferredLanguage(userId);
     const langLabel = SUPPORTED_LANGUAGES[prefCode] || "English";
     let finalSystemMsg = personalityInstructions;
     if (prefCode !== "en") {
