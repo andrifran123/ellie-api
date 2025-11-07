@@ -2277,7 +2277,7 @@ async function initDB() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;`);
   
-  // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PHASE 1: UUID + Subscription Tracking
+  // ✓ PHASE 1: UUID + Subscription Tracking
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS user_id UUID DEFAULT gen_random_uuid();`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_tier TEXT DEFAULT 'none';`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT DEFAULT 'inactive';`);
@@ -2290,8 +2290,15 @@ async function initDB() {
   // Ensure user_id is unique and has index
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_user_id_unique ON users(user_id);`);
   
-  // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Migration: Generate UUIDs for existing users without one
-  await pool.query(`UPDATE users SET user_id = gen_random_uuid() WHERE user_id IS NULL;`);
+  // ✓ Migration: Generate UUIDs for existing users without one (with error handling)
+  try {
+    await pool.query(`UPDATE users SET user_id = gen_random_uuid() WHERE user_id IS NULL;`);
+  } catch (migrationErr) {
+    // Ignore if user_id column doesn't exist yet (will be created on next run)
+    if (migrationErr.code !== '42703') {
+      console.warn('⚠️ User UUID migration warning:', migrationErr.message);
+    }
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS login_codes (
