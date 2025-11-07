@@ -2414,7 +2414,8 @@ async function initWithRetry({ attempts = 10, baseMs = 1000, maxMs = 30000 } = {
   return false;
 }
 
-// DB initialization will happen before server starts (see startServer() at end of file)
+// start init (non-blocking)
+initWithRetry().catch((e) => console.error("DB Init Error:", e));
 // ============================================================
 // PHASE 2: SUBSCRIPTION TIER SYSTEM
 // ============================================================
@@ -6752,80 +6753,38 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
-// ============================================================
-// 🚀 PRODUCTION-SAFE STARTUP SEQUENCE
-// ============================================================
-async function startServer() {
+server.listen(PORT, () => {
   console.log("================================");
-  console.log("⏳ Initializing database...");
-  console.log("================================");
-
-  // Step 1: Initialize database FIRST
-  const dbReady = await initWithRetry();
-  
-  if (!dbReady) {
-    console.error("================================");
-    console.error("❌ FATAL: Database initialization failed after all retries");
-    console.error("❌ Server cannot start safely without database");
-    console.error("================================");
-    console.error("🔧 Troubleshooting steps:");
-    console.error("   1. Check your DATABASE_URL in .env");
-    console.error("   2. Verify Supabase/Postgres is accessible");
-    console.error("   3. Run the fix-missing-columns.sql script");
-    console.error("   4. Check Supabase logs for errors");
-    console.error("================================");
-    process.exit(1);
+  console.log(`Â¸Ãƒâ€¦Ã‚Â¡ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Ellie API running at http://localhost:${PORT}`);
+  console.log(`Â¸Ãƒâ€¦Ã‚Â½Ãƒâ€šÃ‚Â¤ WebSocket voice at ws://localhost:${PORT}/ws/voice`);
+  console.log(`Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¦Ã‚Â¾ Phone WebSocket at ws://localhost:${PORT}/ws/phone`);
+  if (BRAVE_API_KEY) {
+    console.log("Â¸Ãƒâ€¦Ã¢â‚¬â„¢Ãƒâ€šÃ‚Â Live web search: ENABLED (Brave)");
+  } else {
+    console.log("Â¸Ãƒâ€¦Ã¢â‚¬â„¢Ãƒâ€šÃ‚Â Live web search: DISABLED (set BRAVE_API_KEY to enable)");
   }
-
-  // Step 2: Only NOW start accepting requests
-  server.listen(PORT, () => {
-    console.log("================================");
-    console.log("✅ DATABASE READY");
-    console.log("================================");
-    console.log(`🚀 Ellie API running at http://localhost:${PORT}`);
-    console.log(`🎤 WebSocket voice at ws://localhost:${PORT}/ws/voice`);
-    console.log(`📞 Phone WebSocket at ws://localhost:${PORT}/ws/phone`);
-    
-    if (BRAVE_API_KEY) {
-      console.log("🔍 Live web search: ENABLED (Brave)");
-    } else {
-      console.log("🔍 Live web search: DISABLED (set BRAVE_API_KEY to enable)");
-    }
-    
-    if (stripeGifts) {
-      console.log("💝 Gift System: ENABLED (Stripe configured)");
-    } else {
-      console.log("💝 Gift System: DISABLED (set STRIPE_GIFT_SECRET_KEY to enable)");
-    }
-    
-    if (memorySystem && memorySystem.enabled) {
-      console.log("🧠 Memory System: ENABLED (Supabase configured)");
-      console.log("📦 Memory Queue: PER-USER (parallel processing for multiple users)");
-    } else {
-      console.log("🧠 Memory System: DISABLED (set SUPABASE_URL and SUPABASE_KEY to enable)");
-    }
-    
-    if (GROQ_API_KEY && OPENROUTER_API_KEY) {
-      console.log("🔀 Hybrid Routing: ENABLED (Groq + OpenRouter)");
-      console.log("   ├─ Free tier: Groq Llama 70B (FREE)");
-      console.log("   ├─ Paid normal: Groq Llama 70B (FREE)");
-      console.log("   └─ Paid NSFW: OpenRouter Mythomax 13B");
-    } else if (GROQ_API_KEY) {
-      console.log("🔀 Hybrid Routing: PARTIAL (Groq only - no NSFW model)");
-    } else if (OPENROUTER_API_KEY) {
-      console.log("🔀 Hybrid Routing: PARTIAL (OpenRouter only - no free tier)");
-    } else {
-      console.log("🔀 Hybrid Routing: DISABLED (using OpenAI fallback)");
-    }
-    
-    console.log("================================");
-    console.log("✅ SERVER READY - Safe to accept requests!");
-    console.log("================================");
-  });
-}
-
-// Start the server with proper initialization
-startServer().catch((error) => {
-  console.error("❌ FATAL: Server startup failed:", error);
-  process.exit(1);
+  if (stripeGifts) {
+    console.log("💝 Gift System: ENABLED (Stripe configured)");
+  } else {
+    console.log("💝 Gift System: DISABLED (set STRIPE_GIFT_SECRET_KEY to enable)");
+  }
+  if (memorySystem && memorySystem.enabled) {
+    console.log("🧠 Memory System: ENABLED (Supabase configured)");
+    console.log("📦 Memory Queue: PER-USER (parallel processing for multiple users)");
+  } else {
+    console.log("🧠 Memory System: DISABLED (set SUPABASE_URL and SUPABASE_KEY to enable)");
+  }
+  if (GROQ_API_KEY && OPENROUTER_API_KEY) {
+    console.log("🔀 Hybrid Routing: ENABLED (Groq + OpenRouter)");
+    console.log("   ├─ Free tier: Groq Llama 70B (FREE)");
+    console.log("   ├─ Paid normal: Groq Llama 70B (FREE)");
+    console.log("   └─ Paid NSFW: OpenRouter Mythomax 13B");
+  } else if (GROQ_API_KEY) {
+    console.log("🔀 Hybrid Routing: PARTIAL (Groq only - no NSFW model)");
+  } else if (OPENROUTER_API_KEY) {
+    console.log("🔀 Hybrid Routing: PARTIAL (OpenRouter only - no free tier)");
+  } else {
+    console.log("🔀 Hybrid Routing: DISABLED (using OpenAI fallback)");
+  }
+  console.log("================================");
 });
