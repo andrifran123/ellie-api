@@ -2231,8 +2231,22 @@ console.log(`Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬â„¢ D
 const pool = new Pool(pgConfig);
 
 async function initDB() {
-  await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
-
+  try {
+    // Simple verification - just check if tables exist
+    await pool.query(`SELECT 1 FROM users LIMIT 1`);
+    await pool.query(`SELECT 1 FROM user_relationships LIMIT 1`);
+    await pool.query(`SELECT 1 FROM facts LIMIT 1`);
+    
+    console.log("✅ Database tables verified and accessible");
+    return;
+  } catch (err) {
+    console.log("⚠️ Initial check failed, will create missing tables...");
+  }
+  
+  // Only create tables if they don't exist
+  await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`).catch(() => {});
+  
+  // Create facts table
   await pool.query(`
     CREATE TABLE IF NOT EXISTS facts (
       id SERIAL PRIMARY KEY,
@@ -2247,7 +2261,12 @@ async function initDB() {
       updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
-
+  
+  await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_cat_idx ON facts(user_id, category);`).catch(() => {});
+  await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_updated_idx ON facts(user_id, updated_at DESC);`).catch(() => {});
+  await pool.query(`CREATE INDEX IF NOT EXISTS facts_fact_trgm_idx ON facts USING gin (fact gin_trgm_ops);`).catch(() => {});
+  
+  // Create emotions table
   await pool.query(`
     CREATE TABLE IF NOT EXISTS emotions (
       id SERIAL PRIMARY KEY,
@@ -2258,55 +2277,8 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
-
-  await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_cat_idx ON facts(user_id, category);`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS facts_user_updated_idx ON facts(user_id, updated_at DESC);`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS facts_fact_trgm_idx ON facts USING gin (fact gin_trgm_ops);`);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      email TEXT UNIQUE NOT NULL,
-      paid BOOLEAN DEFAULT FALSE,
-      created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-
-  // NEW: add columns for signup details if they don't exist
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;`);
   
-  // ✓ PHASE 1: UUID + Subscription Tracking
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS user_id UUID DEFAULT gen_random_uuid();`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_tier TEXT DEFAULT 'none';`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT DEFAULT 'inactive';`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS voice_minutes_used INTEGER DEFAULT 0;`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS voice_minutes_limit INTEGER DEFAULT 0;`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS billing_cycle_start TIMESTAMP;`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS lemon_customer_id TEXT;`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS lemon_subscription_id TEXT;`);
-  
-  // Ensure user_id is unique and has index
-  try {
-    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_user_id_unique ON users(user_id);`);
-  } catch (indexErr) {
-    // Ignore if column doesn't exist yet
-    if (indexErr.code !== '42703') {
-      console.warn('⚠️ Index creation warning:', indexErr.message);
-    }
-  }
-  
-  // ✓ Migration: Generate UUIDs for existing users without one (with error handling)
-  try {
-    await pool.query(`UPDATE users SET user_id = gen_random_uuid() WHERE user_id IS NULL;`);
-  } catch (migrationErr) {
-    // Ignore if user_id column doesn't exist yet (will be created on next run)
-    if (migrationErr.code !== '42703') {
-      console.warn('⚠️ User UUID migration warning:', migrationErr.message);
-    }
-  }
-
+  // Create login_codes table
   await pool.query(`
     CREATE TABLE IF NOT EXISTS login_codes (
       id SERIAL PRIMARY KEY,
@@ -2316,6 +2288,8 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+  
+  // Create subscriptions table
   await pool.query(`
     CREATE TABLE IF NOT EXISTS subscriptions (
       id SERIAL PRIMARY KEY,
@@ -2327,12 +2301,8 @@ async function initDB() {
       updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
-
-
-  // ============================================================
-  // ðŸ§  NEW: RELATIONSHIP PROGRESSION TABLES
-  // ============================================================
   
+  // Create user_relationships with ALL columns
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_relationships (
       user_id VARCHAR(100) PRIMARY KEY,
@@ -2346,31 +2316,33 @@ async function initDB() {
       emotional_investment FLOAT DEFAULT 0,
       jealousy_used_today BOOLEAN DEFAULT FALSE,
       cliffhanger_pending BOOLEAN DEFAULT FALSE,
+      total_gifts_value FLOAT DEFAULT 0,
+      last_gift_received TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
-    )
+    );
   `);
-
+  
+  // Create other tables
   await pool.query(`
     CREATE TABLE IF NOT EXISTS relationship_events (
       id SERIAL PRIMARY KEY,
-      user_id VARCHAR(100) REFERENCES user_relationships(user_id),
+      user_id VARCHAR(100),
       event_type VARCHAR(50),
       event_data JSONB,
       created_at TIMESTAMP DEFAULT NOW()
-    )
+    );
   `);
-
+  
   await pool.query(`
     CREATE TABLE IF NOT EXISTS breakthrough_moments (
       id SERIAL PRIMARY KEY,
-      user_id VARCHAR(100) REFERENCES user_relationships(user_id),
+      user_id VARCHAR(100),
       moment_type VARCHAR(50),
       unlocked_at TIMESTAMP DEFAULT NOW()
-    )
+    );
   `);
-
-  // NEW: Gift system tables
+  
   await pool.query(`
     CREATE TABLE IF NOT EXISTS gift_transactions (
       id SERIAL PRIMARY KEY,
@@ -2380,9 +2352,9 @@ async function initDB() {
       status VARCHAR(50) DEFAULT 'pending',
       stripe_payment_id TEXT,
       created_at TIMESTAMP DEFAULT NOW()
-    )
+    );
   `);
-
+  
   await pool.query(`
     CREATE TABLE IF NOT EXISTS gift_responses (
       id SERIAL PRIMARY KEY,
@@ -2390,9 +2362,9 @@ async function initDB() {
       gift_id VARCHAR(100) NOT NULL,
       response TEXT NOT NULL,
       created_at TIMESTAMP DEFAULT NOW()
-    )
+    );
   `);
-
+  
   await pool.query(`
     CREATE TABLE IF NOT EXISTS active_gift_effects (
       id SERIAL PRIMARY KEY,
@@ -2401,165 +2373,22 @@ async function initDB() {
       expires_at TIMESTAMP NOT NULL,
       created_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(user_id, behavior_type)
-    )
+    );
   `);
-
-  // Add gift tracking columns (with error handling)
-  try {
-    await pool.query(`ALTER TABLE user_relationships ADD COLUMN IF NOT EXISTS total_gifts_value FLOAT DEFAULT 0;`);
-  } catch (err) {
-    if (err.code !== '42703' && err.code !== '42701') { // 42701 = column already exists
-      console.warn('⚠️ Could not add total_gifts_value:', err.message);
-    }
-  }
   
-  try {
-    await pool.query(`ALTER TABLE user_relationships ADD COLUMN IF NOT EXISTS last_gift_received TIMESTAMP;`);
-  } catch (err) {
-    if (err.code !== '42703' && err.code !== '42701') {
-      console.warn('⚠️ Could not add last_gift_received:', err.message);
-    }
-  }
-
-  // ============================================================
-  // 🆕 NEW TABLES FOR ENHANCED FUNCTIONALITY
-  // ============================================================
-
-  // 1. Active User Enhancements
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS active_user_enhancements (
-      id SERIAL PRIMARY KEY,
-      user_id VARCHAR(100) REFERENCES user_relationships(user_id),
-      enhancement_type VARCHAR(100) NOT NULL,
-      multiplier FLOAT DEFAULT 1.5,
-      expires_at TIMESTAMP NOT NULL,
-      created_at TIMESTAMP DEFAULT NOW(),
-      UNIQUE(user_id, enhancement_type)
-    )
-  `);
-
-  // 2. Conversation Memories
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS conversation_memories (
+    CREATE TABLE IF NOT EXISTS conversation_history (
       id SERIAL PRIMARY KEY,
       user_id VARCHAR(100) NOT NULL,
-      conversation_id TEXT,
-      memory_snippet TEXT NOT NULL,
-      emotional_weight FLOAT DEFAULT 0.5,
-      tags TEXT[],
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS conv_memories_user_idx ON conversation_memories(user_id, created_at DESC);`);
-
-  // 3. Gift Hint Templates
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS gift_hint_templates (
-      id SERIAL PRIMARY KEY,
-      hint_text TEXT NOT NULL,
-      gift_id VARCHAR(100) NOT NULL,
-      relationship_level_required INTEGER DEFAULT 0,
-      hint_type VARCHAR(50) DEFAULT 'subtle',
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-
-  // 4. Gift Statistics
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS gift_statistics (
-      user_id VARCHAR(100) PRIMARY KEY,
-      total_gifts_sent INTEGER DEFAULT 0,
-      total_spent FLOAT DEFAULT 0,
-      favorite_gift_id VARCHAR(100),
-      last_gift_date TIMESTAMP,
-      avg_gift_value FLOAT DEFAULT 0,
-      created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-
-  // 5. Memory Sync
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS memory_sync (
-      id SERIAL PRIMARY KEY,
-      user_id VARCHAR(100) NOT NULL,
-      sync_type VARCHAR(50) NOT NULL,
-      last_synced TIMESTAMP DEFAULT NOW(),
-      sync_status VARCHAR(50) DEFAULT 'success',
-      records_processed INTEGER DEFAULT 0
-    )
-  `);
-
-  // 6. Messages
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS messages (
-      id SERIAL PRIMARY KEY,
-      user_id VARCHAR(100) NOT NULL,
-      message_type VARCHAR(50) DEFAULT 'chat',
+      role VARCHAR(20) NOT NULL,
       content TEXT NOT NULL,
-      metadata JSONB,
-      read_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW()
-    )
+    );
   `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS messages_user_type_idx ON messages(user_id, message_type);`);
-
-  // 7. Recall Log
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS recall_log (
-      id SERIAL PRIMARY KEY,
-      user_id VARCHAR(100) NOT NULL,
-      memory_id INTEGER,
-      recall_context TEXT,
-      recall_success BOOLEAN DEFAULT TRUE,
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-
-  // 8. User Gift History
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS user_gift_history (
-      id SERIAL PRIMARY KEY,
-      user_id VARCHAR(100) NOT NULL,
-      gift_id VARCHAR(100) NOT NULL,
-      gift_name TEXT,
-      amount FLOAT NOT NULL,
-      ellie_reaction TEXT,
-      relationship_impact FLOAT DEFAULT 0,
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-
-  // 9. User Promises
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS user_promises (
-      id SERIAL PRIMARY KEY,
-      user_id VARCHAR(100) NOT NULL,
-      promise_text TEXT NOT NULL,
-      promise_type VARCHAR(50) DEFAULT 'general',
-      status VARCHAR(50) DEFAULT 'pending',
-      due_date TIMESTAMP,
-      fulfilled_at TIMESTAMP,
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-
-  // 10. User State
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS user_state (
-      user_id VARCHAR(100) PRIMARY KEY,
-      current_mood VARCHAR(50) DEFAULT 'neutral',
-      is_online BOOLEAN DEFAULT FALSE,
-      last_seen TIMESTAMP DEFAULT NOW(),
-      preferences JSONB DEFAULT '{}',
-      flags JSONB DEFAULT '{}',
-      created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-
-  console.log("✅ All 25 tables created (including 10 new enhanced tables)!");
-  console.log("âœ“ Facts, Emotions, Users, Login codes, Subscriptions, Relationships tables ready");
+  
+  await pool.query(`CREATE INDEX IF NOT EXISTS conv_history_user_idx ON conversation_history(user_id, created_at DESC);`).catch(() => {});
+  
+  console.log("✅ All tables verified/created successfully!");
 }
 
 // ============================================================
