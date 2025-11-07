@@ -2564,8 +2564,7 @@ async function initWithRetry({ attempts = 10, baseMs = 1000, maxMs = 30000 } = {
   return false;
 }
 
-// start init (non-blocking)
-initWithRetry().catch((e) => console.error("DB Init Error:", e));
+// DB initialization will happen before server starts (see startServer() at end of file)
 // ============================================================
 // PHASE 2: SUBSCRIPTION TIER SYSTEM
 // ============================================================
@@ -2775,21 +2774,70 @@ async function addExtraMinutes(userId, minutes) {
 // ============================================================
 
 async function getUserRelationship(userId) {
-  const { rows } = await pool.query(
-    `SELECT * FROM user_relationships WHERE user_id = $1`,
-    [userId]
-  );
-  
-  if (!rows[0]) {
-    // Create new relationship
-    await pool.query(
-      `INSERT INTO user_relationships (user_id) VALUES ($1)`,
+  try {
+    // Try to get existing relationship
+    const { rows } = await pool.query(
+      `SELECT * FROM user_relationships WHERE user_id = $1`,
       [userId]
     );
-    return getUserRelationship(userId);
+    
+    if (rows[0]) {
+      return rows[0];
+    }
+    
+    // If not found, create it using INSERT ... ON CONFLICT
+    // This handles race conditions where multiple requests try to create simultaneously
+    await pool.query(
+      `INSERT INTO user_relationships (user_id) 
+       VALUES ($1)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [userId]
+    );
+    
+    // Now fetch the record (whether we created it or another request did)
+    const result = await pool.query(
+      `SELECT * FROM user_relationships WHERE user_id = $1`,
+      [userId]
+    );
+    
+    return result.rows[0];
+    
+  } catch (error) {
+    console.error('❌ Error in getUserRelationship:', error.message);
+    
+    // Try one more time to fetch
+    try {
+      const { rows } = await pool.query(
+        `SELECT * FROM user_relationships WHERE user_id = $1`,
+        [userId]
+      );
+      
+      if (rows[0]) {
+        return rows[0];
+      }
+    } catch (retryError) {
+      console.error('❌ Retry failed in getUserRelationship:', retryError.message);
+    }
+    
+    // Return a default object so the app doesn't crash
+    return {
+      user_id: userId,
+      relationship_level: 0,
+      current_stage: 'STRANGER',
+      last_interaction: new Date(),
+      total_interactions: 0,
+      streak_days: 0,
+      longest_streak: 0,
+      last_mood: 'normal',
+      emotional_investment: 0,
+      jealousy_used_today: false,
+      cliffhanger_pending: false,
+      total_gifts_value: 0,
+      last_gift_received: null,
+      created_at: new Date(),
+      updated_at: new Date()
+    };
   }
-  
-  return rows[0];
 }
 
 async function enrichMessageWithVideoContext(message, userId) {
@@ -6808,7 +6856,7 @@ app.get('/api/memory-queue/status/:userId', (req, res) => {
 
 
 // ============================================================
-// 🔧 GLOBAL ERROR HANDLERS
+// 🔧 GLOBAL ERROR HANDLERS!
 // ============================================================
 
 // Error handling middleware
@@ -6854,38 +6902,80 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
-server.listen(PORT, () => {
+// ============================================================
+// 🚀 PRODUCTION-SAFE STARTUP SEQUENCE
+// ============================================================
+async function startServer() {
   console.log("================================");
-  console.log(`Â¸Ãƒâ€¦Ã‚Â¡ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Ellie API running at http://localhost:${PORT}`);
-  console.log(`Â¸Ãƒâ€¦Ã‚Â½Ãƒâ€šÃ‚Â¤ WebSocket voice at ws://localhost:${PORT}/ws/voice`);
-  console.log(`Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¦Ã‚Â¾ Phone WebSocket at ws://localhost:${PORT}/ws/phone`);
-  if (BRAVE_API_KEY) {
-    console.log("Â¸Ãƒâ€¦Ã¢â‚¬â„¢Ãƒâ€šÃ‚Â Live web search: ENABLED (Brave)");
-  } else {
-    console.log("Â¸Ãƒâ€¦Ã¢â‚¬â„¢Ãƒâ€šÃ‚Â Live web search: DISABLED (set BRAVE_API_KEY to enable)");
-  }
-  if (stripeGifts) {
-    console.log("💝 Gift System: ENABLED (Stripe configured)");
-  } else {
-    console.log("💝 Gift System: DISABLED (set STRIPE_GIFT_SECRET_KEY to enable)");
-  }
-  if (memorySystem && memorySystem.enabled) {
-    console.log("🧠 Memory System: ENABLED (Supabase configured)");
-    console.log("📦 Memory Queue: PER-USER (parallel processing for multiple users)");
-  } else {
-    console.log("🧠 Memory System: DISABLED (set SUPABASE_URL and SUPABASE_KEY to enable)");
-  }
-  if (GROQ_API_KEY && OPENROUTER_API_KEY) {
-    console.log("🔀 Hybrid Routing: ENABLED (Groq + OpenRouter)");
-    console.log("   ├─ Free tier: Groq Llama 70B (FREE)");
-    console.log("   ├─ Paid normal: Groq Llama 70B (FREE)");
-    console.log("   └─ Paid NSFW: OpenRouter Mythomax 13B");
-  } else if (GROQ_API_KEY) {
-    console.log("🔀 Hybrid Routing: PARTIAL (Groq only - no NSFW model)");
-  } else if (OPENROUTER_API_KEY) {
-    console.log("🔀 Hybrid Routing: PARTIAL (OpenRouter only - no free tier)");
-  } else {
-    console.log("🔀 Hybrid Routing: DISABLED (using OpenAI fallback)");
-  }
+  console.log("⏳ Initializing database...");
   console.log("================================");
+
+  // Step 1: Initialize database FIRST
+  const dbReady = await initWithRetry();
+  
+  if (!dbReady) {
+    console.error("================================");
+    console.error("❌ FATAL: Database initialization failed after all retries");
+    console.error("❌ Server cannot start safely without database");
+    console.error("================================");
+    console.error("🔧 Troubleshooting steps:");
+    console.error("   1. Check your DATABASE_URL in .env");
+    console.error("   2. Verify Supabase/Postgres is accessible");
+    console.error("   3. Run the fix-missing-columns.sql script");
+    console.error("   4. Check Supabase logs for errors");
+    console.error("================================");
+    process.exit(1);
+  }
+
+  // Step 2: Only NOW start accepting requests
+  server.listen(PORT, () => {
+    console.log("================================");
+    console.log("✅ DATABASE READY");
+    console.log("================================");
+    console.log(`🚀 Ellie API running at http://localhost:${PORT}`);
+    console.log(`🎤 WebSocket voice at ws://localhost:${PORT}/ws/voice`);
+    console.log(`📞 Phone WebSocket at ws://localhost:${PORT}/ws/phone`);
+    
+    if (BRAVE_API_KEY) {
+      console.log("🔍 Live web search: ENABLED (Brave)");
+    } else {
+      console.log("🔍 Live web search: DISABLED (set BRAVE_API_KEY to enable)");
+    }
+    
+    if (stripeGifts) {
+      console.log("💝 Gift System: ENABLED (Stripe configured)");
+    } else {
+      console.log("💝 Gift System: DISABLED (set STRIPE_GIFT_SECRET_KEY to enable)");
+    }
+    
+    if (memorySystem && memorySystem.enabled) {
+      console.log("🧠 Memory System: ENABLED (Supabase configured)");
+      console.log("📦 Memory Queue: PER-USER (parallel processing for multiple users)");
+    } else {
+      console.log("🧠 Memory System: DISABLED (set SUPABASE_URL and SUPABASE_KEY to enable)");
+    }
+    
+    if (GROQ_API_KEY && OPENROUTER_API_KEY) {
+      console.log("🔀 Hybrid Routing: ENABLED (Groq + OpenRouter)");
+      console.log("   ├─ Free tier: Groq Llama 70B (FREE)");
+      console.log("   ├─ Paid normal: Groq Llama 70B (FREE)");
+      console.log("   └─ Paid NSFW: OpenRouter Mythomax 13B");
+    } else if (GROQ_API_KEY) {
+      console.log("🔀 Hybrid Routing: PARTIAL (Groq only - no NSFW model)");
+    } else if (OPENROUTER_API_KEY) {
+      console.log("🔀 Hybrid Routing: PARTIAL (OpenRouter only - no free tier)");
+    } else {
+      console.log("🔀 Hybrid Routing: DISABLED (using OpenAI fallback)");
+    }
+    
+    console.log("================================");
+    console.log("✅ SERVER READY - Safe to accept requests!");
+    console.log("================================");
+  });
+}
+
+// Start the server with proper initialization
+startServer().catch((error) => {
+  console.error("❌ FATAL: Server startup failed:", error);
+  process.exit(1);
 });
