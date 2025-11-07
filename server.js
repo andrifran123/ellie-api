@@ -51,6 +51,33 @@ const stripeGifts = process.env.STRIPE_GIFT_SECRET_KEY
 
 
 // ============================================================
+// 🚫 ASTERISK ACTION FILTER
+// ============================================================
+
+/**
+ * Removes asterisk-based actions like *sighs*, *virtual hug*, etc.
+ * Common in Llama models but unwanted in professional chat.
+ */
+function filterAsteriskActions(text) {
+  if (!text) return text;
+  
+  // Remove all text between asterisks
+  let filtered = text.replace(/\*[^*]+\*/g, '');
+  
+  // Clean up multiple spaces
+  filtered = filtered.replace(/\s{2,}/g, ' ');
+  
+  // Clean up line spacing
+  filtered = filtered.replace(/^\s+|\s+$/gm, '');
+  
+  // Remove empty lines
+  filtered = filtered.split('\n').filter(line => line.trim()).join('\n');
+  
+  return filtered.trim();
+}
+
+
+// ============================================================
 // 🧠 ADVANCED MEMORY SYSTEM IMPORTS
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
@@ -395,7 +422,9 @@ async function callGroq(messages, temperature = 0.8) {
     }
     
     const data = await response.json();
-    return data.choices[0].message.content;
+    const rawContent = data.choices[0].message.content;
+    const filtered = filterAsteriskActions(rawContent);
+    return filtered;
   } catch (error) {
     console.error('Groq API call failed:', error);
     throw error;
@@ -425,7 +454,9 @@ async function callMythomax(messages, temperature = 0.9) {
     }
     
     const data = await response.json();
-    return data.choices[0].message.content;
+    const rawContent = data.choices[0].message.content;
+    const filtered = filterAsteriskActions(rawContent);
+    return filtered;
   } catch (error) {
     console.error('OpenRouter API call failed:', error);
     throw error;
@@ -4192,13 +4223,13 @@ app.post("/api/chat", async (req, res) => {
     // Get dynamic personality based on relationship stage
     const personalityInstructions = getPersonalityInstructions(relationship);
 
-    const [extractedFacts, overallEmotion] = await Promise.all([
-      extractFacts(message),
-      extractEmotionPoint(message),
-    ]);
-
-    if (extractedFacts?.length) await saveFacts(userId, extractedFacts, message);
-    if (overallEmotion) await saveEmotion(userId, overallEmotion, message);
+    // ⚡ MOVED TO BACKGROUND:     const [extractedFacts, overallEmotion] = await Promise.all([
+    // ⚡ MOVED TO BACKGROUND:       extractFacts(message),
+    // ⚡ MOVED TO BACKGROUND:       extractEmotionPoint(message),
+    // ⚡ MOVED TO BACKGROUND:     ]);
+    // ⚡ MOVED TO BACKGROUND: 
+    // ⚡ MOVED TO BACKGROUND:     if (extractedFacts?.length) await saveFacts(userId, extractedFacts, message);
+    // ⚡ MOVED TO BACKGROUND:     if (overallEmotion) await saveEmotion(userId, overallEmotion, message);
 
     const history = await getHistory(userId);
     
@@ -4327,6 +4358,25 @@ app.post("/api/chat", async (req, res) => {
     } catch (historyErr) {
       console.warn(`⚠️ Could not store assistant reply:`, historyErr.message);
     }
+
+    // ⚡ BACKGROUND PROCESSING - Extract facts/emotions AFTER response sent
+    // This doesn't block the user from getting their response
+    setImmediate(async () => {
+      try {
+        const [extractedFacts, overallEmotion] = await Promise.all([
+          extractFacts(message),
+          extractEmotionPoint(message),
+        ]);
+        
+        if (extractedFacts?.length) await saveFacts(userId, extractedFacts, message);
+        if (overallEmotion) await saveEmotion(userId, overallEmotion, message);
+        
+        console.log(`✅ Background fact/emotion extraction complete for user ${userId}`);
+      } catch (bgErr) {
+        console.error('Background processing error:', bgErr);
+        // Don't fail - this is non-critical
+      }
+    });
 
     // 🧠 EXTRACT AND STORE NEW MEMORIES (if memory system enabled)
     if (memorySystem && memorySystem.enabled) {
