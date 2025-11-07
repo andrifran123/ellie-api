@@ -2288,7 +2288,14 @@ async function initDB() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS lemon_subscription_id TEXT;`);
   
   // Ensure user_id is unique and has index
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_user_id_unique ON users(user_id);`);
+  try {
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_user_id_unique ON users(user_id);`);
+  } catch (indexErr) {
+    // Ignore if column doesn't exist yet
+    if (indexErr.code !== '42703') {
+      console.warn('⚠️ Index creation warning:', indexErr.message);
+    }
+  }
   
   // ✓ Migration: Generate UUIDs for existing users without one (with error handling)
   try {
@@ -2397,8 +2404,22 @@ async function initDB() {
     )
   `);
 
-  await pool.query(`ALTER TABLE user_relationships ADD COLUMN IF NOT EXISTS total_gifts_value FLOAT DEFAULT 0;`);
-  await pool.query(`ALTER TABLE user_relationships ADD COLUMN IF NOT EXISTS last_gift_received TIMESTAMP;`);
+  // Add gift tracking columns (with error handling)
+  try {
+    await pool.query(`ALTER TABLE user_relationships ADD COLUMN IF NOT EXISTS total_gifts_value FLOAT DEFAULT 0;`);
+  } catch (err) {
+    if (err.code !== '42703' && err.code !== '42701') { // 42701 = column already exists
+      console.warn('⚠️ Could not add total_gifts_value:', err.message);
+    }
+  }
+  
+  try {
+    await pool.query(`ALTER TABLE user_relationships ADD COLUMN IF NOT EXISTS last_gift_received TIMESTAMP;`);
+  } catch (err) {
+    if (err.code !== '42703' && err.code !== '42701') {
+      console.warn('⚠️ Could not add last_gift_received:', err.message);
+    }
+  }
 
   // ============================================================
   // 🆕 NEW TABLES FOR ENHANCED FUNCTIONALITY
