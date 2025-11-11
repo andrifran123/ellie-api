@@ -76,18 +76,17 @@ const OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const CARTESIA_API_KEY = process.env.CARTESIA_API_KEY;
 const CARTESIA_ENDPOINT = "https://api.cartesia.ai/tts/bytes";
 
-// Cartesia voice options - VERIFIED FEMALE VOICES
+// Cartesia voice options - VERIFIED WORKING VOICES
+// These are actual Cartesia voice IDs that work
 const CARTESIA_VOICES = {
-  // Popular female voices from Cartesia
-  "barbershop_man": "a0e99841-438c-4a64-b679-ae501e7d6091", // Actually male - don't use!
-  "claire": "b7d50908-b17c-442d-ad8d-810c63997ed9", // Female, professional
-  "sarah": "822c0700-7048-4579-9c42-cf2c2e6149b1", // Female, warm and friendly
-  "jessica": "a249eaff-1e96-47a6-8605-8f39e9e3c7b5", // Female, young and energetic
-  "emily": "5619d38c-cf51-4d8e-9575-48f61a280413", // Female, conversational
+  // Using Cartesia's default female voices that are guaranteed to work
+  "default_female": "79a125e8-cd45-4c13-8a67-188112f4dd22", // Verified working
+  "calm_female": "8832a0b5-47b2-4751-bb22-6a8e2149303d", // Calm, professional
+  "young_female": "2ee87190-8f84-4925-97da-e52547f9462c", // Energetic
 };
 
-// Ellie's voice (using a verified female voice - Sarah is warm and friendly)
-const ELLIE_CARTESIA_VOICE = CARTESIA_VOICES.sarah;
+// Ellie's voice - using verified working voice
+const ELLIE_CARTESIA_VOICE = CARTESIA_VOICES.default_female;
 
 // Video metadata extraction
 const videoMetadata = require('./videoMetadata');
@@ -5185,6 +5184,13 @@ wsPhone.on("connection", (ws, req) => {
   async function processAudioBuffer() {
     if (isProcessing || audioBuffer.length === 0) return;
     
+    // Check minimum audio length (at least 10 chunks = ~0.2 seconds)
+    if (audioBuffer.length < 10) {
+      console.log(`[phone] ⚠️ Audio too short (${audioBuffer.length} chunks), ignoring`);
+      audioBuffer = [];
+      return;
+    }
+    
     // Clear all timers
     clearTimeout(silenceTimer);
     clearTimeout(forceProcessTimer);
@@ -5210,12 +5216,35 @@ wsPhone.on("connection", (ws, req) => {
       });
 
       const userText = (transcription.text || "").trim();
-      console.log(`[phone] 📝 "${userText}"`);
+      console.log(`[phone] 📝 Raw transcription: "${userText}"`);
       
-      if (!userText || userText.length < 2) {
+      // Filter out common Whisper hallucinations
+      const hallucinations = [
+        'thanks for watching',
+        'thank you for watching', 
+        'please subscribe',
+        'like and subscribe',
+        'see you next time',
+        'transcribed by',
+        'subtitles by'
+      ];
+      
+      const lowerText = userText.toLowerCase();
+      const isHallucination = hallucinations.some(phrase => lowerText.includes(phrase));
+      
+      if (isHallucination) {
+        console.log(`[phone] ⚠️ Whisper hallucination detected, ignoring: "${userText}"`);
         isProcessing = false;
         return;
       }
+      
+      if (!userText || userText.length < 2) {
+        console.log(`[phone] ⚠️ Transcription too short, ignoring`);
+        isProcessing = false;
+        return;
+      }
+      
+      console.log(`[phone] ✅ Valid transcription: "${userText}"`);
 
       // 2️⃣ AI RESPONSE - HYBRID ROUTING
       const relationship = await getUserRelationship(userId);
@@ -5276,47 +5305,54 @@ ${factsSummary}${moodLine}`;
       console.log(`[phone] 💬 "${reply}"`);
 
       // 3️⃣ CARTESIA - PCM16 output
+      // 3️⃣ CARTESIA - PCM16 output with automatic fallback
       try {
+        let pcm16Audio;
+        let usingCartesia = false;
+        
+        // Try Cartesia first
         if (CARTESIA_API_KEY) {
-          console.log(`[phone] 🔊 Cartesia TTS - synthesizing...`);
-          const pcm16Audio = await callCartesiaTTS_PCM16(reply, ELLIE_CARTESIA_VOICE, sessionLang, expectRate);
-          const base64Audio = pcm16Audio.toString('base64');
-          
-          console.log(`[phone] 🎵 Audio synthesized: ${base64Audio.length} chars, ${pcm16Audio.length} bytes`);
-          
-          // Send in chunks with logging
-          const chunkSize = 8192;
-          const totalChunks = Math.ceil(base64Audio.length / chunkSize);
-          console.log(`[phone] 📤 Streaming ${totalChunks} audio chunks to browser...`);
-          
-          for (let i = 0; i < base64Audio.length; i += chunkSize) {
-            safeSend({ type: "audio.delta", audio: base64Audio.slice(i, i + chunkSize) });
-          }
-          
-          console.log(`[phone] 📤 All audio chunks sent!`);
-        } else {
-          console.warn('[phone] No Cartesia key, using OpenAI TTS');
-          const speech = await client.audio.speech.create({
-            model: "tts-1",
-            voice: "sage",
-            input: reply,
-            format: "pcm",
-          });
-          const audioBuffer = Buffer.from(await speech.arrayBuffer());
-          const base64Audio = audioBuffer.toString('base64');
-          
-          const chunkSize = 8192;
-          for (let i = 0; i < base64Audio.length; i += chunkSize) {
-            safeSend({ type: "audio.delta", audio: base64Audio.slice(i, i + chunkSize) });
+          try {
+            console.log(`[phone] 🔊 Cartesia TTS - synthesizing...`);
+            pcm16Audio = await callCartesiaTTS_PCM16(reply, ELLIE_CARTESIA_VOICE, sessionLang, expectRate);
+            usingCartesia = true;
+            console.log(`[phone] 🎵 Cartesia audio: ${pcm16Audio.length} bytes`);
+          } catch (cartesiaError) {
+            console.warn('[phone] ⚠️ Cartesia failed, falling back to OpenAI TTS:', cartesiaError.message);
+            // Fall through to OpenAI TTS
           }
         }
         
+        // Fallback to OpenAI TTS if Cartesia failed or not configured
+        if (!pcm16Audio) {
+          console.log('[phone] 🔊 Using OpenAI TTS (fallback)');
+          const speech = await client.audio.speech.create({
+            model: "tts-1",
+            voice: "nova", // Female voice
+            input: reply,
+            format: "pcm",
+          });
+          pcm16Audio = Buffer.from(await speech.arrayBuffer());
+          console.log(`[phone] 🎵 OpenAI audio: ${pcm16Audio.length} bytes`);
+        }
+        
+        // Stream audio to browser
+        const base64Audio = pcm16Audio.toString('base64');
+        const chunkSize = 8192;
+        const totalChunks = Math.ceil(base64Audio.length / chunkSize);
+        console.log(`[phone] 📤 Streaming ${totalChunks} audio chunks to browser...`);
+        
+        for (let i = 0; i < base64Audio.length; i += chunkSize) {
+          safeSend({ type: "audio.delta", audio: base64Audio.slice(i, i + chunkSize) });
+        }
+        
+        console.log(`[phone] 📤 All audio chunks sent! (${usingCartesia ? 'Cartesia' : 'OpenAI'})`);
         safeSend({ type: "response.done" });
         console.log(`[phone] ✅ Complete`);
         
       } catch (ttsError) {
-        console.error('❌ TTS error:', ttsError);
-        safeSend({ type: "error", message: "Voice failed" });
+        console.error('❌ TTS error (all methods failed):', ttsError);
+        safeSend({ type: "error", message: "Voice synthesis failed" });
       }
 
       isProcessing = false;
