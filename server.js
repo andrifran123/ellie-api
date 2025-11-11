@@ -72,6 +72,21 @@ const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 
+// Cartesia API (for realistic voice synthesis)
+const CARTESIA_API_KEY = process.env.CARTESIA_API_KEY;
+const CARTESIA_ENDPOINT = "https://api.cartesia.ai/tts/bytes";
+
+// Cartesia voice options - you can change this to try different voices
+const CARTESIA_VOICES = {
+  "emily": "a0e99841-438c-4a64-b679-ae501e7d6091", // Conversational, friendly
+  "sarah": "b7d50908-b17c-442d-ad8d-810c63997ed9", // Professional, warm
+  "luna": "79a125e8-cd45-4c13-8a67-188112f4dd22", // Young, energetic
+  "sophia": "4d2fd738-3b3d-4368-957a-bb4805275bd9", // Sophisticated, elegant
+};
+
+// Ellie's voice (change to any voice ID from CARTESIA_VOICES)
+const ELLIE_CARTESIA_VOICE = CARTESIA_VOICES.emily;
+
 // Video metadata extraction
 const videoMetadata = require('./videoMetadata');
 
@@ -120,6 +135,62 @@ function filterAsteriskActions(text) {
   filtered = filtered.split('\n').filter(line => line.trim()).join('\n');
   
   return filtered.trim();
+}
+
+
+// ============================================================
+// 🔊 CARTESIA VOICE SYNTHESIS
+// ============================================================
+
+/**
+ * Call Cartesia TTS API for realistic voice synthesis
+ * @param {string} text - Text to synthesize
+ * @param {string} voiceId - Cartesia voice ID
+ * @param {string} language - Language code (default: "en")
+ * @returns {Promise<Buffer>} - Audio buffer (MP3)
+ */
+async function callCartesiaTTS(text, voiceId = ELLIE_CARTESIA_VOICE, language = "en") {
+  if (!CARTESIA_API_KEY) {
+    throw new Error('CARTESIA_API_KEY not configured');
+  }
+
+  try {
+    const response = await fetch(CARTESIA_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'X-API-Key': CARTESIA_API_KEY,
+        'Cartesia-Version': '2024-06-10',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model_id: "sonic-english",  // Cartesia's fastest, most realistic model
+        transcript: text,
+        voice: {
+          mode: "id",
+          id: voiceId
+        },
+        output_format: {
+          container: "mp3",
+          encoding: "mp3",
+          sample_rate: 24000  // 24kHz for high quality
+        },
+        language: language,
+        speed: 1.0,  // Normal speed (0.5-2.0 range)
+        emotion: []  // Optional: Add emotions like ["positivity:high", "curiosity:medium"]
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Cartesia API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    const audioBuffer = await response.arrayBuffer();
+    return Buffer.from(audioBuffer);
+  } catch (error) {
+    console.error('❌ Cartesia TTS error:', error);
+    throw error;
+  }
 }
 
 
@@ -4607,17 +4678,16 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
 });
 
 // Voice chat (language REQUIRED) + TTS (record/send flow)
+// ✨ NOW USING HYBRID ROUTING (Llama 70B + Mythomax) + CARTESIA VOICE!
 app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
   const startTime = Date.now(); // Track call duration
   try {
     const userId = req.userId || "guest";
     
-    // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PHASE 2: Check usage limits (but allow if no tier for testing)
+    // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PHASE 1: Check usage limits (but allow if no tier for testing)
     if (userId !== "guest") {
       const permission = await canMakeVoiceCall(userId);
       if (!permission.allowed && permission.reason !== 'NO_SUBSCRIPTION') {
-        // Only block if they have a subscription but exhausted minutes
-        // Allow if they have no subscription (testing mode)
         return res.status(402).json({
           error: permission.reason,
           message: permission.message,
@@ -4630,7 +4700,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     if (!req.file || !isOkAudio(req.file.mimetype)) {
       return res.status(400).json({
         error: "E_BAD_AUDIO",
-        message: `Unsupported type ${req.file?.mimetype || "(none)"} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â send webm/ogg/mp3/m4a/wav ÃƒÂ¢Ã¢â‚¬Â°Ã‚Â¤ 10MB`,
+        message: `Unsupported type ${req.file?.mimetype || "(none)"} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â send webm/ogg/mp3/m4a/wav ÃƒÂ¢Ã¢â‚¬Â°Ã‚Â¤ 10MB`,
       });
     }
 
@@ -4647,6 +4717,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
       });
     }
 
+    // 🎤 STEP 1: Transcribe audio using OpenAI Whisper (best in class)
     const fileForOpenAI = await toFile(req.file.buffer, req.file.originalname || "audio.webm");
     const tr = await client.audio.transcriptions.create({
       model: "whisper-1",
@@ -4660,10 +4731,9 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     if (!userText) {
       return res.status(200).json({
         text: "",
-        reply: "I couldn't catch thatÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Âcan you try again a bit closer to the mic?",
+        reply: "I couldn't catch thatÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Âcan you try again a bit closer to the mic?",
         language: prefLang,
         audioMp3Base64: null,
-        voiceMode: "mini",
       });
     }
 
@@ -4674,41 +4744,77 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
       extractEmotionPoint(userText)
     ]);
     
-    // Update relationship tracking
-    await Promise.all([
+    // Update relationship tracking in background
+    Promise.all([
       updateStreak(userId),
-      updateRelationshipLevel(userId, 1), // +1 point per voice message
+      updateRelationshipLevel(userId, 1),
       calculateEmotionalInvestment(userId, userText)
-    ]);
+    ]).catch(err => console.error('Background relationship update error:', err));
     
     if (facts.length) await saveFacts(userId, facts, userText);
     if (emo) await saveEmotion(userId, emo, userText);
 
-    const freshFacts = await getFreshFacts(userText);
-
+    // 🧠 STEP 2: Get AI response using HYBRID ROUTING (same as chat!)
+    const history = await getHistory(userId);
+    
+    // Get personality instructions with voice mode hint
+    let personalityInstructions = getPersonalityInstructions(relationship);
+    personalityInstructions += `\n\nVOICE MODE: Keep responses 1-3 sentences (5-18 words per sentence). Be conversational and natural. Answer directly first.`;
+    
+    // Update system prompt
+    if (history[0]?.role === 'system') {
+      history[0].content = personalityInstructions;
+    }
+    
+    history.push({ role: "user", content: userText });
+    
+    // 🔀 USE HYBRID ROUTING - Same as chat mode!
     let replyForVoice;
-    if (!freshFacts.length && looksLikeSearchQuery(userText)) {
-      replyForVoice = ellieFallbackReply(userText);
-    } else {
-      const { reply } = await generateEllieReply({ userId, userText, freshFacts, relationship });
-      replyForVoice = reply;
+    try {
+      console.log(`[voice-chat] Using hybrid routing for user ${userId}`);
+      replyForVoice = await getHybridResponse(userId, userText, history.slice(-20), pool);
+    } catch (routingError) {
+      console.error('❌ Hybrid routing failed in voice, falling back to OpenAI:', routingError);
+      const completion = await client.chat.completions.create({
+        model: CHAT_MODEL,
+        messages: history.slice(-20),
+        temperature: 0.9,
+        max_tokens: 150,
+      });
+      replyForVoice = completion.choices[0]?.message?.content || "...";
+    }
+    
+    // Filter out asterisk actions (common in Llama models)
+    replyForVoice = filterAsteriskActions(replyForVoice);
+
+    // 🔊 STEP 3: Generate speech using CARTESIA (3000x cheaper + more realistic!)
+    let audioBuffer;
+    try {
+      if (CARTESIA_API_KEY) {
+        console.log(`[voice-chat] Using Cartesia TTS for voice synthesis`);
+        audioBuffer = await callCartesiaTTS(replyForVoice, ELLIE_CARTESIA_VOICE, prefLang);
+      } else {
+        // Fallback to OpenAI TTS if Cartesia not configured
+        console.warn('[voice-chat] CARTESIA_API_KEY not set, falling back to OpenAI TTS');
+        const speech = await client.audio.speech.create({
+          model: "tts-1",
+          voice: await getEffectiveVoiceForUser(userId, DEFAULT_VOICE),
+          input: replyForVoice,
+          format: "mp3",
+        });
+        audioBuffer = Buffer.from(await speech.arrayBuffer());
+      }
+    } catch (ttsError) {
+      console.error('❌ TTS failed:', ttsError);
+      return res.status(500).json({
+        error: "E_TTS_FAILED",
+        message: "Voice generation failed"
+      });
     }
 
-    const decision = decideVoiceMode({ replyText: replyForVoice });
-    const model = getTtsModelForVoiceMode(decision.voiceMode);
-    const chosenVoice = await getEffectiveVoiceForUser(userId, DEFAULT_VOICE);
+    const b64 = audioBuffer.toString("base64");
 
-    const speech = await client.audio.speech.create({
-      model,
-      voice: chosenVoice,
-      input: replyForVoice,
-      format: "mp3",
-    });
-
-    const buf = Buffer.from(await speech.arrayBuffer());
-    const b64 = buf.toString("base64");
-
-    // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PHASE 2: Track usage after successful call (only if user has a tier)
+    // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ STEP 4: Track usage after successful call
     const durationSeconds = Math.ceil((Date.now() - startTime) / 1000);
     if (userId !== "guest") {
       try {
@@ -4718,16 +4824,17 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
         }
       } catch (e) {
         console.error("[usage] tracking error:", e);
-        // Don't fail the request if usage tracking fails
       }
     }
+
+    console.log(`[voice-chat] ✅ Completed in ${Date.now() - startTime}ms - Provider: ${CARTESIA_API_KEY ? 'Cartesia' : 'OpenAI'}`);
 
     return res.json({
       text: userText,
       reply: replyForVoice,
       language: prefLang,
       audioMp3Base64: b64,
-      voiceMode: decision.voiceMode,
+      voiceProvider: CARTESIA_API_KEY ? 'cartesia' : 'openai'
     });
   } catch (err) {
     console.error("[voice-chat] error:", err);
@@ -4757,7 +4864,7 @@ wss.on("connection", (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let userId = extractUserIdFromWsRequest(req) || url.searchParams.get("userId") || "guest";
   let sessionLang = null;
-  let sessionVoice = DEFAULT_VOICE;
+  let sessionVoice = ELLIE_CARTESIA_VOICE; // Use Cartesia voice
 
   ws.on("message", async (raw) => {
     try {
@@ -4765,30 +4872,44 @@ wss.on("connection", (ws, req) => {
 
       if (msg.type === "hello") {
         userId = msg.userId || userId;
-        // Validate voice name before accepting it
-        const validVoices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer", "sage", "ballad"];
-        if (typeof msg.voice === "string" && validVoices.includes(msg.voice.toLowerCase())) {
-          sessionVoice = msg.voice.toLowerCase();
-        }
-        if (msg.preset && validPresetName(msg.preset)) await setVoicePreset(userId, msg.preset);
+        
+        // Get user's preferred language
         const code = await getPreferredLanguage(userId);
         sessionLang = code || null;
+        
         if (!sessionLang) {
-          ws.send(JSON.stringify({ type: "error", code: "E_LANGUAGE_REQUIRED", message: "Please choose a language first." }));
+          ws.send(JSON.stringify({ 
+            type: "error", 
+            code: "E_LANGUAGE_REQUIRED", 
+            message: "Please choose a language first." 
+          }));
           return;
         }
-         ws.send(JSON.stringify({ type: "hello-ok", userId, language: sessionLang, voice: sessionVoice }));
+        
+        ws.send(JSON.stringify({ 
+          type: "hello-ok", 
+          userId, 
+          language: sessionLang, 
+          voiceProvider: "cartesia" 
+        }));
         return;
       }
 
       if (msg.type === "audio" && msg.audio) {
         if (!sessionLang) {
-          ws.send(JSON.stringify({ type: "error", code: "E_LANGUAGE_REQUIRED", message: "Please choose a language first." }));
+          ws.send(JSON.stringify({ 
+            type: "error", 
+            code: "E_LANGUAGE_REQUIRED", 
+            message: "Please choose a language first." 
+          }));
           return;
         }
+
+        // 🎤 STEP 1: Transcribe with OpenAI Whisper
         const mime = msg.mime || "audio/webm";
         const b = Buffer.from(msg.audio, "base64");
         const fileForOpenAI = await toFile(b, `chunk.${mime.includes("webm") ? "webm" : "wav"}`);
+        
         const tr = await client.audio.transcriptions.create({
           model: "whisper-1",
           file: fileForOpenAI,
@@ -4797,45 +4918,94 @@ wss.on("connection", (ws, req) => {
 
         const userText = (tr.text || "").trim();
         if (!userText) {
-          ws.send(JSON.stringify({ type: "reply", text: "", reply: "I couldn't catch that-Âtry again?", language: sessionLang, audioMp3Base64: null, voiceMode: "mini" }));
+          ws.send(JSON.stringify({ 
+            type: "reply", 
+            text: "", 
+            reply: "I couldn't catch that—try again?", 
+            language: sessionLang, 
+            audioMp3Base64: null 
+          }));
           return;
         }
 
+        // Track facts and emotions in background
         const [facts, emo] = await Promise.all([extractFacts(userText), extractEmotionPoint(userText)]);
         if (facts.length) await saveFacts(userId, facts, userText);
         if (emo) await saveEmotion(userId, emo, userText);
 
-        // fast path: personality fallback if facty
-        let reply;
-        if (looksLikeSearchQuery(userText)) {
-          reply = ellieFallbackReply(userText);
-        } else {
-          const out = await generateEllieReply({ userId, userText });
-          reply = out.reply;
+        // 🧠 STEP 2: Get AI response using HYBRID ROUTING
+        const relationship = await getUserRelationship(userId);
+        const history = await getHistory(userId);
+        
+        // Get personality with voice mode hint
+        let personalityInstructions = getPersonalityInstructions(relationship);
+        personalityInstructions += `\n\nVOICE MODE: Keep responses 1-3 sentences (5-18 words per sentence). Be conversational and natural. Answer directly first.`;
+        
+        if (history[0]?.role === 'system') {
+          history[0].content = personalityInstructions;
         }
+        
+        history.push({ role: "user", content: userText });
+        
+        // 🔀 USE HYBRID ROUTING - Same as chat!
+        let reply;
+        try {
+          console.log(`[ws/voice] Using hybrid routing for user ${userId}`);
+          reply = await getHybridResponse(userId, userText, history.slice(-20), pool);
+        } catch (routingError) {
+          console.error('❌ Hybrid routing failed in WebSocket, falling back:', routingError);
+          const completion = await client.chat.completions.create({
+            model: CHAT_MODEL,
+            messages: history.slice(-20),
+            temperature: 0.9,
+            max_tokens: 150,
+          });
+          reply = completion.choices[0]?.message?.content || "...";
+        }
+        
+        // Filter out asterisk actions
+        reply = filterAsteriskActions(reply);
 
-        const decision = decideVoiceMode({ replyText: reply });
-        const model = getTtsModelForVoiceMode(decision.voiceMode);
-
-        const chosenVoice = await getEffectiveVoiceForUser(userId, sessionVoice || DEFAULT_VOICE);
-        const speech = await client.audio.speech.create({ model, voice: chosenVoice, input: reply, format: "mp3" });
-        const ab = await speech.arrayBuffer();
+        // 🔊 STEP 3: Generate speech with CARTESIA
+        let audioBuffer;
+        try {
+          if (CARTESIA_API_KEY) {
+            console.log(`[ws/voice] Using Cartesia TTS for voice synthesis`);
+            audioBuffer = await callCartesiaTTS(reply, sessionVoice, sessionLang);
+          } else {
+            // Fallback to OpenAI TTS if Cartesia not configured
+            console.warn('[ws/voice] CARTESIA_API_KEY not set, falling back to OpenAI TTS');
+            const speech = await client.audio.speech.create({ 
+              model: "tts-1", 
+              voice: await getEffectiveVoiceForUser(userId, DEFAULT_VOICE), 
+              input: reply, 
+              format: "mp3" 
+            });
+            audioBuffer = Buffer.from(await speech.arrayBuffer());
+          }
+        } catch (ttsError) {
+          console.error('❌ Cartesia TTS failed in WebSocket:', ttsError);
+          ws.send(JSON.stringify({ 
+            type: "error", 
+            message: "Voice generation failed" 
+          }));
+          return;
+        }
 
         ws.send(JSON.stringify({
           type: "reply",
           text: userText,
           reply,
           language: sessionLang,
-          audioMp3Base64: Buffer.from(ab).toString("base64"),
-          voiceMode: decision.voiceMode,
-          ttsModel: model
+          audioMp3Base64: audioBuffer.toString("base64"),
+          voiceProvider: CARTESIA_API_KEY ? 'cartesia' : 'openai'
         }));
         return;
       }
 
       if (msg.type === "apply-preset" && validPresetName(msg.preset)) {
         await setVoicePreset(userId, msg.preset);
-        ws.send(JSON.stringify({ type: "preset-ok", preset: msg.preset, voice: VOICE_PRESETS[msg.preset] }));
+        ws.send(JSON.stringify({ type: "preset-ok", preset: msg.preset }));
         return;
       }
 
@@ -6785,6 +6955,16 @@ server.listen(PORT, () => {
     console.log("🔀 Hybrid Routing: PARTIAL (OpenRouter only - no free tier)");
   } else {
     console.log("🔀 Hybrid Routing: DISABLED (using OpenAI fallback)");
+  }
+  if (CARTESIA_API_KEY) {
+    console.log("🔊 Voice System: Cartesia Sonic (realistic voice)");
+    console.log("🧠 Voice AI Brain: Using hybrid routing (same as chat)");
+    console.log("   ├─ Transcription: OpenAI Whisper-1");
+    console.log("   ├─ AI Response: Hybrid routing (Llama 70B + Mythomax)");
+    console.log("   └─ Voice Synthesis: Cartesia Sonic (3000x cheaper!)");
+  } else {
+    console.log("🔊 Voice System: OpenAI TTS (set CARTESIA_API_KEY for 90% cost savings)");
+    console.log("🧠 Voice AI Brain: Using hybrid routing (same as chat)");
   }
   console.log("================================");
 });
