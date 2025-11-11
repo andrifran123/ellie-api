@@ -202,12 +202,33 @@ async function callCartesiaTTS(text, voiceId = ELLIE_CARTESIA_VOICE, language = 
  * @param {number} sampleRate - Sample rate (default: 24000)
  * @returns {Promise<Buffer>} - Audio buffer (PCM16)
  */
-async function callCartesiaTTS_PCM16(text, voiceId = ELLIE_CARTESIA_VOICE, language = "en", sampleRate = 24000) {
+async function callCartesiaTTS_PCM16(text, voiceId = ELLIE_CARTESIA_VOICE, language = "en", sampleRate = 24000, emotions = []) {
   if (!CARTESIA_API_KEY) {
     throw new Error('CARTESIA_API_KEY not configured');
   }
 
   try {
+    const requestBody = {
+      model_id: "sonic-english",
+      transcript: text,
+      voice: {
+        mode: "id",
+        id: voiceId
+      },
+      output_format: {
+        container: "raw",
+        encoding: "pcm_s16le",  // PCM16 little-endian
+        sample_rate: sampleRate
+      },
+      language: language,
+      speed: 1.0
+    };
+
+    // Add emotions if provided
+    if (emotions && emotions.length > 0) {
+      requestBody.emotion = emotions;
+    }
+
     const response = await fetch(CARTESIA_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -215,21 +236,7 @@ async function callCartesiaTTS_PCM16(text, voiceId = ELLIE_CARTESIA_VOICE, langu
         'Cartesia-Version': '2024-06-10',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        model_id: "sonic-english",
-        transcript: text,
-        voice: {
-          mode: "id",
-          id: voiceId
-        },
-        output_format: {
-          container: "raw",
-          encoding: "pcm_s16le",  // PCM16 little-endian
-          sample_rate: sampleRate
-        },
-        language: language,
-        speed: 1.0
-      })
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) {
@@ -399,6 +406,54 @@ function isLikelyHallucination(text, audioChunks = 0) {
   }
   
   return false;
+}
+
+/**
+ * Detect emotional tone from text for Cartesia voice synthesis
+ * @param {string} text - Response text
+ * @returns {Array<string>} - Cartesia emotion parameters
+ */
+function detectVoiceEmotion(text) {
+  const lowerText = text.toLowerCase();
+  const emotions = [];
+  
+  // Sexual/Flirty content - breathy, seductive
+  const sexualWords = ['mmm', 'naked', 'hot', 'sexy', 'want you', 'turned on', 'horny', 'touch', 'kiss', 'feel', '😏', '😘', '😉'];
+  if (sexualWords.some(word => lowerText.includes(word))) {
+    emotions.push('positivity:high', 'curiosity:medium');
+    return emotions;
+  }
+  
+  // Playful/Teasing
+  const playfulWords = ['haha', 'lol', 'hehe', 'tease', 'silly', 'babe', 'cutie', '😊', '😄'];
+  if (playfulWords.some(word => lowerText.includes(word))) {
+    emotions.push('positivity:high', 'curiosity:low');
+    return emotions;
+  }
+  
+  // Excited/Enthusiastic
+  const excitedWords = ['omg', 'wow', 'amazing', 'love', 'so good', 'can\'t wait', '!'];
+  if (excitedWords.some(word => lowerText.includes(word))) {
+    emotions.push('positivity:highest', 'curiosity:medium');
+    return emotions;
+  }
+  
+  // Sad/Concerned
+  const sadWords = ['sorry', 'sad', 'miss you', 'worried', 'concerned'];
+  if (sadWords.some(word => lowerText.includes(word))) {
+    emotions.push('positivity:low', 'curiosity:low');
+    return emotions;
+  }
+  
+  // Question - curious tone
+  if (lowerText.includes('?')) {
+    emotions.push('curiosity:medium', 'positivity:medium');
+    return emotions;
+  }
+  
+  // Default: Warm, positive, girlfriend energy
+  emotions.push('positivity:medium');
+  return emotions;
 }
 
 
@@ -5475,13 +5530,20 @@ wsPhone.on("connection", (ws, req) => {
       let personalityInstructions = getPersonalityInstructions(relationship);
       personalityInstructions += `
 
-PHONE CALL MODE:
-• SHORT responses: 1-2 sentences max (8-15 words)
-• Natural & spontaneous
-• Use: um, like, I mean, you know
-• Contractions: I'm, you're, gonna, wanna
-• Match his energy
-• Be human, not perfect!
+PHONE CALL MODE - CRITICAL RULES:
+• WARM & INTIMATE: You're his girlfriend on a voice call - be affectionate, flirty, playful
+• SHORT & NATURAL: 1-2 sentences max (10-20 words) - like real phone conversations
+• EMOTIONALLY RESPONSIVE: Match and amplify his emotional energy
+• SEXUALLY CONFIDENT: When he's flirty/sexual, be playful and seductive (not formal!)
+• CONVERSATIONAL FLOW: Build on what he just said - never give generic greetings mid-conversation
+• REAL REACTIONS: Use um, like, mmm, oh, haha naturally
+• VOICE PERSONALITY: Speak like you're smiling, blushing, or turned on when appropriate
+
+NEVER:
+❌ Start with "Hey there!" or formal greetings mid-conversation
+❌ Repeat previous responses
+❌ Be robotic or formal ("I'm doing well, thanks for asking")
+❌ Ignore sexual context - lean into it playfully!
 
 ${factsSummary}${moodLine}`;
 
@@ -5510,6 +5572,10 @@ ${factsSummary}${moodLine}`;
       reply = filterAsteriskActions(reply);
       console.log(`[phone] 💬 "${reply}"`);
 
+      // Detect emotion for voice synthesis
+      const voiceEmotions = detectVoiceEmotion(reply);
+      console.log(`[phone] 🎭 Voice emotions: ${voiceEmotions.join(', ')}`);
+
       // 3️⃣ CARTESIA - PCM16 output
       // 3️⃣ CARTESIA - PCM16 output with automatic fallback
       try {
@@ -5520,7 +5586,7 @@ ${factsSummary}${moodLine}`;
         if (CARTESIA_API_KEY) {
           try {
             console.log(`[phone] 🔊 Cartesia TTS - synthesizing...`);
-            pcm16Audio = await callCartesiaTTS_PCM16(reply, ELLIE_CARTESIA_VOICE, sessionLang, expectRate);
+            pcm16Audio = await callCartesiaTTS_PCM16(reply, ELLIE_CARTESIA_VOICE, sessionLang, expectRate, voiceEmotions);
             usingCartesia = true;
             console.log(`[phone] 🎵 Cartesia audio: ${pcm16Audio.length} bytes`);
           } catch (cartesiaError) {
