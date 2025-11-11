@@ -262,7 +262,7 @@ async function transcribeWithGroqWhisper(audioBuffer, language = "en") {
   }
 
   try {
-    // Create form data
+    // Create form data using form-data library (works with streams)
     const FormData = require('form-data');
     const form = new FormData();
     
@@ -275,13 +275,21 @@ async function transcribeWithGroqWhisper(audioBuffer, language = "en") {
     form.append('response_format', 'json');
     form.append('temperature', '0'); // Most accurate
 
+    // Convert form-data stream to buffer (fixes multipart: NextPart: EOF error)
+    const formBuffer = await new Promise((resolve, reject) => {
+      const chunks = [];
+      form.on('data', chunk => chunks.push(chunk));
+      form.on('end', () => resolve(Buffer.concat(chunks)));
+      form.on('error', reject);
+    });
+
     const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${GROQ_API_KEY}`,
         ...form.getHeaders(),
       },
-      body: form,
+      body: formBuffer,
     });
 
     if (!response.ok) {
