@@ -262,7 +262,7 @@ async function transcribeWithGroqWhisper(audioBuffer, language = "en") {
   }
 
   try {
-    // Create form data using form-data library (works with streams)
+    // Use native fetch with FormData (simpler, no stream conversion needed)
     const FormData = require('form-data');
     const form = new FormData();
     
@@ -270,35 +270,42 @@ async function transcribeWithGroqWhisper(audioBuffer, language = "en") {
       filename: 'audio.wav',
       contentType: 'audio/wav',
     });
-    form.append('model', 'whisper-large-v3-turbo'); // Fastest Groq Whisper model
+    form.append('model', 'whisper-large-v3-turbo');
     form.append('language', language);
     form.append('response_format', 'json');
-    form.append('temperature', '0'); // Most accurate
+    form.append('temperature', '0');
 
-    // Convert form-data stream to buffer (fixes multipart: NextPart: EOF error)
-    const formBuffer = await new Promise((resolve, reject) => {
-      const chunks = [];
-      form.on('data', chunk => chunks.push(chunk));
-      form.on('end', () => resolve(Buffer.concat(chunks)));
-      form.on('error', reject);
-    });
+    // Add timeout (3 seconds for fast fallback to OpenAI)
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
 
-    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${GROQ_API_KEY}`,
-        ...form.getHeaders(),
-      },
-      body: formBuffer,
-    });
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${GROQ_API_KEY}`,
+          ...form.getHeaders(),
+        },
+        body: form,
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Groq Whisper error: ${response.status} ${response.statusText} - ${errorText}`);
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Groq Whisper error: ${response.status} ${response.statusText} - ${errorText}`);
+      }
+
+      const result = await response.json();
+      return result.text || '';
+    } catch (fetchError) {
+      clearTimeout(timeout);
+      if (fetchError.name === 'AbortError') {
+        throw new Error('Groq Whisper timeout after 3 seconds');
+      }
+      throw fetchError;
     }
-
-    const result = await response.json();
-    return result.text || '';
   } catch (error) {
     console.error('❌ Groq Whisper error:', error);
     throw error;
@@ -5302,6 +5309,7 @@ wsPhone.on("connection", (ws, req) => {
   let sessionLang = "en";
   let expectRate = 24000;
   let isProcessing = false;
+  let groqDisabled = false; // Disable Groq for this session if it fails
 
   // Audio buffering
   let audioBuffer = [];
@@ -5361,15 +5369,25 @@ wsPhone.on("connection", (ws, req) => {
       let userText = '';
       let transcriptionSource = 'groq';
       
-      // Try Groq Whisper first (NSFW-friendly!)
-      try {
-        console.log(`[phone] 🎤 Transcribing with Groq Whisper (NSFW-safe)...`);
-        userText = await transcribeWithGroqWhisper(wavBuffer, sessionLang);
-        console.log(`[phone] ✅ Groq Whisper: "${userText}"`);
-      } catch (groqError) {
-        // Fallback to OpenAI Whisper if Groq fails
-        console.warn('[phone] ⚠️ Groq Whisper failed, falling back to OpenAI:', groqError.message);
+      // Try Groq Whisper first (NSFW-friendly!) - unless it failed before in this session
+      if (!groqDisabled && GROQ_API_KEY) {
         try {
+          console.log(`[phone] 🎤 Transcribing with Groq Whisper (NSFW-safe)...`);
+          userText = await transcribeWithGroqWhisper(wavBuffer, sessionLang);
+          console.log(`[phone] ✅ Groq Whisper: "${userText}"`);
+        } catch (groqError) {
+          // Disable Groq for rest of session after failure
+          groqDisabled = true;
+          console.warn('[phone] ⚠️ Groq Whisper failed, disabling for this session. Falling back to OpenAI:', groqError.message);
+        }
+      }
+      
+      // Use OpenAI if Groq failed or was disabled
+      if (!userText) {
+        try {
+          if (groqDisabled) {
+            console.log('[phone] 🎤 Using OpenAI Whisper (Groq disabled for session)');
+          }
           const audioFile = await toFile(wavBuffer, "audio.wav");
           const transcription = await client.audio.transcriptions.create({
             model: "whisper-1",
@@ -5378,9 +5396,9 @@ wsPhone.on("connection", (ws, req) => {
           });
           userText = (transcription.text || "").trim();
           transcriptionSource = 'openai';
-          console.log(`[phone] ✅ OpenAI Whisper (fallback): "${userText}"`);
+          console.log(`[phone] ✅ OpenAI Whisper: "${userText}"`);
         } catch (openaiError) {
-          console.error('[phone] ❌ Both Groq and OpenAI Whisper failed!', openaiError);
+          console.error('[phone] ❌ OpenAI Whisper failed!', openaiError);
           isProcessing = false;
           return;
         }
@@ -5560,6 +5578,12 @@ ${factsSummary}${moodLine}`;
       }
 
       if (msg.type === "audio.append" && msg.audio) {
+        // Skip adding audio if we're still processing previous audio
+        if (isProcessing) {
+          // Silently drop chunks while processing to prevent overflow
+          return;
+        }
+        
         audioBuffer.push(msg.audio);
         lastAudioTime = Date.now();
         
