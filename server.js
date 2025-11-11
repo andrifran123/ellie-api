@@ -299,6 +299,86 @@ async function transcribeWithGroqWhisper(audioBuffer, language = "en") {
 
 
 // ============================================================
+// 🚫 WHISPER HALLUCINATION DETECTION
+// ============================================================
+
+/**
+ * Calculate audio energy (RMS) to detect silence
+ * @param {Buffer} audioBuffer - PCM16 audio buffer
+ * @returns {number} - RMS energy value
+ */
+function calculateAudioEnergy(audioBuffer) {
+  try {
+    // Calculate RMS (root mean square) of audio samples
+    let sum = 0;
+    const samples = new Int16Array(audioBuffer.buffer, audioBuffer.byteOffset, audioBuffer.byteLength / 2);
+    
+    for (let i = 0; i < samples.length; i++) {
+      sum += samples[i] * samples[i];
+    }
+    
+    return Math.sqrt(sum / samples.length);
+  } catch (error) {
+    console.error('❌ calculateAudioEnergy error:', error);
+    return 0;
+  }
+}
+
+/**
+ * Detect if transcription is likely a Whisper hallucination
+ * Common with silence or background noise
+ * @param {string} text - Transcribed text
+ * @param {number} audioChunks - Number of audio chunks processed
+ * @returns {boolean} - True if likely hallucination
+ */
+function isLikelyHallucination(text, audioChunks = 0) {
+  if (!text || text.trim().length === 0) return true;
+  
+  // Common Whisper hallucinations (single words/phrases that appear with silence)
+  const commonHallucinations = [
+    'thank you',
+    'thanks',
+    'thank you very much',
+    'thank you so much',
+    'you',
+    'bye',
+    'goodbye',
+    'okay',
+    'ok',
+    'yes',
+    'no',
+    'um',
+    'uh',
+    'mm',
+    'hmm',
+    'mhm',
+    'ah',
+    'oh',
+    "you're welcome",
+    'welcome',
+    'please',
+    'sorry',
+    'excuse me'
+  ];
+  
+  const normalized = text.toLowerCase().trim();
+  
+  // If it's ONLY a common hallucination phrase (exact match)
+  if (commonHallucinations.includes(normalized)) {
+    return true;
+  }
+  
+  // If audio is too short (less than 20 chunks = ~0.4s)
+  if (audioChunks > 0 && audioChunks < 20) {
+    return true;
+  }
+  
+  return false;
+}
+
+
+
+// ============================================================
 // 🧠 ADVANCED MEMORY SYSTEM IMPORTS
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
@@ -5257,6 +5337,16 @@ wsPhone.on("connection", (ws, req) => {
       // 1️⃣ TRANSCRIBE with Groq Whisper (NSFW-safe!)
       const combinedAudio = Buffer.concat(chunks.map(c => Buffer.from(c, 'base64')));
       
+      // Check audio energy to detect silence BEFORE transcription
+      const audioEnergy = calculateAudioEnergy(combinedAudio);
+      console.log(`[phone] 📊 Audio energy: ${Math.round(audioEnergy)}`);
+      
+      if (audioEnergy < 500) {
+        console.log(`[phone] 🔇 Audio too quiet (${Math.round(audioEnergy)}), likely silence - ignoring`);
+        isProcessing = false;
+        return;
+      }
+      
       // Convert PCM16 to WAV
       const wavBuffer = pcm16ToWav(combinedAudio, expectRate);
       
@@ -5291,8 +5381,15 @@ wsPhone.on("connection", (ws, req) => {
       userText = userText.trim();
       console.log(`[phone] 📝 Raw transcription (${transcriptionSource}): "${userText}"`);
       
-      // Filter out common Whisper hallucinations
-      const hallucinations = [
+      // Check for hallucinations using our improved detection
+      if (isLikelyHallucination(userText, chunks.length)) {
+        console.log(`[phone] 🚫 Detected hallucination, ignoring: "${userText}"`);
+        isProcessing = false;
+        return;
+      }
+      
+      // Also filter out long-form YouTube hallucinations
+      const youtubeHallucinations = [
         'thanks for watching',
         'thank you for watching', 
         'please subscribe',
@@ -5303,10 +5400,10 @@ wsPhone.on("connection", (ws, req) => {
       ];
       
       const lowerText = userText.toLowerCase();
-      const isHallucination = hallucinations.some(phrase => lowerText.includes(phrase));
+      const isYouTubeHallucination = youtubeHallucinations.some(phrase => lowerText.includes(phrase));
       
-      if (isHallucination) {
-        console.log(`[phone] ⚠️ Whisper hallucination detected, ignoring: "${userText}"`);
+      if (isYouTubeHallucination) {
+        console.log(`[phone] ⚠️ YouTube hallucination detected, ignoring: "${userText}"`);
         isProcessing = false;
         return;
       }
