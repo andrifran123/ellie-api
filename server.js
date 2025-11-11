@@ -278,9 +278,16 @@ async function transcribeWithGroqWhisper(audioBuffer, language = "en") {
       contentType: 'audio/wav',
     });
     form.append('model', 'whisper-large-v3-turbo');
-    form.append('language', language);
+    // NOTE: We intentionally DON'T set language parameter to allow auto-detection
+    // This works better for accented English (e.g., Icelandic-English, Nordic-English)
+    // The prompt guidance below helps steer it toward English
     form.append('response_format', 'json');
-    form.append('temperature', '0');
+    form.append('temperature', '0.2'); // Slight flexibility for accents
+    
+    // Strong prompt to guide transcription toward English
+    // This is CRITICAL for accented English speakers
+    const guidancePrompt = "English conversation. Common words: how are you, what, really, are you, do you, can you, want you, horny, naked, sexy, hot, babe, baby, okay, yes, no, maybe, want, like, love, miss you, thinking about you, come over, right now";
+    form.append('prompt', guidancePrompt);
 
     const options = {
       method: 'POST',
@@ -454,6 +461,53 @@ function detectVoiceEmotion(text) {
   // Default: Warm, positive, girlfriend energy
   emotions.push('positivity:medium');
   return emotions;
+}
+
+/**
+ * Clean up common Icelandic-accented English mis-transcriptions
+ * @param {string} text - Transcribed text
+ * @returns {string} - Corrected text
+ */
+function cleanAccentedTranscription(text) {
+  if (!text) return text;
+  
+  // Common Icelandic-accented English mis-transcriptions
+  const corrections = {
+    // Icelandic characters that should be English
+    'ariú hórni': 'are you horny',
+    'áriú hórni': 'are you horny', 
+    'hórni': 'horny',
+    'horf': 'horny',
+    'náked': 'naked',
+    'nákéd': 'naked',
+    'yés': 'yes',
+    'nó': 'no',
+    'wát': 'what',
+    'háu': 'how',
+    'ári': 'are',
+    'yú': 'you',
+    'wánt': 'want',
+    
+    // Common accent patterns
+    'are ju': 'are you',
+    'do ju': 'do you',
+    'can ju': 'can you',
+    'vat': 'what',
+    'vhy': 'why',
+  };
+  
+  let cleaned = text.toLowerCase();
+  
+  // Apply corrections
+  for (const [wrong, right] of Object.entries(corrections)) {
+    const regex = new RegExp(wrong.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    cleaned = cleaned.replace(regex, right);
+  }
+  
+  // Remove accented characters that slipped through
+  cleaned = cleaned.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  
+  return cleaned;
 }
 
 
@@ -5485,6 +5539,13 @@ wsPhone.on("connection", (ws, req) => {
       userText = userText.trim();
       console.log(`[phone] 📝 Raw transcription (${transcriptionSource}): "${userText}"`);
       
+      // Clean up common Icelandic-accented English mis-transcriptions
+      const originalText = userText;
+      userText = cleanAccentedTranscription(userText);
+      if (userText !== originalText) {
+        console.log(`[phone] 🔧 Accent-corrected: "${originalText}" → "${userText}"`);
+      }
+      
       // Check for hallucinations using our improved detection
       if (isLikelyHallucination(userText, chunks.length)) {
         console.log(`[phone] 🚫 Detected hallucination, ignoring: "${userText}"`);
@@ -5577,6 +5638,18 @@ ${factsSummary}${moodLine}`;
 
       reply = filterAsteriskActions(reply);
       console.log(`[phone] 💬 "${reply}"`);
+
+      // 💾 SAVE TO HISTORY - CRITICAL!
+      history.push({ role: "assistant", content: reply });
+      
+      // Save conversation to database in background
+      setImmediate(() => {
+        pool.query(
+          `INSERT INTO conversation_history (user_id, role, content, created_at)
+           VALUES ($1, 'assistant', $2, NOW())`,
+          [userId, reply]
+        ).catch(err => console.error('[phone] ⚠️ Failed to save assistant message:', err));
+      });
 
       // Detect emotion for voice synthesis
       const voiceEmotions = detectVoiceEmotion(reply);
