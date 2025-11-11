@@ -76,16 +76,18 @@ const OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const CARTESIA_API_KEY = process.env.CARTESIA_API_KEY;
 const CARTESIA_ENDPOINT = "https://api.cartesia.ai/tts/bytes";
 
-// Cartesia voice options - you can change this to try different voices
+// Cartesia voice options - VERIFIED FEMALE VOICES
 const CARTESIA_VOICES = {
-  "emily": "a0e99841-438c-4a64-b679-ae501e7d6091", // Conversational, friendly
-  "sarah": "b7d50908-b17c-442d-ad8d-810c63997ed9", // Professional, warm
-  "luna": "79a125e8-cd45-4c13-8a67-188112f4dd22", // Young, energetic
-  "sophia": "4d2fd738-3b3d-4368-957a-bb4805275bd9", // Sophisticated, elegant
+  // Popular female voices from Cartesia
+  "barbershop_man": "a0e99841-438c-4a64-b679-ae501e7d6091", // Actually male - don't use!
+  "claire": "b7d50908-b17c-442d-ad8d-810c63997ed9", // Female, professional
+  "sarah": "822c0700-7048-4579-9c42-cf2c2e6149b1", // Female, warm and friendly
+  "jessica": "a249eaff-1e96-47a6-8605-8f39e9e3c7b5", // Female, young and energetic
+  "emily": "5619d38c-cf51-4d8e-9575-48f61a280413", // Female, conversational
 };
 
-// Ellie's voice (change to any voice ID from CARTESIA_VOICES)
-const ELLIE_CARTESIA_VOICE = CARTESIA_VOICES.emily;
+// Ellie's voice (using a verified female voice - Sarah is warm and friendly)
+const ELLIE_CARTESIA_VOICE = CARTESIA_VOICES.sarah;
 
 // Video metadata extraction
 const videoMetadata = require('./videoMetadata');
@@ -5167,9 +5169,9 @@ wsPhone.on("connection", (ws, req) => {
   let silenceTimer = null;
   let forceProcessTimer = null;
   let lastAudioTime = Date.now();
-  const SILENCE_DURATION = 800; // 0.8s silence before processing (more aggressive)
-  const MAX_BUFFER_SIZE = 120; // Process after 120 chunks (~2.5 seconds of audio)
-  const MAX_WAIT_TIME = 5000; // Force process after 5 seconds no matter what
+  const SILENCE_DURATION = 500; // 0.5s silence (very fast!)
+  const MAX_BUFFER_SIZE = 60; // Process after 60 chunks (~1.2 seconds)
+  const MAX_WAIT_TIME = 2000; // Force process after 2 seconds (much faster!)
 
   function safeSend(obj) {
     try { 
@@ -5276,15 +5278,22 @@ ${factsSummary}${moodLine}`;
       // 3️⃣ CARTESIA - PCM16 output
       try {
         if (CARTESIA_API_KEY) {
-          console.log(`[phone] 🔊 Cartesia TTS`);
+          console.log(`[phone] 🔊 Cartesia TTS - synthesizing...`);
           const pcm16Audio = await callCartesiaTTS_PCM16(reply, ELLIE_CARTESIA_VOICE, sessionLang, expectRate);
           const base64Audio = pcm16Audio.toString('base64');
           
-          // Send in chunks
+          console.log(`[phone] 🎵 Audio synthesized: ${base64Audio.length} chars, ${pcm16Audio.length} bytes`);
+          
+          // Send in chunks with logging
           const chunkSize = 8192;
+          const totalChunks = Math.ceil(base64Audio.length / chunkSize);
+          console.log(`[phone] 📤 Streaming ${totalChunks} audio chunks to browser...`);
+          
           for (let i = 0; i < base64Audio.length; i += chunkSize) {
             safeSend({ type: "audio.delta", audio: base64Audio.slice(i, i + chunkSize) });
           }
+          
+          console.log(`[phone] 📤 All audio chunks sent!`);
         } else {
           console.warn('[phone] No Cartesia key, using OpenAI TTS');
           const speech = await client.audio.speech.create({
@@ -5354,10 +5363,10 @@ ${factsSummary}${moodLine}`;
         
         // Start force process timer on first chunk
         if (audioBuffer.length === 1) {
-          console.log('[phone] 🎤 Started recording - will force process after 5s');
+          console.log('[phone] 🎤 Recording started - will auto-process after 2s');
           forceProcessTimer = setTimeout(() => {
             if (audioBuffer.length > 0) {
-              console.log(`[phone] ⏰ Force processing ${audioBuffer.length} chunks (max time reached)`);
+              console.log(`[phone] ⏰ Auto-processing ${audioBuffer.length} chunks (2s timeout)`);
               clearTimeout(silenceTimer);
               processAudioBuffer();
             }
@@ -5366,7 +5375,7 @@ ${factsSummary}${moodLine}`;
         
         // Force process if buffer is full
         if (audioBuffer.length >= MAX_BUFFER_SIZE) {
-          console.log(`[phone] 📦 Buffer full (${audioBuffer.length} chunks) - processing now`);
+          console.log(`[phone] 📦 Buffer full (${audioBuffer.length} chunks, ~1.2s) - processing now`);
           clearTimeout(silenceTimer);
           clearTimeout(forceProcessTimer);
           processAudioBuffer();
