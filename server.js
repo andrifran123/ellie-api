@@ -261,11 +261,11 @@ async function transcribeWithGroqWhisper(audioBuffer, language = "en") {
     throw new Error('GROQ_API_KEY not configured');
   }
 
-  try {
-    // Use native fetch with FormData (simpler, no stream conversion needed)
+  return new Promise((resolve, reject) => {
     const FormData = require('form-data');
-    const form = new FormData();
+    const https = require('https');
     
+    const form = new FormData();
     form.append('file', audioBuffer, {
       filename: 'audio.wav',
       contentType: 'audio/wav',
@@ -275,41 +275,51 @@ async function transcribeWithGroqWhisper(audioBuffer, language = "en") {
     form.append('response_format', 'json');
     form.append('temperature', '0');
 
-    // Add timeout (3 seconds for fast fallback to OpenAI)
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
+    const options = {
+      method: 'POST',
+      hostname: 'api.groq.com',
+      path: '/openai/v1/audio/transcriptions',
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        ...form.getHeaders(),
+      },
+      timeout: 5000, // 5 second timeout
+    };
 
-    try {
-      const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${GROQ_API_KEY}`,
-          ...form.getHeaders(),
-        },
-        body: form,
-        signal: controller.signal,
+    const req = https.request(options, (res) => {
+      let data = '';
+      
+      res.on('data', (chunk) => {
+        data += chunk;
       });
+      
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          reject(new Error(`Groq Whisper error: ${res.statusCode} - ${data}`));
+          return;
+        }
+        
+        try {
+          const result = JSON.parse(data);
+          resolve(result.text || '');
+        } catch (e) {
+          reject(new Error(`Failed to parse Groq response: ${e.message}`));
+        }
+      });
+    });
 
-      clearTimeout(timeout);
+    req.on('error', (error) => {
+      reject(new Error(`Groq request error: ${error.message}`));
+    });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Groq Whisper error: ${response.status} ${response.statusText} - ${errorText}`);
-      }
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('Groq Whisper timeout after 5 seconds'));
+    });
 
-      const result = await response.json();
-      return result.text || '';
-    } catch (fetchError) {
-      clearTimeout(timeout);
-      if (fetchError.name === 'AbortError') {
-        throw new Error('Groq Whisper timeout after 3 seconds');
-      }
-      throw fetchError;
-    }
-  } catch (error) {
-    console.error('❌ Groq Whisper error:', error);
-    throw error;
-  }
+    // Pipe the form data to the request
+    form.pipe(req);
+  });
 }
 
 
