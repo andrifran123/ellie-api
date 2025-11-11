@@ -247,6 +247,58 @@ async function callCartesiaTTS_PCM16(text, voiceId = ELLIE_CARTESIA_VOICE, langu
 
 
 // ============================================================
+// 🎤 GROQ WHISPER - NSFW-SAFE TRANSCRIPTION
+// ============================================================
+
+/**
+ * Transcribe audio using Groq Whisper (NSFW-friendly!)
+ * @param {Buffer} audioBuffer - Audio file buffer (WAV format)
+ * @param {string} language - Language code (default: "en")
+ * @returns {Promise<string>} - Transcribed text
+ */
+async function transcribeWithGroqWhisper(audioBuffer, language = "en") {
+  if (!GROQ_API_KEY) {
+    throw new Error('GROQ_API_KEY not configured');
+  }
+
+  try {
+    // Create form data
+    const FormData = require('form-data');
+    const form = new FormData();
+    
+    form.append('file', audioBuffer, {
+      filename: 'audio.wav',
+      contentType: 'audio/wav',
+    });
+    form.append('model', 'whisper-large-v3-turbo'); // Fastest Groq Whisper model
+    form.append('language', language);
+    form.append('response_format', 'json');
+    form.append('temperature', '0'); // Most accurate
+
+    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        ...form.getHeaders(),
+      },
+      body: form,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Groq Whisper error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    const result = await response.json();
+    return result.text || '';
+  } catch (error) {
+    console.error('❌ Groq Whisper error:', error);
+    throw error;
+  }
+}
+
+
+// ============================================================
 // 🧠 ADVANCED MEMORY SYSTEM IMPORTS
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
@@ -5202,21 +5254,42 @@ wsPhone.on("connection", (ws, req) => {
     console.log(`[phone] 🎤 Processing ${chunks.length} audio chunks`);
     
     try {
-      // 1️⃣ TRANSCRIBE with Whisper
+      // 1️⃣ TRANSCRIBE with Groq Whisper (NSFW-safe!)
       const combinedAudio = Buffer.concat(chunks.map(c => Buffer.from(c, 'base64')));
       
       // Convert PCM16 to WAV
       const wavBuffer = pcm16ToWav(combinedAudio, expectRate);
-      const audioFile = await toFile(wavBuffer, "audio.wav");
       
-      const transcription = await client.audio.transcriptions.create({
-        model: "whisper-1",
-        file: audioFile,
-        language: sessionLang,
-      });
+      let userText = '';
+      let transcriptionSource = 'groq';
+      
+      // Try Groq Whisper first (NSFW-friendly!)
+      try {
+        console.log(`[phone] 🎤 Transcribing with Groq Whisper (NSFW-safe)...`);
+        userText = await transcribeWithGroqWhisper(wavBuffer, sessionLang);
+        console.log(`[phone] ✅ Groq Whisper: "${userText}"`);
+      } catch (groqError) {
+        // Fallback to OpenAI Whisper if Groq fails
+        console.warn('[phone] ⚠️ Groq Whisper failed, falling back to OpenAI:', groqError.message);
+        try {
+          const audioFile = await toFile(wavBuffer, "audio.wav");
+          const transcription = await client.audio.transcriptions.create({
+            model: "whisper-1",
+            file: audioFile,
+            language: sessionLang,
+          });
+          userText = (transcription.text || "").trim();
+          transcriptionSource = 'openai';
+          console.log(`[phone] ✅ OpenAI Whisper (fallback): "${userText}"`);
+        } catch (openaiError) {
+          console.error('[phone] ❌ Both Groq and OpenAI Whisper failed!', openaiError);
+          isProcessing = false;
+          return;
+        }
+      }
 
-      const userText = (transcription.text || "").trim();
-      console.log(`[phone] 📝 Raw transcription: "${userText}"`);
+      userText = userText.trim();
+      console.log(`[phone] 📝 Raw transcription (${transcriptionSource}): "${userText}"`);
       
       // Filter out common Whisper hallucinations
       const hallucinations = [
@@ -7076,12 +7149,13 @@ server.listen(PORT, () => {
   if (CARTESIA_API_KEY) {
     console.log("🔊 Voice System: Cartesia Sonic (realistic voice)");
     console.log("🧠 Voice AI Brain: Using hybrid routing (same as chat)");
-    console.log("   ├─ Transcription: OpenAI Whisper-1");
+    console.log("   ├─ Transcription: Groq Whisper (NSFW-safe, FREE!)");
     console.log("   ├─ AI Response: Hybrid routing (Llama 70B + Mythomax)");
     console.log("   └─ Voice Synthesis: Cartesia Sonic (3000x cheaper!)");
   } else {
     console.log("🔊 Voice System: OpenAI TTS (set CARTESIA_API_KEY for 90% cost savings)");
     console.log("🧠 Voice AI Brain: Using hybrid routing (same as chat)");
+    console.log("   ├─ Transcription: Groq Whisper (NSFW-safe, FREE!)");
   }
   console.log("================================");
 });
