@@ -193,6 +193,57 @@ async function callCartesiaTTS(text, voiceId = ELLIE_CARTESIA_VOICE, language = 
   }
 }
 
+/**
+ * Call Cartesia TTS API with PCM16 output (for phone calls)
+ * @param {string} text - Text to synthesize
+ * @param {string} voiceId - Cartesia voice ID
+ * @param {string} language - Language code (default: "en")
+ * @param {number} sampleRate - Sample rate (default: 24000)
+ * @returns {Promise<Buffer>} - Audio buffer (PCM16)
+ */
+async function callCartesiaTTS_PCM16(text, voiceId = ELLIE_CARTESIA_VOICE, language = "en", sampleRate = 24000) {
+  if (!CARTESIA_API_KEY) {
+    throw new Error('CARTESIA_API_KEY not configured');
+  }
+
+  try {
+    const response = await fetch(CARTESIA_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'X-API-Key': CARTESIA_API_KEY,
+        'Cartesia-Version': '2024-06-10',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model_id: "sonic-english",
+        transcript: text,
+        voice: {
+          mode: "id",
+          id: voiceId
+        },
+        output_format: {
+          container: "raw",
+          encoding: "pcm_s16le",  // PCM16 little-endian
+          sample_rate: sampleRate
+        },
+        language: language,
+        speed: 1.0
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Cartesia API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    const audioBuffer = await response.arrayBuffer();
+    return Buffer.from(audioBuffer);
+  } catch (error) {
+    console.error('❌ Cartesia TTS PCM16 error:', error);
+    throw error;
+  }
+}
+
 
 // ============================================================
 // 🧠 ADVANCED MEMORY SYSTEM IMPORTS
@@ -5078,18 +5129,14 @@ function makeVadCommitter(sendFn, commitFn, createFn, silenceMs = 700) {
 }
 
 wsPhone.on("connection", (ws, req) => {
-
-
   console.log("================================");
-  console.log("[phone] âœ“ NEW CONNECTION");
+  console.log("[phone] ✅ NEW CONNECTION - HYBRID ROUTING + CARTESIA");
   console.log("[phone] Origin:", req?.headers?.origin);
-  console.log("[phone] User-Agent:", req?.headers?.['user-agent']?.slice(0, 100));
-  console.log("[phone] OPENAI_API_KEY present:", !!process.env.OPENAI_API_KEY);
-  console.log("[phone] OPENAI_API_KEY length:", process.env.OPENAI_API_KEY?.length || 0);
-  console.log("[phone] REALTIME_MODEL:", REALTIME_MODEL);
+  console.log("[phone] AI: Llama 70B + Mythomax (uncensored)");
+  console.log("[phone] Voice: Cartesia Sonic");
   console.log("================================");
 
-  // keepalive to prevent Render timeout
+  // Keepalive
   const hb = setInterval(() => { try { ws.ping(); } catch {} }, 25000);
 
   ws.on("error", (e) => {
@@ -5098,13 +5145,13 @@ wsPhone.on("connection", (ws, req) => {
 
   ws.on("close", (code, reason) => {
     clearInterval(hb);
+    clearTimeout(silenceTimer);
     console.log("[phone ws closed]", code, reason?.toString?.() || "");
   });
 
-  // Send hello handshake immediately to the browser
+  // Send hello handshake
   try {
-    ws.send(JSON.stringify({ type: "hello-server", message: "âœ“ phone WS connected" }));
-    console.log("[phone] Sent hello-server handshake");
+    ws.send(JSON.stringify({ type: "hello-server", message: "✅ Hybrid + Cartesia ready" }));
   } catch (e) {
     console.error("[phone ws send error]", e);
   }
@@ -5112,220 +5159,187 @@ wsPhone.on("connection", (ws, req) => {
   let userId = extractUserIdFromWsRequest(req) || "guest";
   let sessionLang = "en";
   let expectRate = 24000;
+  let isProcessing = false;
 
-  let rtWs = null;
-  let rtOpen = false;
+  // Audio buffering
+  let audioBuffer = [];
+  let silenceTimer = null;
+  const SILENCE_DURATION = 1200; // 1.2s silence before processing
+  const MAX_BUFFER_SIZE = 400;
 
   function safeSend(obj) {
     try { 
       ws.send(JSON.stringify(obj)); 
-      console.log("[phone->browser] Sent:", obj.type);
     } catch (e) {
       console.error("[phone->browser] Send failed:", e);
     }
   }
 
-  let vad = null;
+  // Process audio buffer
+  async function processAudioBuffer() {
+    if (isProcessing || audioBuffer.length === 0) return;
+    
+    isProcessing = true;
+    const chunks = [...audioBuffer];
+    audioBuffer = [];
+    
+    console.log(`[phone] 🎤 Processing ${chunks.length} audio chunks`);
+    
+    try {
+      // 1️⃣ TRANSCRIBE with Whisper
+      const combinedAudio = Buffer.concat(chunks.map(c => Buffer.from(c, 'base64')));
+      
+      // Convert PCM16 to WAV
+      const wavBuffer = pcm16ToWav(combinedAudio, expectRate);
+      const audioFile = await toFile(wavBuffer, "audio.wav");
+      
+      const transcription = await client.audio.transcriptions.create({
+        model: "whisper-1",
+        file: audioFile,
+        language: sessionLang,
+      });
 
+      const userText = (transcription.text || "").trim();
+      console.log(`[phone] 📝 "${userText}"`);
+      
+      if (!userText || userText.length < 2) {
+        isProcessing = false;
+        return;
+      }
+
+      // 2️⃣ AI RESPONSE - HYBRID ROUTING
+      const relationship = await getUserRelationship(userId);
+      await updateStreak(userId);
+      
+      // Background: facts & emotions
+      Promise.all([
+        extractFacts(userText).then(facts => facts?.length && saveFacts(userId, facts, userText)),
+        extractEmotionPoint(userText).then(emo => emo && saveEmotion(userId, emo, userText))
+      ]).catch(err => console.error('[phone] Background save error:', err));
+
+      const history = await getHistory(userId);
+      const [storedFacts, latestMood] = await Promise.all([
+        getFacts(userId),
+        getLatestEmotion(userId),
+      ]);
+      
+      const factsLines = storedFacts.slice(0, 12).map(r => `- ${r.fact}`).join("\n");
+      const factsSummary = factsLines ? `\nKnown facts:\n${factsLines}` : "";
+      const moodLine = latestMood ? `\nUser mood: ${latestMood.label}` : "";
+
+      let personalityInstructions = getPersonalityInstructions(relationship);
+      personalityInstructions += `
+
+PHONE CALL MODE:
+• SHORT responses: 1-2 sentences max (8-15 words)
+• Natural & spontaneous
+• Use: um, like, I mean, you know
+• Contractions: I'm, you're, gonna, wanna
+• Match his energy
+• Be human, not perfect!
+
+${factsSummary}${moodLine}`;
+
+      if (history[0]?.role === 'system') {
+        history[0].content = personalityInstructions;
+      }
+      
+      history.push({ role: "user", content: userText });
+
+      // 🔀 HYBRID ROUTING
+      let reply;
+      try {
+        console.log(`[phone] 🧠 Routing: ${userId}`);
+        reply = await getHybridResponse(userId, userText, history.slice(-20), pool);
+      } catch (routingError) {
+        console.error('❌ Routing failed:', routingError);
+        const completion = await client.chat.completions.create({
+          model: CHAT_MODEL,
+          messages: history.slice(-20),
+          temperature: 0.9,
+          max_tokens: 120,
+        });
+        reply = completion.choices[0]?.message?.content || "Sorry, what?";
+      }
+
+      reply = filterAsteriskActions(reply);
+      console.log(`[phone] 💬 "${reply}"`);
+
+      // 3️⃣ CARTESIA - PCM16 output
+      try {
+        if (CARTESIA_API_KEY) {
+          console.log(`[phone] 🔊 Cartesia TTS`);
+          const pcm16Audio = await callCartesiaTTS_PCM16(reply, ELLIE_CARTESIA_VOICE, sessionLang, expectRate);
+          const base64Audio = pcm16Audio.toString('base64');
+          
+          // Send in chunks
+          const chunkSize = 8192;
+          for (let i = 0; i < base64Audio.length; i += chunkSize) {
+            safeSend({ type: "audio.delta", audio: base64Audio.slice(i, i + chunkSize) });
+          }
+        } else {
+          console.warn('[phone] No Cartesia key, using OpenAI TTS');
+          const speech = await client.audio.speech.create({
+            model: "tts-1",
+            voice: "sage",
+            input: reply,
+            format: "pcm",
+          });
+          const audioBuffer = Buffer.from(await speech.arrayBuffer());
+          const base64Audio = audioBuffer.toString('base64');
+          
+          const chunkSize = 8192;
+          for (let i = 0; i < base64Audio.length; i += chunkSize) {
+            safeSend({ type: "audio.delta", audio: base64Audio.slice(i, i + chunkSize) });
+          }
+        }
+        
+        safeSend({ type: "response.done" });
+        console.log(`[phone] ✅ Complete`);
+        
+      } catch (ttsError) {
+        console.error('❌ TTS error:', ttsError);
+        safeSend({ type: "error", message: "Voice failed" });
+      }
+
+      isProcessing = false;
+      
+    } catch (error) {
+      console.error('[phone] Error:', error);
+      safeSend({ type: "error", message: "Processing failed" });
+      isProcessing = false;
+    }
+  }
+
+  // Message handler
   ws.on("message", async (raw) => {
     try {
       const msg = JSON.parse(raw.toString("utf8"));
-      console.log("[phone<-browser] Received:", msg.type);
 
       if (msg.type === "hello") {
         userId = msg.userId || userId;
         if (msg.language) sessionLang = msg.language;
         expectRate = Number(msg.sampleRate || expectRate) || 24000;
 
-        console.log("[phone] Processing hello:", { userId, sessionLang, expectRate });
+        const relationship = await getUserRelationship(userId);
+        console.log("[phone] User:", userId, "Stage:", relationship.current_stage);
 
-        // Validate API key
-        if (!process.env.OPENAI_API_KEY) {
-          console.error("[phone] Ãƒâ€šÃ‚ÂÃƒâ€¦Ã¢â‚¬â„¢ OPENAI_API_KEY is missing!");
-          safeSend({ type: "error", message: "Server configuration error: Missing API key" });
-          return;
-        }
-
-        // Connect to OpenAI Realtime
-        const rtUrl = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(REALTIME_MODEL)}`;
-        console.log("[phone] Connecting to OpenAI Realtime:", rtUrl);
-
-        rtWs = new WebSocket(rtUrl, {
-          headers: {
-            "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-            "OpenAI-Beta": "realtime=v1",
-          },
-        });
-
-        rtWs.on("open", async () => {
-          rtOpen = true;
-          console.log("[phone->OpenAI] âœ“ Realtime connection opened");
-
-// ===== RELATIONSHIP SYSTEM: Load dynamic personality =====
-const relationship = await getUserRelationship(userId);
-await updateStreak(userId);
-const dynamicPersonality = getPersonalityInstructions(relationship);
-console.log("[phone] Relationship stage:", relationship.current_stage, "Level:", relationship.relationship_level);
-
-// LOAD FACTS AND EMOTIONS
-const [storedFacts, latestMood, recentEmos] = await Promise.all([
-  getFacts(userId),
-  getLatestEmotion(userId),
-  getRecentEmotions(userId, 5),
-]);
-
-const factsLines = storedFacts.slice(0, 20).map(r => `- ${r.fact}`).join("\n");
-const factsSummary = factsLines ? `\nKnown facts about the user:\n${factsLines}` : "";
-
-const moodLine = latestMood
-  ? `\nUser's recent mood: ${latestMood.label} (intensity: ${latestMood.intensity?.toFixed(2) || "unknown"})`
-  : "";
-
-console.log("[phone] Loaded facts:", storedFacts.length, "Mood:", latestMood?.label || "none");
-console.log("[phone] Facts preview:", storedFacts.slice(0, 3).map(f => f.fact));
-
-          // Configure the session once open
-          const sessionConfig = {
-            type: "session.update",
-            session: {
-              modalities: ["text", "audio"],
-              voice: "sage",
-              input_audio_format: "pcm16",
-              output_audio_format: "pcm16",
-              input_audio_transcription: {
-                model: "whisper-1"
-              },
-              turn_detection: { 
-                type: "server_vad", 
-                threshold: 0.5,              // Back to original - detects when you speak
-                silence_duration_ms: 700     // Original value
-              },
-              temperature: 0.8,
-              max_response_output_tokens: 800,    // Increased from 150 - allows ~30-40 second responses
-    
-             instructions: `${dynamicPersonality}
-              
-VOICE MODE SPECIFIC:
-â€¢ Keep it SHORT - 5-18 words per response (like texting)
-â€¢ Use natural filler words: "um", "like", "you know", "I mean", "so"
-â€¢ Don't be perfect - real people pause, self-correct, trail off sometimes
-â€¢ Use contractions: I'm, you're, what's, can't, won't, gonna, wanna
-â€¢ Add natural reactions: "omg", "aww", "mm", "oh"
-â€¢ Be conversational and casual
-â€¢ Sound spontaneous, not rehearsed
-â€¢ Match his emotional energy naturally
-
-${factsSummary}${moodLine}
-
-SOUND HUMAN - NOT AI:
-â€¢ Use "um", "like", "I mean" naturally
-â€¢ Don't be too perfect or polished
-â€¢ Vary your responses
-â€¢ Sound spontaneous and natural
-â€¢ Real conversations aren't scripted!`.trim(),
-            },
-          };
-
-          console.log("[phone->OpenAI] Sending session config");
-          console.log("[phone->OpenAI] ðŸŽ¤ Voice: sage");
-          console.log("[phone->OpenAI] ðŸ“ Personality: NATURAL & HUMAN - Filler words, less giggles, spontaneous");
-          console.log("[phone->OpenAI] ðŸŽ›ï¸  Temperature: 0.8, Max tokens: 800 (allows ~30-40s responses)");
-          console.log("[phone->OpenAI] ðŸŽ™ï¸  VAD: threshold=0.5 (normal sensitivity), silence=700ms");
-          rtWs.send(JSON.stringify(sessionConfig));
-
-          // set up debounced commit helper
-        //  vad = makeVadCommitter(
-          //  safeSend,
-            // () => {
-             // console.log("[phone->OpenAI] Committing audio buffer");
-            //  rtWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-          //  },
-           // () => {
-             // console.log("[phone->OpenAI] Creating response");
-             // rtWs.send(JSON.stringify({ type: "response.create" }));
-          //  },
-          //  800
-         // );
-
-          safeSend({ type: "session-ready" });
-        });
-
-        rtWs.on("message", async (buf) => {
-          try {
-            const ev = JSON.parse(buf.toString("utf8"));
-	
-
-
-            // Stream Ellie audio back to the browser (base64 PCM16)
-            // Stream Ellie audio back to the browser (base64 PCM16)
-if (ev.type === "response.audio.delta" && ev.delta) {
-  safeSend({ type: "audio.delta", audio: ev.delta });
-}
-
-//
-if (ev.type === "response.done") {
-  console.log("[phone<-OpenAI] âœ“ Response complete");
-}
-
-
-if (ev.type === "conversation.item.created") {
-  console.log("[phone<-OpenAI] Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢Ãƒâ€šÃ‚Â¬ Conversation item created");
-}
-
-            // Save facts & emotion from user's *live* transcript
-            // Save facts & emotion from COMPLETED transcript (not deltas)
-            if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
-              const text = String(ev.transcript || "").trim();
-              if (text && text.length > 5) {  // Only process meaningful text
-                console.log("[phone] ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã‚Â Completed transcript:", text);
-                try {
-                  const [facts, emo] = await Promise.all([
-                    extractFacts(text),
-                    extractEmotionPoint(text),
-                  ]);
-                  if (facts?.length) {
-                    await saveFacts(userId, facts, text);
-                    console.log(`[phone] ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Saved ${facts.length} fact(s) for user ${userId}`);
-                  }
-                  if (emo) {
-                    await saveEmotion(userId, emo, text);
-                    console.log(`[phone] ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Saved emotion for user ${userId}`);
-                  }
-                } catch (e) {
-                  console.error("[phone] realtime transcript save error:", e?.message || e);
-                }
-              }
-            }
-            // forward errors
-            if (ev.type === "error") {
-              console.error("[phone<-OpenAI] Error:", ev);
-              safeSend({ type: "error", message: ev.error?.message || "Realtime error" });
-            }
-          } catch (e) {
-            console.error("[phone<-OpenAI] Parse error:", e);
-          }
-        });
-
-        rtWs.on("close", (code, reason) => {
-          rtOpen = false;
-          console.log("[phone<-OpenAI] Closed:", code, reason?.toString?.() || "");
-        });
-
-        rtWs.on("error", (e) => {
-          console.error("[phone<-OpenAI] Error:", e?.message || e);
-          safeSend({ type: "error", message: "OpenAI realtime connection failed." });
-        });
-
+        safeSend({ type: "session-ready", voiceProvider: "cartesia", aiModel: "hybrid" });
         return;
       }
 
       if (msg.type === "audio.append" && msg.audio) {
-        if (rtOpen) {
-          rtWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: msg.audio }));
-          // arm VAD commit timer after each chunk
-        //  vad?.arm();
-        } else {
-          console.warn("[phone] Received audio but rtWs not open");
+        audioBuffer.push(msg.audio);
+        clearTimeout(silenceTimer);
+        
+        silenceTimer = setTimeout(() => {
+          console.log('[phone] 🔇 Silence detected');
+          processAudioBuffer();
+        }, SILENCE_DURATION);
+        
+        if (audioBuffer.length >= MAX_BUFFER_SIZE) {
+          clearTimeout(silenceTimer);
+          processAudioBuffer();
         }
         return;
       }
@@ -5334,18 +5348,44 @@ if (ev.type === "conversation.item.created") {
         safeSend({ type: "pong", t: Date.now() });
         return;
       }
+      
     } catch (e) {
-      console.error("[phone] Message handler error:", e);
+      console.error("[phone] Handler error:", e);
       safeSend({ type: "error", message: String(e?.message || e) });
     }
   });
 
   ws.on("close", () => {
     clearInterval(hb);
-    try { rtWs?.close(); } catch {}
-    console.log("[phone] client disconnected");
+    clearTimeout(silenceTimer);
   });
 });
+
+// PCM16 to WAV helper
+function pcm16ToWav(pcm16Buffer, sampleRate = 24000) {
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+  const blockAlign = numChannels * bitsPerSample / 8;
+  const dataSize = pcm16Buffer.length;
+  
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(dataSize, 40);
+  
+  return Buffer.concat([header, pcm16Buffer]);
+}
 
 // Graceful shutdown
 function shutdown(signal) {
