@@ -5137,32 +5137,24 @@ wsPhone.on("connection", (ws, req) => {
   console.log("================================");
 
   // Keepalive
-  const hb = setInterval(() => { 
-    try { 
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.ping(); 
-      }
-    } catch (e) {
-      console.error("[phone] Ping error:", e);
-    }
-  }, 25000);
+  const hb = setInterval(() => { try { ws.ping(); } catch {} }, 25000);
 
   ws.on("error", (e) => {
-    console.error("[phone] ❌ WebSocket error:", e?.message || e);
+    console.error("[phone ws error]", e?.message || e);
   });
 
   ws.on("close", (code, reason) => {
     clearInterval(hb);
     clearTimeout(silenceTimer);
-    console.log(`[phone] 🔌 Connection closed - Code: ${code}, Reason: ${reason?.toString?.() || "none"}`);
+    clearTimeout(forceProcessTimer);
+    console.log("[phone ws closed]", code, reason?.toString?.() || "");
   });
 
   // Send hello handshake
   try {
     ws.send(JSON.stringify({ type: "hello-server", message: "✅ Hybrid + Cartesia ready" }));
-    console.log("[phone] 📤 Sent hello-server handshake");
   } catch (e) {
-    console.error("[phone] ❌ Failed to send hello:", e);
+    console.error("[phone ws send error]", e);
   }
 
   let userId = extractUserIdFromWsRequest(req) || "guest";
@@ -5173,51 +5165,40 @@ wsPhone.on("connection", (ws, req) => {
   // Audio buffering
   let audioBuffer = [];
   let silenceTimer = null;
-  const SILENCE_DURATION = 1500; // 1.5s silence
-  const MAX_BUFFER_SIZE = 500;
-  let audioChunkCount = 0;
+  let forceProcessTimer = null;
+  let lastAudioTime = Date.now();
+  const SILENCE_DURATION = 800; // 0.8s silence before processing (more aggressive)
+  const MAX_BUFFER_SIZE = 120; // Process after 120 chunks (~2.5 seconds of audio)
+  const MAX_WAIT_TIME = 5000; // Force process after 5 seconds no matter what
 
   function safeSend(obj) {
     try { 
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(obj)); 
-        console.log(`[phone->browser] ✅ Sent: ${obj.type}`);
-      } else {
-        console.warn(`[phone->browser] ⚠️ Can't send ${obj.type}, socket not open (state: ${ws.readyState})`);
-      }
+      ws.send(JSON.stringify(obj)); 
     } catch (e) {
-      console.error(`[phone->browser] ❌ Send failed for ${obj.type}:`, e);
+      console.error("[phone->browser] Send failed:", e);
     }
   }
 
   // Process audio buffer
   async function processAudioBuffer() {
-    if (isProcessing) {
-      console.log('[phone] ⏳ Already processing, skipping...');
-      return;
-    }
+    if (isProcessing || audioBuffer.length === 0) return;
     
-    if (audioBuffer.length === 0) {
-      console.log('[phone] ⚠️ Empty buffer, skipping...');
-      return;
-    }
+    // Clear all timers
+    clearTimeout(silenceTimer);
+    clearTimeout(forceProcessTimer);
     
     isProcessing = true;
     const chunks = [...audioBuffer];
     audioBuffer = [];
     
-    console.log(`[phone] 🎤 Processing ${chunks.length} audio chunks (${audioChunkCount} total received)`);
+    console.log(`[phone] 🎤 Processing ${chunks.length} audio chunks`);
     
     try {
       // 1️⃣ TRANSCRIBE with Whisper
-      console.log('[phone] 📝 Step 1: Transcribing...');
       const combinedAudio = Buffer.concat(chunks.map(c => Buffer.from(c, 'base64')));
-      console.log(`[phone] 📊 Combined audio size: ${combinedAudio.length} bytes`);
       
       // Convert PCM16 to WAV
       const wavBuffer = pcm16ToWav(combinedAudio, expectRate);
-      console.log(`[phone] 🎵 WAV buffer size: ${wavBuffer.length} bytes`);
-      
       const audioFile = await toFile(wavBuffer, "audio.wav");
       
       const transcription = await client.audio.transcriptions.create({
@@ -5227,47 +5208,28 @@ wsPhone.on("connection", (ws, req) => {
       });
 
       const userText = (transcription.text || "").trim();
-      console.log(`[phone] 📝 Transcribed: "${userText}"`);
+      console.log(`[phone] 📝 "${userText}"`);
       
       if (!userText || userText.length < 2) {
-        console.log("[phone] ⚠️ Empty/short transcription, skipping");
         isProcessing = false;
         return;
       }
 
-      // Notify browser
-      safeSend({ type: "transcript", text: userText });
-
       // 2️⃣ AI RESPONSE - HYBRID ROUTING
-      console.log('[phone] 🧠 Step 2: Getting AI response...');
       const relationship = await getUserRelationship(userId);
       await updateStreak(userId);
       
-      console.log(`[phone] 👤 User: ${userId}, Stage: ${relationship.current_stage}, Level: ${relationship.relationship_level}`);
-      
       // Background: facts & emotions
       Promise.all([
-        extractFacts(userText).then(facts => {
-          if (facts?.length) {
-            saveFacts(userId, facts, userText);
-            console.log(`[phone] 💾 Saved ${facts.length} facts`);
-          }
-        }),
-        extractEmotionPoint(userText).then(emo => {
-          if (emo) {
-            saveEmotion(userId, emo, userText);
-            console.log(`[phone] 💾 Saved emotion: ${emo.label}`);
-          }
-        })
-      ]).catch(err => console.error('[phone] ❌ Background save error:', err));
+        extractFacts(userText).then(facts => facts?.length && saveFacts(userId, facts, userText)),
+        extractEmotionPoint(userText).then(emo => emo && saveEmotion(userId, emo, userText))
+      ]).catch(err => console.error('[phone] Background save error:', err));
 
       const history = await getHistory(userId);
       const [storedFacts, latestMood] = await Promise.all([
         getFacts(userId),
         getLatestEmotion(userId),
       ]);
-      
-      console.log(`[phone] 📚 Loaded ${storedFacts.length} facts, Mood: ${latestMood?.label || 'none'}`);
       
       const factsLines = storedFacts.slice(0, 12).map(r => `- ${r.fact}`).join("\n");
       const factsSummary = factsLines ? `\nKnown facts:\n${factsLines}` : "";
@@ -5295,12 +5257,10 @@ ${factsSummary}${moodLine}`;
       // 🔀 HYBRID ROUTING
       let reply;
       try {
-        console.log(`[phone] 🔀 Routing message for user ${userId}...`);
+        console.log(`[phone] 🧠 Routing: ${userId}`);
         reply = await getHybridResponse(userId, userText, history.slice(-20), pool);
-        console.log(`[phone] ✅ Got AI response from hybrid routing`);
       } catch (routingError) {
-        console.error('[phone] ❌ Hybrid routing failed:', routingError);
-        console.log('[phone] 🔄 Falling back to OpenAI...');
+        console.error('❌ Routing failed:', routingError);
         const completion = await client.chat.completions.create({
           model: CHAT_MODEL,
           messages: history.slice(-20),
@@ -5311,31 +5271,22 @@ ${factsSummary}${moodLine}`;
       }
 
       reply = filterAsteriskActions(reply);
-      console.log(`[phone] 💬 AI Reply: "${reply}"`);
+      console.log(`[phone] 💬 "${reply}"`);
 
       // 3️⃣ CARTESIA - PCM16 output
-      console.log('[phone] 🔊 Step 3: Synthesizing voice...');
       try {
         if (CARTESIA_API_KEY) {
-          console.log(`[phone] 🎤 Using Cartesia TTS (PCM16)...`);
+          console.log(`[phone] 🔊 Cartesia TTS`);
           const pcm16Audio = await callCartesiaTTS_PCM16(reply, ELLIE_CARTESIA_VOICE, sessionLang, expectRate);
-          console.log(`[phone] ✅ Got Cartesia audio: ${pcm16Audio.length} bytes`);
-          
           const base64Audio = pcm16Audio.toString('base64');
-          console.log(`[phone] 📊 Base64 audio length: ${base64Audio.length}`);
           
-          // Send in chunks for smoother playback
+          // Send in chunks
           const chunkSize = 8192;
-          let sentChunks = 0;
           for (let i = 0; i < base64Audio.length; i += chunkSize) {
-            const chunk = base64Audio.slice(i, i + chunkSize);
-            safeSend({ type: "audio.delta", audio: chunk });
-            sentChunks++;
+            safeSend({ type: "audio.delta", audio: base64Audio.slice(i, i + chunkSize) });
           }
-          console.log(`[phone] 📤 Sent ${sentChunks} audio chunks to browser`);
-          
         } else {
-          console.warn('[phone] ⚠️ No Cartesia key, using OpenAI TTS...');
+          console.warn('[phone] No Cartesia key, using OpenAI TTS');
           const speech = await client.audio.speech.create({
             model: "tts-1",
             voice: "sage",
@@ -5349,25 +5300,21 @@ ${factsSummary}${moodLine}`;
           for (let i = 0; i < base64Audio.length; i += chunkSize) {
             safeSend({ type: "audio.delta", audio: base64Audio.slice(i, i + chunkSize) });
           }
-          console.log(`[phone] 📤 Sent OpenAI TTS audio to browser`);
         }
         
         safeSend({ type: "response.done" });
-        console.log(`[phone] ✅ Response complete!`);
+        console.log(`[phone] ✅ Complete`);
         
       } catch (ttsError) {
-        console.error('[phone] ❌ TTS error:', ttsError);
-        console.error('[phone] Stack:', ttsError.stack);
-        safeSend({ type: "error", message: "Voice synthesis failed" });
+        console.error('❌ TTS error:', ttsError);
+        safeSend({ type: "error", message: "Voice failed" });
       }
 
       isProcessing = false;
-      console.log(`[phone] 🎉 Processing complete, ready for next message`);
       
     } catch (error) {
-      console.error('[phone] ❌ Processing error:', error);
-      console.error('[phone] Stack:', error.stack);
-      safeSend({ type: "error", message: "Processing failed: " + error.message });
+      console.error('[phone] Error:', error);
+      safeSend({ type: "error", message: "Processing failed" });
       isProcessing = false;
     }
   }
@@ -5376,45 +5323,52 @@ ${factsSummary}${moodLine}`;
   ws.on("message", async (raw) => {
     try {
       const msg = JSON.parse(raw.toString("utf8"));
-      console.log(`[phone<-browser] 📥 Received: ${msg.type}`);
 
       if (msg.type === "hello") {
         userId = msg.userId || userId;
         if (msg.language) sessionLang = msg.language;
         expectRate = Number(msg.sampleRate || expectRate) || 24000;
 
-        console.log(`[phone] 👋 Hello received - User: ${userId}, Lang: ${sessionLang}, Rate: ${expectRate}`);
-
         const relationship = await getUserRelationship(userId);
-        console.log(`[phone] 📊 Relationship - Stage: ${relationship.current_stage}, Level: ${relationship.relationship_level}`);
+        console.log("[phone] User:", userId, "Stage:", relationship.current_stage);
 
-        safeSend({ 
-          type: "session-ready", 
-          voiceProvider: CARTESIA_API_KEY ? "cartesia" : "openai", 
-          aiModel: "hybrid" 
-        });
+        safeSend({ type: "session-ready", voiceProvider: "cartesia", aiModel: "hybrid" });
         return;
       }
 
       if (msg.type === "audio.append" && msg.audio) {
-        audioChunkCount++;
         audioBuffer.push(msg.audio);
+        lastAudioTime = Date.now();
         
-        // Log every 50 chunks
-        if (audioChunkCount % 50 === 0) {
-          console.log(`[phone] 🎙️ Received ${audioChunkCount} audio chunks (buffer: ${audioBuffer.length})`);
+        // Log progress every 50 chunks
+        if (audioBuffer.length % 50 === 0) {
+          console.log(`[phone] 🎙️ Received ${audioBuffer.length} audio chunks (buffer: ${audioBuffer.length})`);
         }
         
+        // Clear and restart silence timer
         clearTimeout(silenceTimer);
-        
         silenceTimer = setTimeout(() => {
-          console.log(`[phone] 🔇 Silence detected after ${audioChunkCount} chunks`);
+          console.log('[phone] 🔇 Silence detected - processing audio');
           processAudioBuffer();
         }, SILENCE_DURATION);
         
+        // Start force process timer on first chunk
+        if (audioBuffer.length === 1) {
+          console.log('[phone] 🎤 Started recording - will force process after 5s');
+          forceProcessTimer = setTimeout(() => {
+            if (audioBuffer.length > 0) {
+              console.log(`[phone] ⏰ Force processing ${audioBuffer.length} chunks (max time reached)`);
+              clearTimeout(silenceTimer);
+              processAudioBuffer();
+            }
+          }, MAX_WAIT_TIME);
+        }
+        
+        // Force process if buffer is full
         if (audioBuffer.length >= MAX_BUFFER_SIZE) {
-          console.log(`[phone] 📦 Buffer full (${audioBuffer.length}), processing now...`);
+          console.log(`[phone] 📦 Buffer full (${audioBuffer.length} chunks) - processing now`);
           clearTimeout(silenceTimer);
+          clearTimeout(forceProcessTimer);
           processAudioBuffer();
         }
         return;
@@ -5424,20 +5378,18 @@ ${factsSummary}${moodLine}`;
         safeSend({ type: "pong", t: Date.now() });
         return;
       }
-
-      console.log(`[phone] ⚠️ Unknown message type: ${msg.type}`);
       
     } catch (e) {
-      console.error("[phone] ❌ Message handler error:", e);
-      console.error("[phone] Stack:", e.stack);
-      safeSend({ type: "error", message: "Handler error: " + e.message });
+      console.error("[phone] Handler error:", e);
+      safeSend({ type: "error", message: String(e?.message || e) });
     }
   });
 
   ws.on("close", () => {
     clearInterval(hb);
     clearTimeout(silenceTimer);
-    console.log(`[phone] 👋 Cleanup complete - Received ${audioChunkCount} audio chunks total`);
+    clearTimeout(forceProcessTimer);
+    console.log("[phone] 📞 Client disconnected");
   });
 });
 
@@ -5466,6 +5418,69 @@ function pcm16ToWav(pcm16Buffer, sampleRate = 24000) {
   
   return Buffer.concat([header, pcm16Buffer]);
 }
+
+// Graceful shutdown
+function shutdown(signal) {
+  console.log(`
+
+\n${signal} received. Closing DB pool...`);
+  pool.end(() => {
+    console.log("DB pool closed. Exiting.");
+    process.exit(0);
+  });
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+// Start HTTP + WS
+
+
+// ============================================================
+// RELATIONSHIP STATUS ENDPOINT
+// ============================================================
+
+
+// ============================================================
+// ANALYTICS ENDPOINTS (For Dashboard)
+// ============================================================
+
+// Analytics Overview - User distribution by stage
+app.get("/api/analytics/overview", async (req, res) => {
+  try {
+    // Optional: Add admin authentication here
+    // if (!req.isAdmin) return res.status(403).json({ error: "Forbidden" });
+    
+    const { rows: stageData } = await pool.query(`
+      SELECT 
+        current_stage,
+        COUNT(*) as user_count,
+        COALESCE(AVG(relationship_level), 0) as avg_level,
+        COALESCE(AVG(streak_days), 0) as avg_streak,
+        COALESCE(MAX(longest_streak), 0) as max_streak
+      FROM user_relationships
+      GROUP BY current_stage
+      ORDER BY MIN(relationship_level)
+    `);
+    
+    const { rows: totalData } = await pool.query(`
+      SELECT 
+        COUNT(*) as total_users,
+        COALESCE(AVG(relationship_level), 0) as avg_relationship_level,
+        SUM(CASE WHEN streak_days > 0 THEN 1 ELSE 0 END) as active_streaks,
+        COALESCE(AVG(emotional_investment), 0) as avg_emotional_investment
+      FROM user_relationships
+    `);
+    
+    res.json({
+      stages: stageData,
+      totals: totalData[0],
+      timestamp: new Date()
+    });
+  } catch (err) {
+    console.error("[analytics] overview error:", err);
+    res.status(500).json({ error: "Failed to fetch analytics" });
+  }
+});
 
 // Engagement Metrics - Detailed user behavior
 app.get("/api/analytics/engagement", async (req, res) => {
