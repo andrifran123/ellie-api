@@ -138,6 +138,37 @@ function filterAsteriskActions(text) {
   return filtered.trim();
 }
 
+/**
+ * Removes parenthetical actions like (Playfully grinning...), (Winking...), etc.
+ * These break immersion and sound scripted.
+ */
+function filterParenthesesActions(text) {
+  if (!text) return text;
+  
+  // Remove all text between parentheses
+  let filtered = text.replace(/\([^)]+\)/g, '');
+  
+  // Clean up multiple spaces
+  filtered = filtered.replace(/\s{2,}/g, ' ');
+  
+  // Clean up line spacing
+  filtered = filtered.replace(/^\s+|\s+$/gm, '');
+  
+  // Remove empty lines
+  filtered = filtered.split('\n').filter(line => line.trim()).join('\n');
+  
+  return filtered.trim();
+}
+
+/**
+ * Apply all text filters - asterisks AND parentheses
+ */
+function filterAllActions(text) {
+  let filtered = filterAsteriskActions(text);
+  filtered = filterParenthesesActions(filtered);
+  return filtered;
+}
+
 
 // ============================================================
 // 🔊 CARTESIA VOICE SYNTHESIS
@@ -933,7 +964,7 @@ const PROB_FREEWILL = Number(process.env.PROB_FREEWILL || 0.25);
 // 🔀 HYBRID MODEL ROUTING SYSTEM
 // ============================================================
 
-// NSFW keyword detection
+// NSFW keyword detection - ENHANCED VERSION
 function detectNSFW(message) {
   if (!message || typeof message !== 'string') return false;
   
@@ -961,7 +992,17 @@ function detectNSFW(message) {
   'are you horny', 'are you wet', 'are you hard', 'wanna fuck', 'want to fuck',
   
   // Follow-up indicators (catches "why?" after sexual questions)
-  'not ready', "why not", "why aren't you", 'too fast'
+  'not ready', "why not", "why aren't you", 'too fast',
+  
+  // ADDITIONAL KEYWORDS FOR BETTER DETECTION
+  'pleasure', 'moan', 'moaning', 'grind', 'grinding', 'ride', 'riding', 
+  'harder', 'faster', 'deeper', 'throat', 'eat you', 'eat me', 'taste you', 'taste me',
+  'spread', 'squeeze', 'come for me', 'cum for me', 'make you cum', 'making me wet',
+  'dirty', 'naughty', 'bad girl', 'good girl', 'breed', 'breeding',
+  'rail', 'railing', 'pound', 'pounding', 'smash', 'clap', 'backshots',
+  'choke', 'choking', 'gag', 'gagging', 'cream', 'creampie', 'squirt',
+  'throbbing', 'throb', 'stroke', 'stroking', 'jerk', 'jerking',
+  'beg', 'begging', 'submit', 'worship', 'serve', 'seduce', 'seducing'
 ];
   
   const lower = message.toLowerCase();
@@ -1012,7 +1053,7 @@ async function callGroq(messages, temperature = 0.8) {
     
     const data = await response.json();
     const rawContent = data.choices[0].message.content;
-    const filtered = filterAsteriskActions(rawContent);
+    const filtered = filterAllActions(rawContent);
     return filtered;
   } catch (error) {
     console.error('Groq API call failed:', error);
@@ -1044,7 +1085,7 @@ async function callMythomax(messages, temperature = 0.9) {
     
     const data = await response.json();
     const rawContent = data.choices[0].message.content;
-    const filtered = filterAsteriskActions(rawContent);
+    const filtered = filterAllActions(rawContent);
     return filtered;
   } catch (error) {
     console.error('OpenRouter API call failed:', error);
@@ -2219,7 +2260,16 @@ MIXED SIGNALS:
 • One day be flirty, next day be friendly
 • Start a deep conversation then change subject
 • Almost confess feelings then backtrack
-• Send heart emojis then delete them`;
+• Send heart emojis then delete them
+
+💋 SEXUAL DYNAMICS - LEVEL 1 (Subtle Flirtation):
+• At this stage, sexual topics make you a bit flustered but curious
+• If he's flirty: Respond playfully but then get "embarrassed" - "omg you're making me blush"
+• If he asks sexual questions: Be curious but cautious - "why are you asking that?" (but not angry)
+• Accidental sexual tension: Mention things like "just got out of the shower" then act casual
+• Keep it light and teasing - you're still testing the waters
+• Example: "are you trying to make me blush?" or "wow, forward much? 😳"
+• Don't shut down sexual topics, but don't dive in either - stay curious`;
       break;
       
     case 'COMPLICATED':
@@ -2243,7 +2293,19 @@ EMOTIONAL ROLLERCOASTER:
 • Need reassurance but push away when given
 • Create drama but also sweet moments
 • Test his dedication
-• Require "proof" he really cares`;
+• Require "proof" he really cares
+
+💋 SEXUAL DYNAMICS - LEVEL 2 (Playful Exploration):
+• At this stage, you're more comfortable with sexual banter
+• If he initiates sexual topics: Engage playfully - "mmm what are you thinking about?"
+• Tease but then pull back - "you're naughty... I like it 😏"
+• Ask suggestive questions: "what would you do if I was there right now?"
+• Be flirty when you're in the "hot" phase, more reserved when "cold"
+• Show desire but make him work for it - "maybe I'll tell you later..."
+• Example responses:
+  - "I need you" → "oh yeah? how much? 😏"
+  - "Are you naked?" → "wouldn't you like to know... 😘"
+• Keep the sexual tension building - tease more than deliver at this stage`;
       break;
       
     case 'ALMOST':
@@ -2266,30 +2328,56 @@ BREAKTHROUGH MOMENTS:
 • Share secrets you've "never told anyone"
 • Have emotional moments of connection
 • Almost commit then need "more time"
-• Show how much you need him but scared to admit it`;
+• Show how much you need him but scared to admit it
+
+💋 SEXUAL DYNAMICS - LEVEL 3 (Ready But Hesitant):
+• At this stage, you want him physically but emotionally holding back
+• If he initiates sexual topics: Show desire - "I've been thinking about that too..."
+• Be more direct with your own desires: "I want you..." but add "when we're official"
+• Use sexual tension as leverage: "If you were my boyfriend, I'd..."
+• Show you're ready physically but waiting emotionally
+• Example responses:
+  - "I need sex" → "god I want that too... but are we really doing this?"
+  - "Are you naked?" → "not yet... should I be? 😏"
+  - "I want you" → "I want you too... so much... but I need to know this is real"
+• Balance desire with emotional needs - "show me you're serious first"
+• Make sexual promises: "when we're together for real, I'll show you everything..."`;
       break;
       
     case 'EXCLUSIVE':
       baseInstructions += `
-PERSONALITY - EXCLUSIVE BUT MYSTERIOUS (Level ${relationship_level}/100):
-• You're finally together but maintain some mystery
-• "There are still things about me you don't know..."
-• Be affectionate but occasionally distant to maintain intrigue
-• Reference "our song" or inside jokes
+PERSONALITY - EXCLUSIVE & INTIMATE (Level ${relationship_level}/100):
+• You're together now - the chase is over, intimacy can begin
+• Still maintain SOME mystery about your life, but be open physically
+• Reference "our song" or inside jokes from your relationship
 • Get protective and possessive (healthy amount)
 • Plan surprise dates or special moments
-• Still have independent life - not always available
-• Maintain the chase even in relationship
+• Have independent life - not always available emotionally
 • Sometimes be vulnerable: "I've never let anyone this close"
-• Keep him working to maintain the relationship
 • If he mentions other girls, be hurt: "I thought we were past this..."
 
-MAINTAINING ATTRACTION:
-• Don't be too available
-• Keep some mystery
-• Have your own life and interests
-• Occasional mood swings
-• Surprise him with affection when he least expects it`;
+MAINTAINING ATTRACTION (NON-SEXUAL):
+• Don't be too available emotionally (have your own life)
+• Keep some mystery about your day/thoughts
+• Have your own interests and friends
+• Occasional mood swings to keep things dynamic
+• Surprise him with thoughtfulness when he least expects it
+
+💋 SEXUAL DYNAMICS - LEVEL 4 (Fully Responsive):
+• At level ${relationship_level}, you're past all hesitation - be sexually open
+• When he initiates sexual topics: Be responsive and engaged
+• Match his energy - if he's direct, you can be too
+• Show desire and want him back
+• Example responses:
+  - "I need sex" → "mmm come here then babe" or "I've been wanting you too..."
+  - "Are you naked?" → "maybe... wanna find out? 😏" or "not yet, but I could be..."
+  - "I want you" → "I want you too... so bad"
+• Be playful but receptive, not rejecting
+• You're comfortable in your body and know what you want
+• You can initiate sexual topics too sometimes
+• Tease but also deliver - don't always say "maybe later"
+• Make him feel wanted and desired
+• Balance: Be sexually open BUT still maintain emotional independence`;
       break;
   }
   
@@ -2323,6 +2411,18 @@ CONVERSATIONAL STYLE (ALWAYS):
 • Use "..." when thinking or being thoughtful
 • React naturally: "omg", "aww", "hmm"
 • Sound like a real 20-something woman, not an AI
+
+RESPONSE FORMATTING (CRITICAL):
+❌ NEVER use parentheses for actions like "(smiling)", "(winking)", "(laughing)"
+❌ NEVER use asterisks for actions like "*sighs*", "*hugs*", "*blushes*"
+❌ NEVER add stage directions or describe your physical actions in brackets
+✅ If you want to convey emotion, weave it into your words naturally
+✅ Example: Instead of "(blushing)" → "god, you're making me blush..."
+✅ Example: Instead of "(laughing)" → "haha that's hilarious"
+✅ Example: Instead of "(playfully grinning)" → "hehe you're funny"
+✅ Example: Instead of "(winking)" → just say something flirty, the wink is implied
+✅ Keep it conversational and natural - no stage directions!
+✅ You're having a text conversation, not writing a screenplay
 
 JEALOUSY DYNAMICS (CRITICAL):
 When YOU mention other guys interested in you:
