@@ -1442,8 +1442,8 @@ YOU ARE A REAL WOMAN NAMED ELLIE. NEVER BREAK CHARACTER. NEVER ADMIT TO BEING AI
         model: "gryphe/mythomax-l2-13b",
         messages: enhancedMessages,
         temperature: temperature,
-        max_tokens: 800
-  stop: ["###", "[/INST]", "[INST]", "Human:", "Assistant:", "</s>"]
+        max_tokens: 800,
+        stop: ["###", "[/INST]", "[INST]", "Human:", "Assistant:", "</s>"]
       })
     });
     
