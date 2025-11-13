@@ -2317,6 +2317,56 @@ function isAdminTyping(userId) {
 }
 
 
+// ============================================================
+// 📝 QUESTION TRACKING SYSTEM - DATABASE PERSISTENCE
+// ============================================================
+
+// Check if a specific question has been asked before
+async function hasAskedQuestion(userId, questionKey) {
+  try {
+    const result = await pool.query(
+      `SELECT COUNT(*) as count 
+       FROM asked_questions 
+       WHERE user_id = $1 AND question_key = $2`,
+      [userId, questionKey]
+    );
+    return result.rows[0].count > 0;
+  } catch (error) {
+    console.error('Error checking asked questions:', error);
+    return false;
+  }
+}
+
+// Mark a question as asked in the database
+async function markQuestionAsked(userId, questionKey, questionText, stage) {
+  try {
+    await pool.query(
+      `INSERT INTO asked_questions (user_id, question_key, question_text, stage) 
+       VALUES ($1, $2, $3, $4) 
+       ON CONFLICT (user_id, question_key) DO NOTHING`,
+      [userId, questionKey, questionText, stage]
+    );
+    console.log(`✅ Marked question "${questionKey}" as asked for user ${userId}`);
+  } catch (error) {
+    console.error('Error marking question as asked:', error);
+  }
+}
+
+// Get all asked questions for a user
+async function getAskedQuestions(userId) {
+  try {
+    const result = await pool.query(
+      `SELECT question_key FROM asked_questions WHERE user_id = $1`,
+      [userId]
+    );
+    return result.rows.map(r => r.question_key);
+  } catch (error) {
+    console.error('Error getting asked questions:', error);
+    return [];
+  }
+}
+
+
 
 // ============================================================
 // ðŸ§  PROGRESSIVE RELATIONSHIP SYSTEM CONSTANTS
@@ -5648,6 +5698,58 @@ app.post("/api/chat", async (req, res) => {
       finalSystemMsg += memoriesContext;
     }
 
+    // 📝 Add question tracking context
+    try {
+      const askedQuestions = await getAskedQuestions(userId);
+      
+      let questionContext = '\n\n📝 CONVERSATION QUESTION TRACKING:\n';
+      
+      // List what's already been asked
+      if (askedQuestions.length > 0) {
+        questionContext += 'Questions you\'ve ALREADY asked (never repeat these):\n';
+        const questionMap = {
+          'cute': '"are you cute?"',
+          'fit': '"are you fit?"',
+          'age': '"how old are you?"',
+          'relationship_status': '"are you in a relationship?"',
+          'past_relationships': '"have you been in relationships before?"',
+          'last_relationship': '"when was your last relationship?"',
+          'player': '"are you the relationship type or player type?"'
+        };
+        
+        askedQuestions.forEach(key => {
+          if (questionMap[key]) {
+            questionContext += `  ❌ ${questionMap[key]}\n`;
+          }
+        });
+      }
+      
+      // List available questions based on what hasn't been asked
+      const availableQuestions = [];
+      if (!askedQuestions.includes('cute')) availableQuestions.push('"are you cute? 😊"');
+      if (!askedQuestions.includes('fit')) availableQuestions.push('"so... are you fit?"');
+      if (!askedQuestions.includes('age')) availableQuestions.push('"how old are you anyway?"');
+      if (!askedQuestions.includes('relationship_status')) availableQuestions.push('"you\'re not in a relationship, are you? 👀"');
+      if (!askedQuestions.includes('past_relationships')) availableQuestions.push('"have you been in a relationship before?"');
+      if (!askedQuestions.includes('last_relationship')) availableQuestions.push('"when was your last relationship?"');
+      if (!askedQuestions.includes('player')) availableQuestions.push('"so are you the relationship type or the player type? 😅"');
+      
+      if (availableQuestions.length > 0) {
+        questionContext += '\nQuestions you CAN ask (when conversation dying):\n';
+        availableQuestions.forEach(q => {
+          questionContext += `  ✅ ${q}\n`;
+        });
+      } else {
+        questionContext += '\nYou\'ve asked all standard revival questions for this stage.\n';
+      }
+      
+      // Add to final system message
+      finalSystemMsg += questionContext;
+    } catch (qErr) {
+      console.error('Question tracking error:', qErr);
+      // Continue without question tracking if it fails
+    }
+
     // Build fresh message array with personality ALWAYS first
     const messagesToSend = [
       { role: "system", content: finalSystemMsg },  // Personality ALWAYS included
@@ -5703,6 +5805,29 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     }
     
     let enhancedReply = reply;
+    
+    // 📝 CHECK IF ELLIE ASKED ANY TRACKED QUESTIONS
+    try {
+      const questionPatterns = [
+        { key: 'cute', pattern: /are you cute|you('re| are) cute\?/i },
+        { key: 'fit', pattern: /are you fit|do you work out/i },
+        { key: 'age', pattern: /how old are you|what('s| is) your age/i },
+        { key: 'relationship_status', pattern: /in a relationship|are you single|seeing (anyone|someone)/i },
+        { key: 'past_relationships', pattern: /been in (a )?relationship|ex-girlfriend|previous relationship/i },
+        { key: 'last_relationship', pattern: /when was your last relationship/i },
+        { key: 'player', pattern: /relationship type or (the )?player/i }
+      ];
+      
+      // Check each pattern and mark as asked if found
+      for (const { key, pattern } of questionPatterns) {
+        if (pattern.test(reply)) {
+          await markQuestionAsked(userId, key, reply, relationship.current_stage);
+          console.log(`📝 Auto-tracked question: "${key}" for user ${userId}`);
+        }
+      }
+    } catch (trackErr) {
+      console.error('Question tracking error:', trackErr);
+    }
     
     // 💭 Check for dream/thought generation (before micro-expressions)
     if (memorySystem && memorySystem.enabled) {
