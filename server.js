@@ -4020,7 +4020,6 @@ setInterval(async () => {
 // ============================================================
 
 
-const histories = new Map(); // userId -> [{role, content}, ...]
 const MAX_HISTORY_MESSAGES = 40;
 
 // ============================================================
@@ -4061,13 +4060,6 @@ async function getHistory(userId) {
     return [{ role: "system", content: dynamicPersonality }];
   }
 }
-async function pushToHistory(userId, msg) {
-  const h = await getHistory(userId);
-  h.push(msg);
-  if (h.length > MAX_HISTORY_MESSAGES) {
-    histories.set(userId, [h[0], ...h.slice(-1 * (MAX_HISTORY_MESSAGES - 1))]);
-  }
-}
 
 // Helpers
 function redactSecrets(str = "") {
@@ -4105,10 +4097,6 @@ function addPlayfulRefusal(userMsg, mood) {
   return linesByMood[mood] || linesByMood.neutral;
 }
 const lastCallbackState = new Map();
-function getTurnCount(userId) {
-  const h = histories.get(userId) || [];
-  return Math.max(0, h.length - 1);
-}
 function dedupeLines(text) {
   const parts = text.split(/\n+/g).map(s => s.trim()).filter(Boolean);
   const seen = new Set(); const out = [];
@@ -5201,8 +5189,11 @@ app.post("/api/reset", async (req, res) => {
     const relationship = await getUserRelationship(userId);
     const dynamicPersonality = getPersonalityInstructions(relationship);
     
-    // Reset history with dynamic personality
-    histories.set(userId, [{ role: "system", content: dynamicPersonality }]);
+    // Reset history in database - delete all conversation history
+    await pool.query(
+      `DELETE FROM conversation_history WHERE user_id = $1`,
+      [userId]
+    );
     
     res.json({ 
       status: "Conversation reset",
@@ -5673,9 +5664,22 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
       });
     }
 
+    // Trim old messages from database if history is too long (keep last MAX_HISTORY_MESSAGES)
     if (history.length > MAX_HISTORY_MESSAGES) {
-      const keep = history.splice(1, history.length - MAX_HISTORY_MESSAGES);
-      histories.set(userId, [history[0], ...keep]);
+      setImmediate(() => {
+        pool.query(
+          `DELETE FROM conversation_history 
+           WHERE user_id = $1 
+           AND created_at < (
+             SELECT created_at 
+             FROM conversation_history 
+             WHERE user_id = $1 
+             ORDER BY created_at DESC 
+             LIMIT 1 OFFSET $2
+           )`,
+          [userId, MAX_HISTORY_MESSAGES]
+        ).catch(err => console.warn('⚠️ Failed to trim history:', err.message));
+      });
     }
 
     // Get updated relationship status
