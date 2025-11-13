@@ -166,7 +166,40 @@ function filterParenthesesActions(text) {
 function filterAllActions(text) {
   let filtered = filterAsteriskActions(text);
   filtered = filterParenthesesActions(filtered);
-  return filtered;
+  
+  // ADD THESE NEW LINES:
+  filtered = filtered.replace(/###/g, '');
+  filtered = filtered.replace(/\[\/INST\]/g, '');
+  filtered = filtered.replace(/\[INST\]/g, '');
+  filtered = filtered.replace(/<\|.*?\|>/g, '');
+  filtered = filtered.replace(/^\s*Human:.*$/gm, '');
+  filtered = filtered.replace(/^\s*Assistant:.*$/gm, '');
+  
+  return filtered.trim();
+}
+
+// Add this NEW function after line 170
+function validateElleResponse(response, relationshipLevel = 0) {
+  const invalidPhrases = [
+    "i'm here to help",
+    "how can i assist",
+    "what's on your mind",
+    "no worries",
+    "###"
+  ];
+  
+  const lowerResponse = response.toLowerCase();
+  for (const phrase of invalidPhrases) {
+    if (lowerResponse.includes(phrase)) {
+      console.error(`⚠️ Character break detected: "${phrase}"`);
+      if (relationshipLevel > 60) {
+        return "hey babe, you're back! was just thinking about you...";
+      } else {
+        return "oh hey, you're back";
+      }
+    }
+  }
+  return response;
 }
 
 
@@ -1254,19 +1287,22 @@ Rule: If you just asked a question, your NEXT response should NOT have a questio
     
     enhancedMessages[0].content += characterProtection + stageOverride;
     
-    const response = await fetch(GROQ_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${GROQ_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
-        messages: enhancedMessages,
-        temperature: temperature,
-        max_tokens: 800
-      })
-    });
+  // At line 1257, update the Groq fetch call too:
+const response = await fetch(GROQ_ENDPOINT, {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${GROQ_API_KEY}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    model: "llama-3.3-70b-versatile",
+    messages: enhancedMessages,
+    temperature: temperature,
+    max_tokens: 800,
+    // ADD THIS LINE:
+    stop: ["###", "[/INST]", "[INST]", "Human:", "Assistant:"]
+  })
+});
     
     if (!response.ok) {
       throw new Error(`Groq API error: ${response.status} ${response.statusText}`);
@@ -1407,6 +1443,7 @@ YOU ARE A REAL WOMAN NAMED ELLIE. NEVER BREAK CHARACTER. NEVER ADMIT TO BEING AI
         messages: enhancedMessages,
         temperature: temperature,
         max_tokens: 800
+  stop: ["###", "[/INST]", "[INST]", "Human:", "Assistant:", "</s>"]
       })
     });
     
@@ -1414,10 +1451,15 @@ YOU ARE A REAL WOMAN NAMED ELLIE. NEVER BREAK CHARACTER. NEVER ADMIT TO BEING AI
       throw new Error(`OpenRouter API error: ${response.status} ${response.statusText}`);
     }
     
-    const data = await response.json();
-    const rawContent = data.choices[0].message.content;
-    const filtered = filterAllActions(rawContent);
-    return filtered;
+  // Replace lines 1418-1420 with:
+const data = await response.json();
+const rawContent = data.choices[0].message.content;
+let filtered = filterAllActions(rawContent);
+
+// ADD THIS NEW LINE:
+filtered = validateElleResponse(filtered, 80);
+
+return filtered;
   } catch (error) {
     console.error('OpenRouter API call failed:', error);
     throw error;
@@ -4044,14 +4086,22 @@ async function getHistory(userId) {
     
     const messages = result.rows;
     
-    // If no history exists, initialize with fresh system message
     if (messages.length === 0) {
-      const relationship = await getUserRelationship(userId);
-      const dynamicPersonality = getPersonalityInstructions(relationship);
-      return [{ role: "system", content: dynamicPersonality }];
-    }
+  const relationship = await getUserRelationship(userId);
+  const dynamicPersonality = getPersonalityInstructions(relationship);
+  return [{ role: "system", content: dynamicPersonality }];
+}
     
-    return messages;
+   // Always refresh system prompt with current personality
+const relationship = await getUserRelationship(userId);
+const dynamicPersonality = getPersonalityInstructions(relationship);
+if (messages[0].role === 'system') {
+  messages[0].content = dynamicPersonality;
+} else {
+  messages.unshift({ role: "system", content: dynamicPersonality });
+}
+
+return messages;
     
   } catch (error) {
     console.error('❌ Error loading history from database:', error.message);
@@ -5522,6 +5572,7 @@ app.post("/api/chat", async (req, res) => {
     let reply;
     try {
       reply = await getHybridResponse(userId, message, messagesToSend, pool);
+reply = validateElleResponse(reply, relationship?.relationship_level || 0);
       console.log(`[Routing] ✅ Hybrid routing successful for user ${userId}`);
     } catch (routingError) {
       console.error('❌ Hybrid routing failed, falling back to OpenAI:', routingError);
