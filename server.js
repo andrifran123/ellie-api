@@ -5495,13 +5495,17 @@ app.post("/api/chat", async (req, res) => {
       finalSystemMsg += memoriesContext;
     }
 
-    history[0].content = finalSystemMsg;
+    // Build fresh message array with personality ALWAYS first
+    const messagesToSend = [
+      { role: "system", content: finalSystemMsg },  // Personality ALWAYS included
+      ...history.slice(1, 20)  // Last 19 conversations (skip old system message)
+    ];
 
     // 🔀 HYBRID MODEL ROUTING
     // Route to Groq (free) or Mythomax (NSFW) based on user tier and content
     let reply;
     try {
-      reply = await getHybridResponse(userId, message, history.slice(-20), pool);
+      reply = await getHybridResponse(userId, message, messagesToSend, pool);
       console.log(`[Routing] ✅ Hybrid routing successful for user ${userId}`);
     } catch (routingError) {
       console.error('❌ Hybrid routing failed, falling back to OpenAI:', routingError);
@@ -5798,9 +5802,10 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     personalityInstructions += `\n\nVOICE MODE: Keep responses 1-3 sentences (5-18 words per sentence). Be conversational and natural. Answer directly first.`;
     
     // Update system prompt
-    if (history[0]?.role === 'system') {
-      history[0].content = personalityInstructions;
-    }
+    const voiceMessages = [
+      { role: "system", content: personalityInstructions },  // Include personality
+      ...history.slice(1, 20)
+    ];
     
     history.push({ role: "user", content: userText });
     
@@ -5808,7 +5813,7 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     let replyForVoice;
     try {
       console.log(`[voice-chat] Using hybrid routing for user ${userId}`);
-      replyForVoice = await getHybridResponse(userId, userText, history.slice(-20), pool);
+      replyForVoice = await getHybridResponse(userId, userText, voiceMessages, pool);
     } catch (routingError) {
       console.error('❌ Hybrid routing failed in voice, falling back to OpenAI:', routingError);
       const completion = await client.chat.completions.create({
@@ -5977,9 +5982,10 @@ wss.on("connection", (ws, req) => {
         let personalityInstructions = getPersonalityInstructions(relationship);
         personalityInstructions += `\n\nVOICE MODE: Keep responses 1-3 sentences (5-18 words per sentence). Be conversational and natural. Answer directly first.`;
         
-        if (history[0]?.role === 'system') {
-          history[0].content = personalityInstructions;
-        }
+        const voiceMessages = [
+          { role: "system", content: personalityInstructions },  // Include personality
+          ...history.slice(1, 20)
+        ];
         
         history.push({ role: "user", content: userText });
         
@@ -5987,7 +5993,7 @@ wss.on("connection", (ws, req) => {
         let reply;
         try {
           console.log(`[ws/voice] Using hybrid routing for user ${userId}`);
-          reply = await getHybridResponse(userId, userText, history.slice(-20), pool);
+          reply = await getHybridResponse(userId, userText, voiceMessages, pool);
         } catch (routingError) {
           console.error('❌ Hybrid routing failed in WebSocket, falling back:', routingError);
           const completion = await client.chat.completions.create({
@@ -6319,9 +6325,10 @@ wsPhone.on("connection", (ws, req) => {
 
 ${factsSummary}${moodLine}`;
 
-      if (history[0]?.role === 'system') {
-        history[0].content = personalityInstructions;
-      }
+      const voiceMessages = [
+        { role: "system", content: personalityInstructions },  // Include personality
+        ...history.slice(1, 20)
+      ];
       
       history.push({ role: "user", content: userText });
 
@@ -6329,7 +6336,7 @@ ${factsSummary}${moodLine}`;
       let reply;
       try {
         console.log(`[phone] 🧠 Routing: ${userId}`);
-        reply = await getHybridResponse(userId, userText, history.slice(-20), pool);
+        reply = await getHybridResponse(userId, userText, voiceMessages, pool);
       } catch (routingError) {
         console.error('❌ Routing failed:', routingError);
         const completion = await client.chat.completions.create({
