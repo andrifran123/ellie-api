@@ -5512,7 +5512,7 @@ app.post("/api/chat", async (req, res) => {
     // Build fresh message array with personality ALWAYS first
     const messagesToSend = [
       { role: "system", content: finalSystemMsg },  // Personality ALWAYS included
-      ...history.slice(1, 20)  // Last 19 conversations (skip old system message)
+      ...history.slice(-40)  // Last 40 messages (don't skip any!)
     ];
 
     // 🔀 HYBRID MODEL ROUTING
@@ -5828,13 +5828,13 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     let personalityInstructions = getPersonalityInstructions(relationship);
     personalityInstructions += `\n\nVOICE MODE: Keep responses 1-3 sentences (5-18 words per sentence). Be conversational and natural. Answer directly first.`;
     
+    history.push({ role: "user", content: userText });
+    
     // Update system prompt
     const voiceMessages = [
       { role: "system", content: personalityInstructions },  // Include personality
-      ...history.slice(1, 20)
+      ...history.slice(-40)  // Last 40 messages (don't skip any!)
     ];
-    
-    history.push({ role: "user", content: userText });
     
     // 🔀 USE HYBRID ROUTING - Same as chat mode!
     let replyForVoice;
@@ -6009,12 +6009,12 @@ wss.on("connection", (ws, req) => {
         let personalityInstructions = getPersonalityInstructions(relationship);
         personalityInstructions += `\n\nVOICE MODE: Keep responses 1-3 sentences (5-18 words per sentence). Be conversational and natural. Answer directly first.`;
         
+        history.push({ role: "user", content: userText });
+        
         const voiceMessages = [
           { role: "system", content: personalityInstructions },  // Include personality
-          ...history.slice(1, 20)
+          ...history.slice(-40)  // Last 40 messages (don't skip any!)
         ];
-        
-        history.push({ role: "user", content: userText });
         
         // 🔀 USE HYBRID ROUTING - Same as chat!
         let reply;
@@ -6352,12 +6352,12 @@ wsPhone.on("connection", (ws, req) => {
 
 ${factsSummary}${moodLine}`;
 
+      history.push({ role: "user", content: userText });
+
       const voiceMessages = [
         { role: "system", content: personalityInstructions },  // Include personality
-        ...history.slice(1, 20)
+        ...history.slice(-40)  // Last 40 messages (don't skip any!)
       ];
-      
-      history.push({ role: "user", content: userText });
 
       // 🔀 HYBRID ROUTING
       let reply;
