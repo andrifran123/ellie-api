@@ -1298,13 +1298,13 @@ const response = await fetch(GROQ_ENDPOINT, {
     model: "llama-3.3-70b-versatile",
     messages: enhancedMessages,
     temperature: temperature,
-    max_tokens: 800,
-    // ADD THIS LINE:
-    stop: ["###", "[/INST]", "[INST]", "Human:", "Assistant:"]
+    max_tokens: 800
   })
 });
     
     if (!response.ok) {
+      const errorBody = await response.text();
+      console.error(`[Groq] API error ${response.status}: ${errorBody}`);
       throw new Error(`Groq API error: ${response.status} ${response.statusText}`);
     }
     
