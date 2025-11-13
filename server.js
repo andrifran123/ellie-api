@@ -4030,13 +4030,36 @@ const MAX_HISTORY_MESSAGES = 40;
 
 
 async function getHistory(userId) {
-  if (!histories.has(userId)) {
-    // Initialize with dynamic personality based on relationship
+  try {
+    // Load conversation history from Supabase database
+    const result = await pool.query(
+      `SELECT role, content 
+       FROM conversation_history 
+       WHERE user_id = $1 
+       ORDER BY created_at ASC 
+       LIMIT 100`,
+      [userId]
+    );
+    
+    const messages = result.rows;
+    
+    // If no history exists, initialize with fresh system message
+    if (messages.length === 0) {
+      const relationship = await getUserRelationship(userId);
+      const dynamicPersonality = getPersonalityInstructions(relationship);
+      return [{ role: "system", content: dynamicPersonality }];
+    }
+    
+    return messages;
+    
+  } catch (error) {
+    console.error('❌ Error loading history from database:', error.message);
+    
+    // Fallback: return fresh system message if database fails
     const relationship = await getUserRelationship(userId);
     const dynamicPersonality = getPersonalityInstructions(relationship);
-    histories.set(userId, [{ role: "system", content: dynamicPersonality }]);
+    return [{ role: "system", content: dynamicPersonality }];
   }
-  return histories.get(userId);
 }
 async function pushToHistory(userId, msg) {
   const h = await getHistory(userId);
