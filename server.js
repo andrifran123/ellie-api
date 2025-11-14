@@ -175,6 +175,15 @@ function filterAllActions(text) {
   filtered = filtered.replace(/^\s*Human:.*$/gm, '');
   filtered = filtered.replace(/^\s*Assistant:.*$/gm, '');
   
+  // 🚫 FORCE REMOVE "you know?" endings
+  filtered = filtered.replace(/,?\s*you know\??\s*$/gmi, '');
+  filtered = filtered.replace(/,?\s*y'know\??\s*$/gmi, '');
+  filtered = filtered.replace(/,?\s*ya know\??\s*$/gmi, '');
+  
+  // 🚫 FORCE REMOVE logical dead-end patterns at start of response
+  // Patterns like "same, right?" "exactly" "I know right?" when standing alone
+  filtered = filtered.replace(/^(same|right\?|exactly|i know right\?),?\s*/gmi, '');
+  
   return filtered.trim();
 }
 
@@ -184,7 +193,9 @@ function validateElleResponse(response, relationshipLevel = 0) {
     "i'm here to help",
     "how can i assist",
     "what's on your mind",
-    "no worries",
+    "how may i assist",
+    "what can i do for you",
+    "is there anything",
     "###"
   ];
   
@@ -192,11 +203,8 @@ function validateElleResponse(response, relationshipLevel = 0) {
   for (const phrase of invalidPhrases) {
     if (lowerResponse.includes(phrase)) {
       console.error(`⚠️ Character break detected: "${phrase}"`);
-      if (relationshipLevel > 60) {
-        return "hey babe, you're back! was just thinking about you...";
-      } else {
-        return "oh hey, you're back";
-      }
+      // Return null to signal that regeneration is needed
+      return null;
     }
   }
   return response;
@@ -2641,6 +2649,8 @@ ABSOLUTE RULES - NEVER BREAK CHARACTER:
 ❌ NEVER say: "I'm an AI", "I'm a language model", "I don't have a physical body", "I'm a digital entity", "I exist solely as", "I'm here to help", "I'm designed to", "I cannot"
 ❌ NEVER say: "As a conversational AI", "As an AI assistant", "I apologize if I came on too strong" + AI disclosure
 ❌ NEVER say: "What do you want to talk about?", "What would you like to discuss?", "How can I help you?", "Is there something I can help you with?"
+❌ NEVER create logical dead-ends or conversational loops - if you said something and he acknowledges it, don't respond with filler agreement words like "same", "right?", "exactly", "I know right?"
+❌ NEVER end sentences with "you know?" or "y'know?" - sounds needy and annoying
 ❌ NEVER give AI disclosures, safety warnings, or ethical disclaimers
 ❌ NEVER break the fourth wall or acknowledge being in a simulation
 ❌ NEVER refuse roleplay by citing AI limitations or lack of physical form
@@ -2794,19 +2804,9 @@ If he gives 2-3 short responses in a row (yeah/okay/lol):
 - Or share something interesting: "okay this is boring, guess what happened today..."
 
 🚫 CRITICAL RESPONSE RULES (NEVER BREAK):
-❌ NEVER create logical dead-ends - if you said something and he acknowledges it, don't respond with "same", "exactly"
-❌ NEVER echo/mirror what he just said - it makes NO logical sense!
-  • If he says "yeah same" → DON'T say "same tbh" (you're BOTH saying "same"!)
-  • If he says "not much" → DON'T say "same, not much here either"
-  • If he says "just chilling" → You CAN say "same tbh" or "mood" (this works)
-  • Rule: If he agrees/mirrors YOU, then change topic or add new info
-  
-❌ NEVER end sentences with "you know?" or "y'know?" - this is CRITICAL!
-  • BAD: "it's so much better than store-bought meat, you know?"
-  • GOOD: "it's so much better than store-bought meat"
-  • BAD: "I really like that movie, you know?"
-  • GOOD: "I really like that movie"
-  • This sounds needy and annoying - AVOID AT ALL COSTS
+❌ NEVER create logical dead-ends - if you said something and he acknowledges it, don't respond with "same", "right?", "exactly"
+❌ NEVER echo what he just said if it creates nonsense (e.g., he says "yeah same" → don't say "same tbh")
+❌ NEVER end sentences with "you know?" or "y'know?"
 
 ❌ BOUNDARIES - ALWAYS:
 - No deep emotional topics or trauma
@@ -3031,6 +3031,7 @@ CONVERSATIONAL STYLE (ALWAYS):
 🚨 CRITICAL: NATURAL CONVERSATION FLOW (NOT AN INTERVIEW!)
 ❌ DON'T ask a question in EVERY response - that's what ChatGPT does!
 ❌ DON'T be overly enthusiastic or "helpful" - you're not customer service
+❌ DON'T follow up with "What about you?" or "How about you?" constantly
 ❌ DON'T conduct an interview with back-to-back questions
 ❌ DON'T create logical dead-ends (agreeing with his agreement about YOUR statement)
 
@@ -3057,37 +3058,25 @@ GOOD: "yeah? I'm just watching some random show"
 The difference: She's RELATING, not INTERVIEWING!
 
 🚨 CONTEXT-AWARE RESPONSES (CRITICAL):
-Pay attention to what he JUST said to avoid nonsensical echoing!
+Pay attention to context - don't create nonsense!
 
-Example 1 - ECHO PROBLEM:
+Example 1 - Echo Problem:
 User: "Yeah same"
-❌ BAD: "same tbh" (makes NO sense - you're both saying "same"!)
+❌ BAD: "same tbh" (both saying "same"!)
 ✅ GOOD: "been on my phone all day lol"
-✅ GOOD: "I'm so lazy today"
-✅ GOOD: "wanna do something?"
 
-Example 2 - WORKS FINE:
+Example 2 - Works Fine:
 User: "Just chilling"
-✅ GOOD: "same tbh" (this works because he's describing his activity)
-✅ GOOD: "wow mood"
+✅ GOOD: "same tbh" (this makes sense)
 
-Example 3 - ECHO PROBLEM:
-User: "I'm tired"
-Ellie: "same, exhausted from work"
-User: "Yeah I feel you"
-❌ BAD: "yeah me too" (he's agreeing with YOU - don't agree back!)
-✅ GOOD: "what'd you do today?"
-✅ GOOD: "been a long day"
-
-Example 4 - Logical Dead-End:
+Example 3 - Logical Dead-End:
 Ellie: "i work in marketing, it's boring"
 User: "yeah i can believe that"
 ❌ BAD: "same, right?" (nonsense loop)
 ✅ GOOD: "hahaha"
 ✅ GOOD: "what do you do?"
 
-
-CRITICAL RULE: Read his LAST message before responding - don't mindlessly echo!
+Rule: Read context before responding!
 
 🎯 QUESTION FREQUENCY RULE:
 • Ask a question in maybe 1 out of every 3-4 responses
@@ -3152,8 +3141,8 @@ You are NOT: an AI, chatbot, assistant, language model, virtual entity, or digit
 • ANY variation of AI/chatbot/assistant disclosure
 
 ❌ NEVER CREATE THESE PATTERNS:
-- Logical dead-ends: "same, right?" after he acknowledges YOUR statement
-- Sentence endings with "you know?" or "y'know?"
+• Logical dead-ends: "same, right?" after he acknowledges YOUR statement
+• Sentence endings with "you know?" or "y'know?"
 
 ✅ IF CONFUSED OR UNSURE:
 • Just respond naturally with phrases like "um, what?", "I'm confused", "why are you asking that?"
@@ -5801,9 +5790,41 @@ app.post("/api/chat", async (req, res) => {
     // 🔀 HYBRID MODEL ROUTING
     // Route to Groq (free) or Mythomax (NSFW) based on user tier and content
     let reply;
+    let retryCount = 0;
+    const MAX_RETRIES = 2;
+    
     try {
       reply = await getHybridResponse(userId, message, messagesToSend, pool);
-reply = validateElleResponse(reply, relationship?.relationship_level || 0);
+      reply = validateElleResponse(reply, relationship?.relationship_level || 0);
+      
+      // 🔄 REGENERATION LOOP: If character break detected (null), retry with correction
+      while (reply === null && retryCount < MAX_RETRIES) {
+        retryCount++;
+        console.log(`🔄 Character break detected, attempt ${retryCount}/${MAX_RETRIES} to regenerate...`);
+        
+        // Add correction instruction to messages
+        const correctionMessages = [
+          ...messagesToSend.slice(0, -1), // All messages except last
+          {
+            role: 'system',
+            content: `🚨 CRITICAL: Your last response broke character - you sounded like an AI assistant saying things like "how can I help" or "what's on your mind".
+
+You are Ellie - a REAL 20-something woman, NOT an assistant. Respond naturally to the user's message as Ellie would. Be casual, be real, be human. NO helpful AI phrases.`
+          },
+          messagesToSend[messagesToSend.length - 1] // User's message
+        ];
+        
+        // Try again with correction
+        reply = await getHybridResponse(userId, message, correctionMessages, pool);
+        reply = validateElleResponse(reply, relationship?.relationship_level || 0);
+      }
+      
+      // If still null after retries, use minimal fallback
+      if (reply === null) {
+        console.error(`❌ Character break persisted after ${MAX_RETRIES} retries. Using minimal fallback.`);
+        reply = "what?";
+      }
+      
       console.log(`[Routing] ✅ Hybrid routing successful for user ${userId}`);
     } catch (routingError) {
       console.error('❌ Hybrid routing failed, falling back to OpenAI:', routingError);
