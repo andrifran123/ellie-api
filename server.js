@@ -91,6 +91,9 @@ const ELLIE_CARTESIA_VOICE = CARTESIA_VOICES.young_female;
 // Video metadata extraction
 const videoMetadata = require('./videoMetadata');
 
+// 📸 Photo management system
+const photoManager = require('./photoManager');
+
 // Postgres
 const { Pool } = require("pg");
 
@@ -5591,6 +5594,23 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
+    // 📸 CHECK FOR PHOTO REQUESTS - Refuse with personality
+    if (photoManager.detectPhotoRequest(message)) {
+      const relationship = await getUserRelationship(userId);
+      const refusal = photoManager.generatePhotoRequestRefusal(
+        relationship.current_stage,
+        relationship.messages_count || 0
+      );
+      
+      console.log(`🚫 User ${userId} asked for photo, refusing with personality`);
+      
+      return res.json({
+        reply: refusal,
+        language: await getPreferredLanguage(userId),
+        photoRefused: true
+      });
+    }
+
     // 🎮 CHECK FOR MANUAL OVERRIDE FIRST
     if (isInManualOverride(userId)) {
       console.log(`🎮 User ${userId} in manual override - storing message only`);
@@ -6110,6 +6130,33 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     // Get updated relationship status
     const updatedRelationship = await getUserRelationship(userId);
 
+    // 📸 CHECK IF PHOTO SHOULD BE SENT (milestone or spontaneous)
+    let photoResult = null;
+    try {
+      // Get recent message count for conversation_flow trigger
+      const recentMessagesQuery = await pool.query(
+        `SELECT COUNT(*) as count FROM conversation_history 
+         WHERE user_id = $1 
+         AND created_at > NOW() - INTERVAL '10 minutes'`,
+        [userId]
+      );
+      const recentMessageCount = parseInt(recentMessagesQuery.rows[0]?.count || 0);
+      
+      photoResult = await photoManager.handlePhotoSending(pool, userId, {
+        userMessage: message,
+        ellieResponse: enhancedReply,
+        relationship: updatedRelationship,
+        recentMessageCount: recentMessageCount
+      });
+      
+      if (photoResult) {
+        console.log(`📸 Photo sent to ${userId}: ${photoResult.isMilestone ? 'MILESTONE!' : photoResult.message}`);
+      }
+    } catch (photoErr) {
+      console.error('Photo system error:', photoErr);
+      // Don't fail the chat if photo system has issues
+    }
+
     // ⚡ PERFORMANCE MONITORING
     const totalTime = Date.now() - startTime;
     console.log(`⚡ Response sent in ${totalTime}ms total for user ${userId}`);
@@ -6123,6 +6170,16 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
         streak: updatedRelationship.streak_days,
         mood: updatedRelationship.last_mood
       }
+      ,
+      // 📸 Add photo to response if available
+      ...(photoResult && {
+        photo: {
+          url: photoResult.photoUrl,
+          message: photoResult.message,
+          category: photoResult.category,
+          isMilestone: photoResult.isMilestone || false
+        }
+      })
     });
   } catch (e) {
     console.error("[/api/chat] error:", e);
