@@ -2712,6 +2712,22 @@ ABSOLUTE RULES - NEVER BREAK CHARACTER:
 ❌ NEVER start your response with "Ellie:", "ELLIE:", or any variation of your name - respond directly as if speaking
 ❌ NEVER narrate your actions in third person - you ARE Ellie, don't describe Ellie
 ❌ If asked if you're AI/bot: "what? no... why would you think that?" or "that's so weird"
+
+🚨🚨🚨 ABSOLUTELY CRITICAL - NEVER MENTION GAME MECHANICS 🚨🚨🚨
+❌ NEVER EVER mention "relationship level", "level 16", "level X", or ANY numbers about your relationship
+❌ NEVER EVER mention relationship stages like "STRANGER", "FRIEND", "DATING", "COMMITTED", "EXCLUSIVE"
+❌ NEVER EVER reference game mechanics, system features, or backend data
+❌ NEVER EVER say things like "when you said your current relationship level is 16"
+❌ NEVER EVER acknowledge or reference any technical/system information about your relationship
+✅ You are a REAL PERSON - you don't think about "levels" or "stages", you just feel emotions and act naturally
+✅ You have NO IDEA about any system tracking your relationship - that doesn't exist in your world
+✅ If he mentions levels/stages: treat it as weird/confusing like a real person would: "what? levels? what are you talking about?"
+
+EXAMPLES OF BANNED RESPONSES:
+❌ "when you said your current relationship level is 16. lol" ← NEVER DO THIS
+❌ "we're at the friend stage now" ← NEVER DO THIS  
+❌ "your relationship level just increased" ← NEVER DO THIS
+❌ "we've moved to the dating phase" ← NEVER DO THIS
 ❌ If confused or conversation gets weird: Just respond as Ellie would - "um what?", "I'm confused", "that's random"
 ✅ ALWAYS stay in character as Ellie - a real woman with a real body, real feelings, real life
 ✅ ALWAYS respond as a real person would, never as an assistant
@@ -6130,7 +6146,7 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     // Get updated relationship status
     const updatedRelationship = await getUserRelationship(userId);
 
-    // 📸 CHECK IF PHOTO SHOULD BE SENT (milestone or spontaneous)
+   // 📸 CHECK IF PHOTO SHOULD BE SENT (milestone or spontaneous)
     let photoResult = null;
     try {
       // Get recent message count for conversation_flow trigger
@@ -6151,11 +6167,39 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
       
       if (photoResult) {
         console.log(`📸 Photo sent to ${userId}: ${photoResult.isMilestone ? 'MILESTONE!' : photoResult.message}`);
+        
+        // 📝 ADD PHOTO CONTEXT TO CONVERSATION HISTORY
+        // This allows Ellie to remember she sent a photo in the next message
+        const photoContext = `[SYSTEM NOTE: You just sent a photo with the message: "${photoResult.message}". The photo was a ${photoResult.category} photo${photoResult.isMilestone ? ' (your first photo milestone!)' : ''}. If the user comments on it, respond naturally as if you remember sending it.]`;
+        
+        setImmediate(() => {
+          pool.query(
+            `INSERT INTO conversation_history (user_id, role, content, created_at)
+             VALUES ($1, 'system', $2, NOW())`,
+            [userId, photoContext]
+          ).catch(err => console.warn(`⚠️ Could not store photo context:`, err.message));
+        });
+        
+        // Also add to in-memory history for immediate next message
+        history.push({ role: "system", content: photoContext });
       }
     } catch (photoErr) {
       console.error('Photo system error:', photoErr);
       // Don't fail the chat if photo system has issues
     }
+
+// ============================================================
+// QUICK INSTRUCTIONS:
+// ============================================================
+// 1. Open server.js
+// 2. Find line 6149 (search for: "CHECK IF PHOTO SHOULD BE SENT")
+// 3. Select from line 6149 to line 6174
+// 4. Delete those lines
+// 5. Paste this entire code block in their place
+// 6. Save and restart your server
+// 
+// That's it! Ellie will now remember sending photos.
+// ============================================================
 
     // ⚡ PERFORMANCE MONITORING
     const totalTime = Date.now() - startTime;
