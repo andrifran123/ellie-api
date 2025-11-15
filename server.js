@@ -3781,6 +3781,40 @@ async function initDB() {
   
   await pool.query(`CREATE INDEX IF NOT EXISTS conv_history_user_idx ON conversation_history(user_id, created_at DESC);`).catch(() => {});
   
+
+  // 📞 Create missed_calls table
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS missed_calls (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) NOT NULL,
+      relationship_level INTEGER NOT NULL,
+      relationship_stage VARCHAR(50) NOT NULL,
+      emotional_tone VARCHAR(50) NOT NULL,
+      shown BOOLEAN DEFAULT FALSE,
+      shown_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_missed_calls_user_pending 
+    ON missed_calls(user_id, shown) WHERE shown = FALSE;
+  `).catch(() => {});
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_missed_calls_user_created 
+    ON missed_calls(user_id, created_at DESC);
+  `).catch(() => {});
+
+  // Update user_relationships table for missed call tracking
+  await pool.query(`
+    ALTER TABLE user_relationships 
+    ADD COLUMN IF NOT EXISTS last_missed_call_at TIMESTAMP,
+    ADD COLUMN IF NOT EXISTS missed_calls_this_week INTEGER DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS week_start_date DATE DEFAULT CURRENT_DATE,
+    ADD COLUMN IF NOT EXISTS last_activity_after_missed_call TIMESTAMP;
+  `).catch(() => {}); // Ignore if columns already exist
+
   console.log("✅ All tables verified/created successfully!");
 }
 
@@ -3880,6 +3914,45 @@ async function getUserTierLimits(userId) {
     isUnlimited: false,
   };
 }
+
+
+// ============================================================
+// 📞 MISSED CALL CONFIGURATION
+// ============================================================
+
+const MISSED_CALL_CONFIG = {
+  // Base probabilities by relationship stage (as percentages)
+  BASE_PROBABILITY: {
+    STRANGER: 0,           // No missed calls for strangers (level 0-20)
+    FRIEND_TENSION: 60,    // 60% base probability (level 21-40)
+    COMPLICATED: 30,       // 30% base probability (level 41-60) - USER REQUESTED
+    ALMOST: 30,            // 30% base probability (level 61-80)
+    EXCLUSIVE: 20,         // 20% base probability (level 81-100)
+  },
+  
+  // Probability decreases after each missed call (multiplicative)
+  DECAY_MULTIPLIER: 0.7,   // Each missed call reduces probability by 30%
+  
+  // Minimum probability floor (never goes below this)
+  MIN_PROBABILITY: 5,      // 5% minimum
+  
+  // Maximum missed calls per week
+  MAX_PER_WEEK: 2,
+  
+  // Cooldown requirements
+  COOLDOWN_DAYS: 4,        // 4 days must pass
+  REQUIRES_ACTIVITY: true, // User must be active after last missed call
+  
+  // Emotional tone distribution (must sum to 100)
+  EMOTIONAL_TONES: {
+    mad: 35,        // 35% chance of being mad/frustrated
+    sad: 35,        // 35% chance of being sad/hurt
+    indifferent: 30 // 30% chance of not caring much
+  },
+  
+  // Minimum time user must be offline before eligible (hours) - USER REQUESTED 3 HOURS
+  MIN_OFFLINE_HOURS: 3,
+};
 
 /**
  * Check if user can make a voice call
@@ -4081,6 +4154,262 @@ async function getUserRelationship(userId) {
       created_at: new Date(),
       updated_at: new Date()
     };
+
+
+// ============================================================
+// 📞 MISSED CALL SYSTEM FUNCTIONS
+// ============================================================
+
+/**
+ * Get random emotional tone weighted by distribution
+ */
+function getRandomEmotionalTone() {
+  const rand = Math.random() * 100;
+  let cumulative = 0;
+  
+  for (const [tone, weight] of Object.entries(MISSED_CALL_CONFIG.EMOTIONAL_TONES)) {
+    cumulative += weight;
+    if (rand <= cumulative) {
+      return tone;
+    }
+  }
+  
+  return 'indifferent'; // Fallback
+}
+
+/**
+ * Calculate current probability for a missed call
+ */
+async function calculateMissedCallProbability(userId, relationshipStage, missedCallsThisWeek) {
+  const baseProbability = MISSED_CALL_CONFIG.BASE_PROBABILITY[relationshipStage] || 0;
+  
+  if (baseProbability === 0) {
+    return 0;
+  }
+  
+  let adjustedProbability = baseProbability;
+  for (let i = 0; i < missedCallsThisWeek; i++) {
+    adjustedProbability *= MISSED_CALL_CONFIG.DECAY_MULTIPLIER;
+  }
+  
+  adjustedProbability = Math.max(adjustedProbability, MISSED_CALL_CONFIG.MIN_PROBABILITY);
+  
+  return adjustedProbability;
+}
+
+/**
+ * Check if user is eligible for a missed call
+ */
+async function isEligibleForMissedCall(userId) {
+  try {
+    const { rows } = await pool.query(`
+      SELECT 
+        ur.relationship_level,
+        ur.current_stage,
+        ur.last_interaction,
+        ur.last_missed_call_at,
+        ur.missed_calls_this_week,
+        ur.week_start_date,
+        ur.last_activity_after_missed_call
+      FROM user_relationships ur
+      WHERE ur.user_id = $1
+    `, [userId]);
+    
+    if (!rows.length) return { eligible: false, reason: 'NO_RELATIONSHIP_RECORD' };
+    
+    const rel = rows[0];
+    const now = new Date();
+    
+    const weekStart = new Date(rel.week_start_date);
+    const daysSinceWeekStart = (now - weekStart) / (1000 * 60 * 60 * 24);
+    
+    let missedCallsThisWeek = rel.missed_calls_this_week || 0;
+    if (daysSinceWeekStart >= 7) {
+      missedCallsThisWeek = 0;
+      await pool.query(`
+        UPDATE user_relationships 
+        SET missed_calls_this_week = 0, 
+            week_start_date = CURRENT_DATE 
+        WHERE user_id = $1
+      `, [userId]);
+    }
+    
+    if (rel.relationship_level <= 20) {
+      return { eligible: false, reason: 'STRANGER_TIER' };
+    }
+    
+    if (missedCallsThisWeek >= MISSED_CALL_CONFIG.MAX_PER_WEEK) {
+      return { eligible: false, reason: 'WEEKLY_LIMIT_REACHED' };
+    }
+    
+    const { rows: pendingCalls } = await pool.query(`
+      SELECT id FROM missed_calls 
+      WHERE user_id = $1 AND shown = FALSE 
+      LIMIT 1
+    `, [userId]);
+    
+    if (pendingCalls.length > 0) {
+      return { eligible: false, reason: 'PENDING_CALL_EXISTS' };
+    }
+    
+    if (rel.last_missed_call_at) {
+      const hoursSinceLastCall = (now - new Date(rel.last_missed_call_at)) / (1000 * 60 * 60);
+      const daysSinceLastCall = hoursSinceLastCall / 24;
+      
+      if (daysSinceLastCall < MISSED_CALL_CONFIG.COOLDOWN_DAYS) {
+        return { 
+          eligible: false, 
+          reason: 'COOLDOWN_ACTIVE', 
+          daysRemaining: MISSED_CALL_CONFIG.COOLDOWN_DAYS - daysSinceLastCall 
+        };
+      }
+      
+      if (MISSED_CALL_CONFIG.REQUIRES_ACTIVITY) {
+        if (!rel.last_activity_after_missed_call || 
+            new Date(rel.last_activity_after_missed_call) <= new Date(rel.last_missed_call_at)) {
+          return { eligible: false, reason: 'NO_ACTIVITY_AFTER_LAST_CALL' };
+        }
+      }
+    }
+    
+    const hoursSinceLastInteraction = (now - new Date(rel.last_interaction)) / (1000 * 60 * 60);
+    if (hoursSinceLastInteraction < MISSED_CALL_CONFIG.MIN_OFFLINE_HOURS) {
+      return { eligible: false, reason: 'USER_TOO_RECENTLY_ACTIVE' };
+    }
+    
+    return { 
+      eligible: true, 
+      relationshipStage: rel.current_stage,
+      relationshipLevel: rel.relationship_level,
+      missedCallsThisWeek
+    };
+  } catch (error) {
+    console.error('❌ isEligibleForMissedCall error:', error);
+    return { eligible: false, reason: 'DATABASE_ERROR', error: error.message };
+  }
+}
+
+/**
+ * Generate a missed call for a user
+ */
+async function generateMissedCall(userId) {
+  try {
+    const eligibility = await isEligibleForMissedCall(userId);
+    
+    if (!eligibility.eligible) {
+      return { created: false, reason: eligibility.reason };
+    }
+    
+    const probability = await calculateMissedCallProbability(
+      userId, 
+      eligibility.relationshipStage,
+      eligibility.missedCallsThisWeek
+    );
+    
+    const roll = Math.random() * 100;
+    console.log(`🎲 Missed call roll for ${userId}: ${roll.toFixed(2)} vs ${probability.toFixed(2)}%`);
+    
+    if (roll > probability) {
+      return { created: false, reason: 'PROBABILITY_FAILED', probability, roll };
+    }
+    
+    const emotionalTone = getRandomEmotionalTone();
+    
+    const { rows } = await pool.query(`
+      INSERT INTO missed_calls (
+        user_id, 
+        relationship_level, 
+        relationship_stage, 
+        emotional_tone,
+        created_at
+      ) VALUES ($1, $2, $3, $4, NOW())
+      RETURNING id
+    `, [userId, eligibility.relationshipLevel, eligibility.relationshipStage, emotionalTone]);
+    
+    await pool.query(`
+      UPDATE user_relationships 
+      SET 
+        last_missed_call_at = NOW(),
+        missed_calls_this_week = missed_calls_this_week + 1
+      WHERE user_id = $1
+    `, [userId]);
+    
+    console.log(`✅ Created missed call for ${userId} (${emotionalTone} tone, ${probability.toFixed(1)}% chance)`);
+    
+    return { 
+      created: true, 
+      missedCallId: rows[0].id,
+      emotionalTone,
+      probability,
+      roll
+    };
+  } catch (error) {
+    console.error('❌ generateMissedCall error:', error);
+    return { created: false, reason: 'DATABASE_ERROR', error: error.message };
+  }
+}
+
+/**
+ * Get pending missed call for user
+ */
+async function getPendingMissedCall(userId) {
+  try {
+    const { rows } = await pool.query(`
+      SELECT 
+        id,
+        relationship_level,
+        relationship_stage,
+        emotional_tone,
+        created_at
+      FROM missed_calls
+      WHERE user_id = $1 AND shown = FALSE
+      ORDER BY created_at DESC
+      LIMIT 1
+    `, [userId]);
+    
+    if (rows.length === 0) {
+      return null;
+    }
+    
+    return rows[0];
+  } catch (error) {
+    console.error('❌ getPendingMissedCall error:', error);
+    return null;
+  }
+}
+
+/**
+ * Mark missed call as shown
+ */
+async function markMissedCallShown(missedCallId) {
+  try {
+    await pool.query(`
+      UPDATE missed_calls 
+      SET shown = TRUE, shown_at = NOW()
+      WHERE id = $1
+    `, [missedCallId]);
+    
+    console.log(`✅ Marked missed call ${missedCallId} as shown`);
+  } catch (error) {
+    console.error('❌ markMissedCallShown error:', error);
+  }
+}
+
+/**
+ * Record user activity
+ */
+async function recordUserActivity(userId) {
+  try {
+    await pool.query(`
+      UPDATE user_relationships
+      SET last_activity_after_missed_call = NOW()
+      WHERE user_id = $1
+    `, [userId]);
+  } catch (error) {
+    console.error('❌ recordUserActivity error:', error);
+  }
+}
+
   }
 }
 
@@ -8692,6 +9021,94 @@ process.on('uncaughtException', (error) => {
   // Graceful shutdown
   process.exit(1);
 });
+
+// ============================================================
+// 📞 MISSED CALL GENERATION BACKGROUND JOB
+// ============================================================
+
+async function missedCallGenerationJob() {
+  try {
+    console.log('🔄 Running missed call generation job...');
+    
+    const { rows: users } = await pool.query(`
+      SELECT 
+        ur.user_id,
+        ur.relationship_level,
+        ur.current_stage,
+        ur.last_interaction
+      FROM user_relationships ur
+      WHERE 
+        ur.relationship_level > 20 AND
+        ur.last_interaction < NOW() - INTERVAL '3 hours'
+      ORDER BY RANDOM()
+      LIMIT 50
+    `);
+    
+    console.log(`📋 Found ${users.length} potential candidates for missed calls`);
+    
+    let generated = 0;
+    let skipped = 0;
+    const reasons = {};
+    
+    for (const user of users) {
+      const result = await generateMissedCall(user.user_id);
+      
+      if (result.created) {
+        generated++;
+      } else {
+        skipped++;
+        reasons[result.reason] = (reasons[result.reason] || 0) + 1;
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    console.log(`✅ Missed call job complete: ${generated} created, ${skipped} skipped`);
+    if (Object.keys(reasons).length > 0) {
+      console.log('📊 Skip reasons:', reasons);
+    }
+    
+  } catch (error) {
+    console.error('❌ Missed call generation job error:', error);
+  }
+}
+
+setInterval(missedCallGenerationJob, 2 * 60 * 60 * 1000);
+setTimeout(missedCallGenerationJob, 5 * 60 * 1000);
+console.log('✅ Missed call background job scheduled (runs every 2 hours)');
+
+
+/**
+ * Get pending missed call for current user
+ */
+app.get("/api/missed-call/pending", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    
+    const pendingCall = await getPendingMissedCall(userId);
+    
+    if (!pendingCall) {
+      return res.json({ hasMissedCall: false });
+    }
+    
+    const hoursAgo = Math.floor(
+      (Date.now() - new Date(pendingCall.created_at).getTime()) / (1000 * 60 * 60)
+    );
+    
+    return res.json({
+      hasMissedCall: true,
+      emotionalTone: pendingCall.emotional_tone,
+      createdAt: pendingCall.created_at,
+      hoursAgo: hoursAgo,
+      relationshipStage: pendingCall.relationship_stage
+    });
+    
+  } catch (error) {
+    console.error('❌ Get pending missed call error:', error);
+    res.status(500).json({ error: 'Failed to get missed call status' });
+  }
+});
+
 
 server.listen(PORT, () => {
   console.log("================================");
