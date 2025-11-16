@@ -8982,6 +8982,97 @@ app.get('/api/memory-queue/status/:userId', (req, res) => {
 });
 
 
+app.get("/api/missed-call/pending", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    
+    const pendingCall = await getPendingMissedCall(userId);
+    
+    if (!pendingCall) {
+      return res.json({ hasMissedCall: false });
+    }
+    
+    const hoursAgo = Math.floor(
+      (Date.now() - new Date(pendingCall.created_at).getTime()) / (1000 * 60 * 60)
+    );
+    
+    return res.json({
+      hasMissedCall: true,
+      emotionalTone: pendingCall.emotional_tone,
+      createdAt: pendingCall.created_at,
+      hoursAgo: hoursAgo,
+      relationshipStage: pendingCall.relationship_stage,
+      missedCallId: pendingCall.id
+    });
+    
+  } catch (error) {
+    console.error('❌ Get pending missed call error:', error);
+    res.status(500).json({ error: 'Failed to get missed call status' });
+  }
+});
+
+/**
+ * Create missed call message in chat history
+ * This endpoint is called when the user first sees the missed call
+ * It saves the notification to the database so it appears in chat history
+ */
+app.post("/api/missed-call/create-message", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { missedCallId } = req.body;
+    
+    if (!missedCallId) {
+      return res.status(400).json({ error: 'Missing missedCallId' });
+    }
+    
+    // Get the missed call details
+    const { rows: missedCalls } = await pool.query(`
+      SELECT 
+        id,
+        emotional_tone,
+        created_at,
+        relationship_stage
+      FROM missed_calls
+      WHERE id = $1 AND user_id = $2 AND shown = FALSE
+    `, [missedCallId, userId]);
+    
+    if (missedCalls.length === 0) {
+      return res.status(404).json({ error: 'Missed call not found or already shown' });
+    }
+    
+    const missedCall = missedCalls[0];
+    
+    // Calculate hours ago
+    const hoursAgo = Math.floor(
+      (Date.now() - new Date(missedCall.created_at).getTime()) / (1000 * 60 * 60)
+    );
+    
+    const timeText = hoursAgo === 1 ? '1 hour' : `${hoursAgo} hours`;
+    const messageText = `📞 Missed call from Ellie ${timeText} ago`;
+    
+    // Insert the missed call notification into chat_history
+    await pool.query(`
+      INSERT INTO chat_history (user_id, role, content, created_at)
+      VALUES ($1, 'assistant', $2, $3)
+    `, [userId, messageText, missedCall.created_at]);
+    
+    // Mark the missed call as shown
+    await markMissedCallShown(missedCallId);
+    
+    console.log(`✅ Created missed call message in chat history for user ${userId}`);
+    
+    return res.json({
+      success: true,
+      message: messageText,
+      createdAt: missedCall.created_at,
+      emotionalTone: missedCall.emotional_tone
+    });
+    
+  } catch (error) {
+    console.error('❌ Create missed call message error:', error);
+    res.status(500).json({ error: 'Failed to create missed call message' });
+  }
+});
 // ============================================================
 // 🔧 GLOBAL ERROR HANDLERS!
 // ============================================================
@@ -9088,97 +9179,6 @@ console.log('✅ Missed call background job scheduled (runs every 2 hours)');
 /**
  * Get pending missed call for current user
  */
-app.get("/api/missed-call/pending", requireAuth, async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    
-    const pendingCall = await getPendingMissedCall(userId);
-    
-    if (!pendingCall) {
-      return res.json({ hasMissedCall: false });
-    }
-    
-    const hoursAgo = Math.floor(
-      (Date.now() - new Date(pendingCall.created_at).getTime()) / (1000 * 60 * 60)
-    );
-    
-    return res.json({
-      hasMissedCall: true,
-      emotionalTone: pendingCall.emotional_tone,
-      createdAt: pendingCall.created_at,
-      hoursAgo: hoursAgo,
-      relationshipStage: pendingCall.relationship_stage,
-      missedCallId: pendingCall.id
-    });
-    
-  } catch (error) {
-    console.error('❌ Get pending missed call error:', error);
-    res.status(500).json({ error: 'Failed to get missed call status' });
-  }
-});
-
-/**
- * Create missed call message in chat history
- * This endpoint is called when the user first sees the missed call
- * It saves the notification to the database so it appears in chat history
- */
-app.post("/api/missed-call/create-message", requireAuth, async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const { missedCallId } = req.body;
-    
-    if (!missedCallId) {
-      return res.status(400).json({ error: 'Missing missedCallId' });
-    }
-    
-    // Get the missed call details
-    const { rows: missedCalls } = await pool.query(`
-      SELECT 
-        id,
-        emotional_tone,
-        created_at,
-        relationship_stage
-      FROM missed_calls
-      WHERE id = $1 AND user_id = $2 AND shown = FALSE
-    `, [missedCallId, userId]);
-    
-    if (missedCalls.length === 0) {
-      return res.status(404).json({ error: 'Missed call not found or already shown' });
-    }
-    
-    const missedCall = missedCalls[0];
-    
-    // Calculate hours ago
-    const hoursAgo = Math.floor(
-      (Date.now() - new Date(missedCall.created_at).getTime()) / (1000 * 60 * 60)
-    );
-    
-    const timeText = hoursAgo === 1 ? '1 hour' : `${hoursAgo} hours`;
-    const messageText = `📞 Missed call from Ellie ${timeText} ago`;
-    
-    // Insert the missed call notification into chat_history
-    await pool.query(`
-      INSERT INTO chat_history (user_id, role, content, created_at)
-      VALUES ($1, 'assistant', $2, $3)
-    `, [userId, messageText, missedCall.created_at]);
-    
-    // Mark the missed call as shown
-    await markMissedCallShown(missedCallId);
-    
-    console.log(`✅ Created missed call message in chat history for user ${userId}`);
-    
-    return res.json({
-      success: true,
-      message: messageText,
-      createdAt: missedCall.created_at,
-      emotionalTone: missedCall.emotional_tone
-    });
-    
-  } catch (error) {
-    console.error('❌ Create missed call message error:', error);
-    res.status(500).json({ error: 'Failed to create missed call message' });
-  }
-});
 
 
 server.listen(PORT, () => {
