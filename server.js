@@ -8984,7 +8984,7 @@ app.get('/api/memory-queue/status/:userId', (req, res) => {
 
 app.get("/api/missed-call/pending", requireAuth, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.userId;
     
     const pendingCall = await getPendingMissedCall(userId);
     
@@ -9018,7 +9018,7 @@ app.get("/api/missed-call/pending", requireAuth, async (req, res) => {
  */
 app.post("/api/missed-call/create-message", requireAuth, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.userId;
     const { missedCallId } = req.body;
     
     if (!missedCallId) {
