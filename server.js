@@ -4665,7 +4665,7 @@ setInterval(async () => {
 // ============================================================
 
 
-const MAX_HISTORY_MESSAGES = 40;
+const MAX_HISTORY_MESSAGES = 50;
 
 // ============================================================
 // RELATIONSHIP SYSTEM CONSTANTS
@@ -8023,7 +8023,7 @@ app.get("/api/analytics/active-users", async (req, res) => {
       FROM user_relationships ur
       LEFT JOIN conversation_history ch ON ur.user_id = ch.user_id
         AND ch.created_at > NOW() - INTERVAL '24 hours'
-      WHERE ur.last_interaction > NOW() - INTERVAL '1 hour'
+      WHERE ur.last_interaction > NOW() - INTERVAL '32 minutes'
       GROUP BY ur.user_id, ur.relationship_level, ur.current_stage, 
                ur.last_interaction, ur.streak_days, ur.emotional_investment, ur.last_mood
       ORDER BY ur.last_interaction DESC
@@ -8493,12 +8493,19 @@ async function cleanupInactiveChatHistory() {
     }
   }
 }
+// ============================================================
+// 🚫 CLEANUP DISABLED - User Messages NEVER Auto-Delete  
+// ============================================================
+// IMPORTANT: User conversation history PERSISTS forever.
+// Dashboard queries for active users WITHOUT deleting messages.
+// See /api/analytics/active-users endpoint for "live active users".
+//
 
-// Run cleanup every 10 minutes to check for inactive users
-setInterval(cleanupInactiveChatHistory, 10 * 60 * 1000);
-
-// Run once on startup after a delay
-setTimeout(cleanupInactiveChatHistory, 30000); // 30 seconds after startup
+// DISABLED: // Run cleanup every 10 minutes to check for inactive users
+// DISABLED: setInterval(cleanupInactiveChatHistory, 10 * 60 * 1000);
+// DISABLED: 
+// DISABLED: // Run once on startup after a delay
+// DISABLED: setTimeout(cleanupInactiveChatHistory, 30000); // 30 seconds after startup
 
 
 
