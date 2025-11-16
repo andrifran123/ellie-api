@@ -4155,6 +4155,8 @@ async function getUserRelationship(userId) {
       updated_at: new Date()
     };
 
+  }
+}
 
 // ============================================================
 // 📞 MISSED CALL SYSTEM FUNCTIONS
@@ -4410,8 +4412,6 @@ async function recordUserActivity(userId) {
   }
 }
 
-  }
-}
 
 async function enrichMessageWithVideoContext(message, userId) {
   try {
