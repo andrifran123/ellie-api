@@ -9050,9 +9050,9 @@ app.post("/api/missed-call/create-message", requireAuth, async (req, res) => {
     const timeText = hoursAgo === 1 ? '1 hour' : `${hoursAgo} hours`;
     const messageText = `📞 Missed call from Ellie ${timeText} ago`;
     
-    // Insert the missed call notification into chat_history
+    // Insert the missed call notification into conversation_history
     await pool.query(`
-      INSERT INTO chat_history (user_id, role, content, created_at)
+      INSERT INTO conversation_history (user_id, role, content, created_at)
       VALUES ($1, 'assistant', $2, $3)
     `, [userId, messageText, missedCall.created_at]);
     
