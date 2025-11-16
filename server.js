@@ -9053,8 +9053,8 @@ app.post("/api/missed-call/create-message", requireAuth, async (req, res) => {
     // Insert the missed call notification into conversation_history
     await pool.query(`
       INSERT INTO conversation_history (user_id, role, content, created_at)
-      VALUES ($1, 'assistant', $2, $3)
-    `, [userId, messageText, missedCall.created_at]);
+      VALUES ($1, 'assistant', $2, NOW())
+    `, [userId, messageText]);
     
     // Mark the missed call as shown
     await markMissedCallShown(missedCallId);
