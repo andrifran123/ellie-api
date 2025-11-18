@@ -4264,6 +4264,29 @@ function capOneEmoji(text) {
   let kept = 0;
   return text.replace(favs, () => (++kept === 1) ? matches[0] : "");
 }
+
+// ============================================================
+// 👤 USER HELPER FUNCTIONS
+// ============================================================
+
+async function upsertUserEmail(email) {
+  const { rows } = await pool.query(
+    `INSERT INTO users (email) VALUES ($1)
+     ON CONFLICT (email) DO UPDATE SET updated_at = NOW()
+     RETURNING id, email, paid, user_id`,
+    [email.toLowerCase()]
+  );
+  return rows[0];
+}
+
+async function getUserByEmail(email) {
+  const { rows } = await pool.query(
+    `SELECT id, email, paid, user_id FROM users WHERE email=$1 LIMIT 1`,
+    [email.toLowerCase()]
+  );
+  return rows[0] || null;
+}
+
 async function getRecentEmotions(userId, n = 5) {
   const { rows } = await pool.query(
     `SELECT label, intensity, created_at
