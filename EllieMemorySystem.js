@@ -228,16 +228,23 @@ Example:
       }
 
       // Semantic search using vector similarity
-      // Note: Supabase uses RPC for vector search
-      const { data: memories, error } = await this.supabase.rpc('match_memories', {
+      // Try RPC function first, fallback to simple query if it doesn't exist
+      let memories = null;
+      let error = null;
+
+      // Try RPC function for semantic search
+      const rpcResult = await this.supabase.rpc('match_memories', {
         query_embedding: messageEmbedding,
         match_user_id: userId,
         match_threshold: 0.5, // Similarity threshold (0-1)
         match_count: limit * 2 // Get more, then filter
-      }).catch(async () => {
-        // Fallback if RPC function doesn't exist - use simple query
-        console.log('ℹ️ Using fallback memory query (no RPC function)');
-        return await this.supabase
+      });
+
+      // Check if RPC function exists
+      if (rpcResult.error && rpcResult.error.message.includes('function')) {
+        // RPC function doesn't exist - use fallback query
+        console.log('ℹ️ RPC function not found, using fallback memory query');
+        const fallbackResult = await this.supabase
           .from('user_memories')
           .select('*')
           .eq('user_id', userId)
@@ -245,7 +252,13 @@ Example:
           .gte('importance', minImportance)
           .order('created_at', { ascending: false })
           .limit(limit);
-      });
+        
+        memories = fallbackResult.data;
+        error = fallbackResult.error;
+      } else {
+        memories = rpcResult.data;
+        error = rpcResult.error;
+      }
 
       if (error) {
         console.error('❌ Memory recall error:', error.message);
