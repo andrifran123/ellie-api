@@ -1465,7 +1465,7 @@ Example: User sends code → You respond: "um ok that's weird 😅 what are you 
         'HTTP-Referer': 'https://yourdomain.com',
       },
       body: JSON.stringify({
-        model: "gryphe/mythomax-l2-13b",
+        model: "nousresearch/hermes-3-llama-3.1-70b",
         messages: enhancedMessages,
         temperature: temperature,
         max_tokens: 800,
