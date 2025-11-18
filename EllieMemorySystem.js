@@ -236,7 +236,7 @@ Example:
       const rpcResult = await this.supabase.rpc('match_memories', {
         query_embedding: messageEmbedding,
         match_user_id: userId,
-        match_threshold: 0.5, // Similarity threshold (0-1)
+        match_threshold: 0.35, // Similarity threshold - balanced for relevance
         match_count: limit * 2 // Get more, then filter
       });
 
