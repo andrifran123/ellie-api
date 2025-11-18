@@ -4131,7 +4131,7 @@ setInterval(async () => {
 // ============================================================
 
 
-const MAX_HISTORY_MESSAGES = 50;
+const MAX_HISTORY_MESSAGES = 100;
 
 // ============================================================
 // RELATIONSHIP SYSTEM CONSTANTS
@@ -4139,16 +4139,46 @@ const MAX_HISTORY_MESSAGES = 50;
 
 
 
+// ============================================================
+// 🧹 MESSAGE CLEANUP - Keep only last 100 messages per user
+// ============================================================
+
+/**
+ * Cleanup old messages - keeps only last 100 messages per user
+ * This ensures database doesn't grow infinitely while keeping recent context
+ * Memories are extracted and stored separately in user_memories - NEVER deleted
+ */
+async function cleanupOldMessages(userId) {
+  try {
+    await pool.query(
+      `DELETE FROM conversation_history
+       WHERE user_id = $1
+       AND id NOT IN (
+         SELECT id 
+         FROM conversation_history 
+         WHERE user_id = $1 
+         ORDER BY created_at DESC 
+         LIMIT 100
+       )`,
+      [userId]
+    );
+  } catch (error) {
+    if (error.code !== '42P01') {
+      console.warn(`⚠️ Cleanup warning:`, error.message);
+    }
+  }
+}
+
 async function getHistory(userId) {
   try {
-    // Load conversation history from Supabase database
-    // NOTE: Database stores 100+ messages for UI, but we only load last 30 for AI context
-    const result = await pool.query(
+    // Load last 100 messages for AI context (database auto-cleans to keep only last 100)
+    // NOTE: Memories are extracted from ALL messages and stored separately - never deleted
+    // UI shows only last 40 messages (see /api/chat-view/messages endpoint)
       `SELECT role, content 
        FROM conversation_history 
        WHERE user_id = $1 
        ORDER BY created_at DESC 
-       LIMIT 30`,
+       LIMIT 100`,
       [userId]
     );
     
@@ -5605,12 +5635,17 @@ app.post("/api/chat", async (req, res) => {
     history.push({ role: "user", content: enrichedMessage });
 
     // 💾 Store user message in background (non-blocking)
-    setImmediate(() => {
-      pool.query(
-        `INSERT INTO conversation_history (user_id, role, content, created_at)
-         VALUES ($1, 'user', $2, NOW())`,
-        [userId, message]
-      ).catch(historyErr => console.warn(`⚠️ Could not store user message:`, historyErr.message));
+    setImmediate(async () => {
+      try {
+        await pool.query(
+          `INSERT INTO conversation_history (user_id, role, content, created_at)
+           VALUES ($1, 'user', $2, NOW())`,
+          [userId, message]
+        );
+        await cleanupOldMessages(userId);
+      } catch (historyErr) {
+        console.warn(`⚠️ Could not store user message:`, historyErr.message);
+      }
     });
 
     const langLabel = SUPPORTED_LANGUAGES[prefCode] || "English";
@@ -5881,12 +5916,17 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     history.push({ role: "assistant", content: enhancedReply });
 
     // 💾 Store assistant reply in background (non-blocking)
-    setImmediate(() => {
-      pool.query(
-        `INSERT INTO conversation_history (user_id, role, content, created_at)
-         VALUES ($1, 'assistant', $2, NOW())`,
-        [userId, enhancedReply]
-      ).catch(historyErr => console.warn(`⚠️ Could not store assistant reply:`, historyErr.message));
+    setImmediate(async () => {
+      try {
+        await pool.query(
+          `INSERT INTO conversation_history (user_id, role, content, created_at)
+           VALUES ($1, 'assistant', $2, NOW())`,
+          [userId, enhancedReply]
+        );
+        await cleanupOldMessages(userId);
+      } catch (historyErr) {
+        console.warn(`⚠️ Could not store assistant reply:`, historyErr.message);
+      }
     });
 
     // ⚡ BACKGROUND PROCESSING - Extract facts/emotions AFTER response sent
@@ -5921,23 +5961,6 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
       });
     }
 
-    // Trim old messages from database if history is too long (keep last MAX_HISTORY_MESSAGES)
-    if (history.length > MAX_HISTORY_MESSAGES) {
-      setImmediate(() => {
-        pool.query(
-          `DELETE FROM conversation_history 
-           WHERE user_id = $1 
-           AND created_at < (
-             SELECT created_at 
-             FROM conversation_history 
-             WHERE user_id = $1 
-             ORDER BY created_at DESC 
-             LIMIT 1 OFFSET $2
-           )`,
-          [userId, MAX_HISTORY_MESSAGES]
-        ).catch(err => console.warn('⚠️ Failed to trim history:', err.message));
-      });
-    }
 
     // Get updated relationship status
     const updatedRelationship = await getUserRelationship(userId);
@@ -7495,7 +7518,7 @@ app.get("/api/analytics/active-users", async (req, res) => {
 app.get("/api/chat-view/messages/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    const limit = parseInt(req.query.limit) || 50;
+    const limit = parseInt(req.query.limit) || 40;
 
     // Fetch recent conversation history
     const query = `
