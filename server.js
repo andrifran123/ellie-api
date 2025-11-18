@@ -666,7 +666,7 @@ class MemoryExtractionQueue {
       const startTime = Date.now();
 
       try {
-        await task.memorySystem.extractMemories(task.userId, task.message, task.reply, {
+        await task.memorySystem.extractMemories(task.userId, task.message, {
           relationshipLevel: task.relationshipLevel,
           mood: task.mood,
           tags: task.tags || ['chat']
@@ -1611,29 +1611,47 @@ class EllieMemorySystem {
   // MEMORY EXTRACTION & STORAGE
   // ============================================================
 
-  async extractMemories(userId, userMessage, ellieResponse, context = {}) {
+  async extractMemories(userId, userMessage, context = {}) {
     if (!this.enabled) return null;
     
     try {
-      // Extract facts, emotions, and important details from conversation
+      // ✅ FIXED: Extract ONLY from user message, NOT Ellie's response
       const extractionPrompt = `
-        Analyze this conversation exchange and extract important memories.
+        Extract important information about the USER ONLY from their message.
         
         User said: "${userMessage}"
-        Ellie responded: "${ellieResponse}"
         
         Current relationship level: ${context.relationshipLevel || 0}
-        Current mood: ${context.mood || 'normal'}
+        Current stage: ${context.stage || 'STRANGER'}
         
-        Extract the following (return as JSON):
-        1. facts: Array of factual information about the user (allergies, preferences, job, hobbies, etc.)
-        2. emotions: Array of emotional states or feelings expressed
-        3. events: Array of events mentioned (past or future)
-        4. preferences: Array of likes/dislikes expressed
-        5. triggers: Array of topics that caused strong reactions
-        6. relationship_notes: Any relationship-relevant information
-        7. promises: Things either party said they'd do or remember
-        8. shared_experiences: Moments that create inside jokes or bonds
+        🚨 CRITICAL RULES:
+        - Extract ONLY information about the USER
+        - DO NOT extract anything about Ellie's responses or behavior  
+        - DO NOT store boundaries, rejections, or conversation dynamics
+        - Focus on WHO THE USER IS, not how the conversation went
+        
+        Extract the following about THE USER (return as JSON):
+        1. facts: Factual info (name, job, allergies, hobbies, location, pets, family)
+        2. preferences: What they like/dislike (food, movies, music, activities)
+        3. experiences: Past events they mention (trips, achievements, losses)
+        4. emotions: Current emotional state they express (happy, sad, anxious, excited, horny)
+        5. plans: Future things they mention (goals, trips, meetings)
+        
+        ❌ DO NOT EXTRACT:
+        - Ellie's responses or behavior
+        - Relationship dynamics or boundaries
+        - What "we" agreed to
+        - Conversation patterns
+        
+        ✅ GOOD EXAMPLES:
+        User: "My cat Marcus is annoying" → fact: {"content": "User has a cat named Marcus", "confidence": 1.0}
+        User: "I hate peanuts" → preference: {"content": "User dislikes peanuts", "confidence": 1.0}
+        User: "Just horny" → emotion: {"content": "User is feeling horny", "confidence": 0.8}
+        
+        ❌ BAD EXAMPLES (NEVER EXTRACT):
+        "Ellie rejected sexual advance"
+        "They agreed to keep things wholesome"
+        "User tried to initiate but was declined"
         
         For each item include:
         - content: The actual information
@@ -1642,20 +1660,27 @@ class EllieMemorySystem {
         - importance: 0-1 how important to remember
         
         Be very selective - only extract truly memorable/important information.
-        Format: { facts: [], emotions: [], events: [], preferences: [], triggers: [], relationship_notes: [], promises: [], shared_experiences: [] }
+        If message is just "hey", "lol", "k" → return empty arrays.
+        
+        Format: { facts: [], preferences: [], experiences: [], emotions: [], plans: [] }
       `;
 
       const extraction = await this.openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [
-          { role: 'system', content: 'You are a memory extraction system. Extract only important, memorable information.' },
+          { 
+            role: 'system', 
+            content: 'You extract information about the USER only. Never extract information about the AI assistant (Ellie) or the conversation dynamics.' 
+          },
           { role: 'user', content: extractionPrompt }
         ],
-        temperature: 0.3,
+        temperature: 0.2,
         response_format: { type: "json_object" }
       });
 
       const memories = JSON.parse(extraction.choices[0].message.content);
+      
+      console.log(`🧠 Extracted ${(memories.facts || []).length} facts, ${(memories.emotions || []).length} emotions from user message`);
       
       // Store memories in database
       await this.storeMemories(userId, memories, context);
@@ -1665,7 +1690,7 @@ class EllieMemorySystem {
       
       return memories;
     } catch (error) {
-      console.error('Memory extraction error:', error);
+      console.error('❌ Memory extraction error:', error);
       return null;
     }
   }
@@ -6138,6 +6163,35 @@ app.post("/api/chat", async (req, res) => {
     if (memoriesContext) {
       finalSystemMsg += memoriesContext;
     }
+
+    // ✅ FIX #3: Add stage progression override to prevent old boundaries from affecting current behavior
+    const stageOverride = `
+
+🔄 CRITICAL - RELATIONSHIP PROGRESSION OVERRIDE:
+You are currently at ${relationship.current_stage} stage (level ${relationship.relationship_level}/100).
+
+IF you see conversation history with past rejections or boundaries from earlier relationship stages:
+✅ Your relationship has EVOLVED past that
+✅ Respond based on CURRENT stage (${relationship.current_stage}), NOT past interactions
+✅ Past rejections were appropriate for earlier stages, but you've moved forward now
+✅ Don't reference old boundaries unless the user brings them up
+
+Current stage sexual dynamics:
+${relationship.relationship_level < 21 ? 
+  '- STRANGER (0-20): You deflect sexual advances naturally ("whoa, we just met...")' :
+  relationship.relationship_level < 41 ?
+  '- FRIEND_TENSION (21-40): You can be playful and flirty, but still maintain some boundaries' :
+  relationship.relationship_level < 61 ?
+  '- COMPLICATED (41-60): You can engage with sexual content, show attraction, keep some mystery' :
+  relationship.relationship_level < 81 ?
+  '- ALMOST (61-80): You are sexually attracted and emotionally ready, want connection with intimacy' :
+  '- EXCLUSIVE (81-100): You are fully comfortable with sexual content and emotional intimacy'
+}
+
+Remember: Respond as your CURRENT self at ${relationship.current_stage}, not who you were in earlier stages.
+`;
+    
+    finalSystemMsg += stageOverride;
 
     // 📝 Add question tracking context
     try {
