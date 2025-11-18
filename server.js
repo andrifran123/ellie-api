@@ -83,10 +83,11 @@ const CARTESIA_VOICES = {
   "default_female": "79a125e8-cd45-4c13-8a67-188112f4dd22", // Verified working
   "calm_female": "8832a0b5-47b2-4751-bb22-6a8e2149303d", // Calm, professional
   "young_female": "2ee87190-8f84-4925-97da-e52547f9462c", // Energetic
+  "ariana": "ec1e269e-9ca0-402f-8a18-58e0e022355a", // Ariana - Professional, clear, articulate
 };
 
-// Ellie's voice - using verified working voice
-const ELLIE_CARTESIA_VOICE = CARTESIA_VOICES.young_female;
+// Ellie's voice - using Ariana voice
+const ELLIE_CARTESIA_VOICE = CARTESIA_VOICES.ariana;
 
 // Video metadata extraction
 const videoMetadata = require('./videoMetadata');
