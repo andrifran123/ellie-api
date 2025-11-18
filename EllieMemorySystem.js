@@ -280,13 +280,12 @@ Example:
         })
         .slice(0, limit);
 
-      // Update access tracking
+      // Update last accessed timestamp (access_count removed - would need RPC function)
       const memoryIds = sortedMemories.map(m => m.id);
       if (memoryIds.length > 0) {
         await this.supabase
           .from('user_memories')
           .update({ 
-            access_count: this.supabase.raw('access_count + 1'),
             last_accessed_at: new Date().toISOString()
           })
           .in('id', memoryIds)
