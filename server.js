@@ -381,86 +381,32 @@ async function callCartesiaTTS_PCM16(text, voiceId = ELLIE_CARTESIA_VOICE, langu
 
 
 // ============================================================
-// 🎤 GROQ WHISPER - NSFW-SAFE TRANSCRIPTION
+// 🎤 OPENAI WHISPER - TRANSCRIPTION
 // ============================================================
 
 /**
- * Transcribe audio using Groq Whisper (NSFW-friendly!)
+ * Transcribe audio using OpenAI Whisper
  * @param {Buffer} audioBuffer - Audio file buffer (WAV format)
  * @param {string} language - Language code (default: "en")
  * @returns {Promise<string>} - Transcribed text
  */
-async function transcribeWithGroqWhisper(audioBuffer, language = "en") {
-  if (!GROQ_API_KEY) {
-    throw new Error('GROQ_API_KEY not configured');
+async function transcribeWithOpenAIWhisper(audioBuffer, language = "en") {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY not configured');
   }
 
-  return new Promise((resolve, reject) => {
-    const FormData = require('form-data');
-    const https = require('https');
-    
-    const form = new FormData();
-    form.append('file', audioBuffer, {
-      filename: 'audio.wav',
-      contentType: 'audio/wav',
+  try {
+    const audioFile = await toFile(audioBuffer, "audio.wav");
+    const transcription = await client.audio.transcriptions.create({
+      model: "whisper-1",
+      file: audioFile,
+      language: language,
+      prompt: "English conversation. Common words: how are you, what, really, are you, do you, can you, want you, horny, naked, sexy, hot, babe, baby, okay, yes, no, maybe, want, like, love, miss you, thinking about you, come over, right now"
     });
-    form.append('model', 'whisper-large-v3-turbo');
-    // NOTE: We intentionally DON'T set language parameter to allow auto-detection
-    // This works better for accented English (e.g., Icelandic-English, Nordic-English)
-    // The prompt guidance below helps steer it toward English
-    form.append('response_format', 'json');
-    form.append('temperature', '0.2'); // Slight flexibility for accents
-    
-    // Strong prompt to guide transcription toward English
-    // This is CRITICAL for accented English speakers
-    const guidancePrompt = "English conversation. Common words: how are you, what, really, are you, do you, can you, want you, horny, naked, sexy, hot, babe, baby, okay, yes, no, maybe, want, like, love, miss you, thinking about you, come over, right now";
-    form.append('prompt', guidancePrompt);
-
-    const options = {
-      method: 'POST',
-      hostname: 'api.groq.com',
-      path: '/openai/v1/audio/transcriptions',
-      headers: {
-        'Authorization': `Bearer ${GROQ_API_KEY}`,
-        ...form.getHeaders(),
-      },
-      timeout: 5000, // 5 second timeout
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-      
-      res.on('end', () => {
-        if (res.statusCode !== 200) {
-          reject(new Error(`Groq Whisper error: ${res.statusCode} - ${data}`));
-          return;
-        }
-        
-        try {
-          const result = JSON.parse(data);
-          resolve(result.text || '');
-        } catch (e) {
-          reject(new Error(`Failed to parse Groq response: ${e.message}`));
-        }
-      });
-    });
-
-    req.on('error', (error) => {
-      reject(new Error(`Groq request error: ${error.message}`));
-    });
-
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('Groq Whisper timeout after 5 seconds'));
-    });
-
-    // Pipe the form data to the request
-    form.pipe(req);
-  });
+    return (transcription.text || "").trim();
+  } catch (error) {
+    throw new Error(`OpenAI Whisper error: ${error.message}`);
+  }
 }
 
 
@@ -7076,7 +7022,7 @@ wsPhone.on("connection", (ws, req) => {
     console.log(`[phone] 🎤 Processing ${chunks.length} audio chunks`);
     
     try {
-      // 1️⃣ TRANSCRIBE with Groq Whisper (NSFW-safe!)
+      // 1️⃣ TRANSCRIBE with OpenAI Whisper
       const combinedAudio = Buffer.concat(chunks.map(c => Buffer.from(c, 'base64')));
       
       // Check audio energy to detect silence BEFORE transcription
@@ -7093,45 +7039,20 @@ wsPhone.on("connection", (ws, req) => {
       const wavBuffer = pcm16ToWav(combinedAudio, expectRate);
       
       let userText = '';
-      let transcriptionSource = 'groq';
       
-      // Try Groq Whisper first (NSFW-friendly!) - unless it failed before in this session
-      if (!groqDisabled && GROQ_API_KEY) {
-        try {
-          console.log(`[phone] 🎤 Transcribing with Groq Whisper (NSFW-safe)...`);
-          userText = await transcribeWithGroqWhisper(wavBuffer, sessionLang);
-          console.log(`[phone] ✅ Groq Whisper: "${userText}"`);
-        } catch (groqError) {
-          // Disable Groq for rest of session after failure
-          groqDisabled = true;
-          console.warn('[phone] ⚠️ Groq Whisper failed, disabling for this session. Falling back to OpenAI:', groqError.message);
-        }
-      }
-      
-      // Use OpenAI if Groq failed or was disabled
-      if (!userText) {
-        try {
-          if (groqDisabled) {
-            console.log('[phone] 🎤 Using OpenAI Whisper (Groq disabled for session)');
-          }
-          const audioFile = await toFile(wavBuffer, "audio.wav");
-          const transcription = await client.audio.transcriptions.create({
-            model: "whisper-1",
-            file: audioFile,
-            language: sessionLang,
-          });
-          userText = (transcription.text || "").trim();
-          transcriptionSource = 'openai';
-          console.log(`[phone] ✅ OpenAI Whisper: "${userText}"`);
-        } catch (openaiError) {
-          console.error('[phone] ❌ OpenAI Whisper failed!', openaiError);
-          isProcessing = false;
-          return;
-        }
+      // Transcribe with OpenAI Whisper
+      try {
+        console.log(`[phone] 🎤 Transcribing with OpenAI Whisper...`);
+        userText = await transcribeWithOpenAIWhisper(wavBuffer, sessionLang);
+        console.log(`[phone] ✅ OpenAI Whisper: "${userText}"`);
+      } catch (openaiError) {
+        console.error('[phone] ❌ OpenAI Whisper failed!', openaiError);
+        isProcessing = false;
+        return;
       }
 
       userText = userText.trim();
-      console.log(`[phone] 📝 Raw transcription (${transcriptionSource}): "${userText}"`);
+      console.log(`[phone] 📝 Raw transcription (openai): "${userText}"`);
       
       // Clean up common Icelandic-accented English mis-transcriptions
       const originalText = userText;
@@ -9217,13 +9138,13 @@ server.listen(PORT, () => {
   if (CARTESIA_API_KEY) {
     console.log("🔊 Voice System: Cartesia Sonic (realistic voice)");
     console.log("🧠 Voice AI Brain: Using hybrid routing (same as chat)");
-    console.log("   ├─ Transcription: Groq Whisper (NSFW-safe, FREE!)");
+    console.log("   ├─ Transcription: OpenAI Whisper");
     console.log("   ├─ AI Response: Hybrid routing (Llama 70B + Mythomax)");
     console.log("   └─ Voice Synthesis: Cartesia Sonic (3000x cheaper!)");
   } else {
     console.log("🔊 Voice System: OpenAI TTS (set CARTESIA_API_KEY for 90% cost savings)");
     console.log("🧠 Voice AI Brain: Using hybrid routing (same as chat)");
-    console.log("   ├─ Transcription: Groq Whisper (NSFW-safe, FREE!)");
+    console.log("   ├─ Transcription: OpenAI Whisper");
   }
   console.log("================================");
 });
