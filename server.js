@@ -4174,6 +4174,7 @@ async function getHistory(userId) {
     // Load last 100 messages for AI context (database auto-cleans to keep only last 100)
     // NOTE: Memories are extracted from ALL messages and stored separately - never deleted
     // UI shows only last 40 messages (see /api/chat-view/messages endpoint)
+    const result = await pool.query(
       `SELECT role, content 
        FROM conversation_history 
        WHERE user_id = $1 
@@ -4182,7 +4183,7 @@ async function getHistory(userId) {
       [userId]
     );
     
-    const messages = result.rows;
+    const messages = result.rows.reverse();
     
     if (messages.length === 0) {
   const relationship = await getUserRelationship(userId);
@@ -5431,16 +5432,6 @@ app.post("/api/chat", async (req, res) => {
       memoriesContext += '   - Example: "How\'s Marcus?" not "I remember you have a cat named Marcus"\n';
       
       console.log(`✅ Added ${relevantMemories.length} memories to context`);
-    }
-      } catch (memErr) {
-        console.error('❌ Memory recall error:', {
-          error: memErr.message,
-          stack: memErr.stack,
-          userId,
-          message: message.substring(0, 50)
-        });
-        // Continue without memories rather than failing the request
-      }
     }
     
     // ⚡ Get dynamic personality with caching (60x faster for repeat calls)
