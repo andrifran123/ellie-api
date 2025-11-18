@@ -1569,516 +1569,10 @@ async function getHybridResponse(userId, userMessage, messages, pool) {
 // 🧠 ELLIE MEMORY SYSTEM CLASS
 // ============================================================
 
-class EllieMemorySystem {
-  constructor(supabaseUrl, supabaseKey, openaiKey) {
-    // Only initialize if Supabase credentials are provided
-    if (supabaseUrl && supabaseKey) {
-      this.supabase = createClient(supabaseUrl, supabaseKey);
-      this.enabled = true;
-    } else {
-      this.supabase = null;
-      this.enabled = false;
-      console.log('⚠️ Memory System: DISABLED (Supabase credentials not provided)');
-    }
-    
-    this.openai = new OpenAI({ apiKey: openaiKey });
-    
-    // Memory categories with different recall probabilities
-    this.memoryTypes = {
-      FACT: { priority: 0.8, retention: 0.95 },
-      EMOTION: { priority: 0.9, retention: 0.90 },
-      PREFERENCE: { priority: 0.7, retention: 0.98 },
-      EVENT: { priority: 0.6, retention: 0.85 },
-      RELATIONSHIP: { priority: 1.0, retention: 1.0 },
-      TRIGGER: { priority: 0.85, retention: 0.92 },
-      SHARED_EXPERIENCE: { priority: 0.95, retention: 0.97 },
-      PROMISE: { priority: 0.88, retention: 0.93 },
-      INSIDE_JOKE: { priority: 0.92, retention: 0.99 }
-    };
-
-    // Mood state tracking
-    this.moodStates = {
-      baseline: { arousal: 0.5, valence: 0.5 },
-      current: { arousal: 0.5, valence: 0.5 },
-      history: []
-    };
-
-    // Emotional triggers based on memory
-    this.emotionalTriggers = new Map();
-  }
-
-  // ============================================================
-  // MEMORY EXTRACTION & STORAGE
-  // ============================================================
-
-  async extractMemories(userId, userMessage, context = {}) {
-    if (!this.enabled) return null;
-    
-    try {
-      // ✅ FIXED: Extract ONLY from user message, NOT Ellie's response
-      const extractionPrompt = `
-        Extract important information about the USER ONLY from their message.
-        
-        User said: "${userMessage}"
-        
-        Current relationship level: ${context.relationshipLevel || 0}
-        Current stage: ${context.stage || 'STRANGER'}
-        
-        🚨 CRITICAL RULES:
-        - Extract ONLY information about the USER
-        - DO NOT extract anything about Ellie's responses or behavior  
-        - DO NOT store boundaries, rejections, or conversation dynamics
-        - Focus on WHO THE USER IS, not how the conversation went
-        
-        Extract the following about THE USER (return as JSON):
-        1. facts: Factual info (name, job, allergies, hobbies, location, pets, family)
-        2. preferences: What they like/dislike (food, movies, music, activities)
-        3. experiences: Past events they mention (trips, achievements, losses)
-        4. emotions: Current emotional state they express (happy, sad, anxious, excited, horny)
-        5. plans: Future things they mention (goals, trips, meetings)
-        
-        ❌ DO NOT EXTRACT:
-        - Ellie's responses or behavior
-        - Relationship dynamics or boundaries
-        - What "we" agreed to
-        - Conversation patterns
-        
-        ✅ GOOD EXAMPLES:
-        User: "My cat Marcus is annoying" → fact: {"content": "User has a cat named Marcus", "confidence": 1.0}
-        User: "I hate peanuts" → preference: {"content": "User dislikes peanuts", "confidence": 1.0}
-        User: "Just horny" → emotion: {"content": "User is feeling horny", "confidence": 0.8}
-        
-        ❌ BAD EXAMPLES (NEVER EXTRACT):
-        "Ellie rejected sexual advance"
-        "They agreed to keep things wholesome"
-        "User tried to initiate but was declined"
-        
-        For each item include:
-        - content: The actual information
-        - confidence: 0-1 how certain we are
-        - emotional_weight: -1 to 1 (negative to positive)
-        - importance: 0-1 how important to remember
-        
-        Be very selective - only extract truly memorable/important information.
-        If message is just "hey", "lol", "k" → return empty arrays.
-        
-        Format: { facts: [], preferences: [], experiences: [], emotions: [], plans: [] }
-      `;
-
-      const extraction = await this.openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [
-          { 
-            role: 'system', 
-            content: 'You extract information about the USER only. Never extract information about the AI assistant (Ellie) or the conversation dynamics.' 
-          },
-          { role: 'user', content: extractionPrompt }
-        ],
-        temperature: 0.2,
-        response_format: { type: "json_object" }
-      });
-
-      const memories = JSON.parse(extraction.choices[0].message.content);
-      
-      console.log(`🧠 Extracted ${(memories.facts || []).length} facts, ${(memories.emotions || []).length} emotions from user message`);
-      
-      // Store memories in database
-      await this.storeMemories(userId, memories, context);
-      
-      // Update mood based on emotional content
-      await this.updateMoodFromMemories(userId, memories);
-      
-      return memories;
-    } catch (error) {
-      console.error('❌ Memory extraction error:', error);
-      return null;
-    }
-  }
-
-  async storeMemories(userId, memories, context) {
-    if (!this.enabled) return;
-    
-    const timestamp = new Date().toISOString();
-    
-    // Store all memory types
-    const memoryTypes = ['facts', 'emotions', 'events', 'preferences', 'triggers', 
-                        'relationship_notes', 'promises', 'shared_experiences'];
-    
-    for (const type of memoryTypes) {
-      for (const memory of memories[type] || []) {
-        if (memory.confidence > 0.5) {
-          try {
-            // Generate embedding for semantic search
-            const embedding = await this.generateEmbedding(memory.content);
-            
-            if (embedding) {
-              // Store in database
-              await pool.query(
-                `INSERT INTO user_memories 
-                 (user_id, memory_type, content, confidence, emotional_weight, 
-                  importance, embedding, context_tags, created_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-                 ON CONFLICT DO NOTHING`,
-                [
-                  userId,
-                  type.slice(0, -1), // Remove 's' from plural
-                  memory.content,
-                  memory.confidence,
-                  memory.emotional_weight || 0,
-                  memory.importance || 0.5,
-                  JSON.stringify(embedding),
-                  JSON.stringify(context.tags || [])
-                ]
-              );
-            }
-          } catch (error) {
-            // Silently handle if table doesn't exist yet
-            if (error.code !== '42P01') {
-              console.error('Memory storage error:', error);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  async generateEmbedding(text) {
-    try {
-      const response = await this.openai.embeddings.create({
-        model: "text-embedding-3-small",
-        input: text,
-      });
-      return response.data[0].embedding;
-    } catch (error) {
-      console.error('Embedding generation error:', error);
-      return null;
-    }
-  }
-
-  async findSimilarMemory(userId, content, memoryType) {
-    if (!this.enabled) return null;
-    
-    try {
-      const embedding = await this.generateEmbedding(content);
-      if (!embedding) return null;
-
-      // Use cosine similarity search
-      const result = await pool.query(
-        `SELECT id, content, 
-          1 - (embedding <=> $1::vector) as similarity
-         FROM user_memories
-         WHERE user_id = $2 
-           AND memory_type = $3
-           AND is_active = true
-         ORDER BY similarity DESC
-         LIMIT 1`,
-        [JSON.stringify(embedding), userId, memoryType]
-      );
-
-      if (result.rows.length > 0 && result.rows[0].similarity > 0.85) {
-        return result.rows[0];
-      }
-      return null;
-    } catch (error) {
-      // Silently handle if table doesn't exist
-      if (error.code !== '42P01') {
-        console.error('Similar memory search error:', error);
-      }
-      return null;
-    }
-  }
-
-  // ============================================================
-  // MEMORY RECALL & CONTEXT BUILDING
-  // ============================================================
-
-  async recallRelevantMemories(userId, currentMessage, options = {}) {
-    if (!this.enabled) return [];
-    
-    const limit = options.limit || 10;
-    const minImportance = options.minImportance || 0.3;
-    
-    try {
-      // Generate embedding for current message
-      const messageEmbedding = await this.generateEmbedding(currentMessage);
-      
-      if (!messageEmbedding) {
-        console.warn('⚠️ Memory recall: Failed to generate embedding');
-        return [];
-      }
-
-      // 🆕 Extract keywords for fallback matching
-      const keywords = this.extractKeywords(currentMessage);
-      console.log(`🔍 Memory recall for user ${userId}:`, { message: currentMessage, keywords });
-
-      // Semantic search with recency bias
-      const result = await pool.query(
-        `SELECT 
-          m.*,
-          1 - (m.embedding <=> $1::vector) as semantic_similarity,
-          EXTRACT(EPOCH FROM (NOW() - m.created_at)) / 86400 as days_old
-         FROM user_memories m
-         WHERE m.user_id = $2
-           AND m.is_active = true
-           AND m.importance >= $3
-         ORDER BY 
-           (1 - (m.embedding <=> $1::vector)) * 0.7 + 
-           (1 / (1 + EXTRACT(EPOCH FROM (NOW() - m.created_at)) / 86400)) * 0.3 DESC
-         LIMIT $4`,
-        [JSON.stringify(messageEmbedding), userId, minImportance, limit * 2] // Get 2x to allow filtering
-      );
-
-      let memories = result.rows;
-
-      // 🆕 KEYWORD BOOST: Find memories with keyword matches
-      if (keywords.length > 0) {
-        const keywordResult = await pool.query(
-          `SELECT m.*, 0.9 as semantic_similarity
-           FROM user_memories m
-           WHERE m.user_id = $1
-             AND m.is_active = true
-             AND (
-               ${keywords.map((_, i) => `LOWER(m.content) LIKE LOWER($${i + 2})`).join(' OR ')}
-             )
-           LIMIT $${keywords.length + 2}`,
-          [userId, ...keywords.map(k => `%${k}%`), 5]
-        );
-
-        // Merge keyword matches with semantic matches
-        const uniqueKeywordMemories = keywordResult.rows.filter(r => 
-          !memories.some(m => m.id === r.id)
-        );
-
-        memories = [...uniqueKeywordMemories, ...memories];
-        
-        if (uniqueKeywordMemories.length > 0) {
-          console.log(`✨ Found ${uniqueKeywordMemories.length} keyword-matched memories`);
-        }
-      }
-
-      // Update access patterns (optional - gracefully handle if columns don't exist)
-      const memoryIds = memories.map(m => m.id);
-      if (memoryIds.length > 0) {
-        try {
-          await pool.query(
-            `UPDATE user_memories 
-             SET access_count = access_count + 1
-             WHERE id = ANY($1)`,
-            [memoryIds]
-          );
-        } catch (updateErr) {
-          // Silently ignore if access_count column doesn't exist
-          if (updateErr.code !== '42703') {
-            console.warn('⚠️ Could not update memory access patterns:', updateErr.message);
-          }
-        }
-      }
-
-      // Sort by combined score and limit
-      memories = memories
-        .sort((a, b) => {
-          const scoreA = (a.semantic_similarity || 0) * a.importance;
-          const scoreB = (b.semantic_similarity || 0) * b.importance;
-          return scoreB - scoreA;
-        })
-        .slice(0, limit);
-
-      console.log(`🧠 Recalled ${memories.length} memories for "${currentMessage}"`);
-      if (memories.length > 0) {
-        console.log('📝 Memory types:', memories.map(m => {
-          const similarity = Number(m.semantic_similarity) || 0;
-          return `${m.memory_type}(${similarity.toFixed(2)})`;
-        }));
-      }
-
-      return memories;
-
-    } catch (error) {
-      // Better error handling
-      if (error.code === '42P01') {
-        console.warn('⚠️ Memory table does not exist yet');
-      } else if (error.code === '42883') {
-        console.error('❌ Memory recall: Vector extension not installed. Run: CREATE EXTENSION IF NOT EXISTS vector;');
-      } else {
-        console.error('❌ Memory recall error:', {
-          message: error.message,
-          code: error.code,
-          userId,
-          currentMessage: currentMessage.substring(0, 50)
-        });
-      }
-      return [];
-    }
-  }
-
-  // 🆕 Helper method to extract keywords for matching
-  extractKeywords(text) {
-    if (!text || typeof text !== 'string') return [];
-    
-    const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'my', 'your', 'his', 'her', 'its', 'our', 'their', 'me', 'him', 'us', 'them', 'this', 'that', 'these', 'those', 'what', 'which', 'who', 'when', 'where', 'why', 'how', 'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'am', 'going', 'im']);
-    
-    // Extract words, normalize
-    const words = text
-      .toLowerCase()
-      .replace(/[^\w\s]/g, ' ')
-      .split(/\s+/)
-      .filter(word => word.length > 2 && !stopWords.has(word));
-    
-    // Add related terms mapping
-    const relatedTerms = {
-      'china': ['chinese', 'china'],
-      'chinese': ['china', 'chinese'],
-      'allergy': ['allergic', 'allergies', 'allergy'],
-      'allergic': ['allergy', 'allergies', 'allergic'],
-      'food': ['eat', 'eating', 'meal', 'food'],
-    };
-    
-    const expandedKeywords = new Set(words);
-    words.forEach(word => {
-      if (relatedTerms[word]) {
-        relatedTerms[word].forEach(related => expandedKeywords.add(related));
-      }
-    });
-    
-    return Array.from(expandedKeywords);
-  }
-
-  async buildConversationContext(userId, currentMessage) {
-    if (!this.enabled) return null;
-    
-    try {
-      // Get relevant memories
-      const memories = await this.recallRelevantMemories(userId, currentMessage);
-      
-      // Get emotional profile
-      const emotionalProfile = await this.getEmotionalProfile(userId);
-      
-      // Get relationship history
-      const relationship = await pool.query(
-        'SELECT * FROM user_relationships WHERE user_id = $1',
-        [userId]
-      );
-
-      // Get recent promises
-      const promises = await pool.query(
-        `SELECT * FROM user_memories 
-         WHERE user_id = $1 AND memory_type = 'promise' 
-           AND is_active = true
-         ORDER BY created_at DESC LIMIT 3`,
-        [userId]
-      );
-
-      return {
-        relevantMemories: memories,
-        emotionalProfile,
-        relationshipData: relationship.rows[0] || {},
-        activePromises: promises.rows,
-        moodState: this.moodStates.current
-      };
-    } catch (error) {
-      console.error('Context building error:', error);
-      return null;
-    }
-  }
-
-  // ============================================================
-  // EMOTIONAL PROCESSING
-  // ============================================================
-
-  async updateMoodFromMemories(userId, memories) {
-    const emotions = memories.emotions || [];
-    if (emotions.length === 0) return;
-
-    // Calculate mood shift based on extracted emotions
-    const avgValence = emotions.reduce((sum, e) => 
-      sum + (e.emotional_weight || 0), 0) / emotions.length;
-    
-    const avgArousal = emotions.reduce((sum, e) => 
-      sum + Math.abs(e.emotional_weight || 0), 0) / emotions.length;
-
-    // Update current mood with decay towards baseline
-    const decayFactor = 0.3;
-    this.moodStates.current.valence = 
-      this.moodStates.current.valence * (1 - decayFactor) + 
-      avgValence * decayFactor;
-    
-    this.moodStates.current.arousal = 
-      this.moodStates.current.arousal * (1 - decayFactor) + 
-      avgArousal * decayFactor;
-
-    // Store mood history
-    this.moodStates.history.push({
-      timestamp: new Date(),
-      valence: this.moodStates.current.valence,
-      arousal: this.moodStates.current.arousal
-    });
-
-    // Keep only last 100 mood states
-    if (this.moodStates.history.length > 100) {
-      this.moodStates.history.shift();
-    }
-  }
-
-  async getEmotionalProfile(userId) {
-    if (!this.enabled) {
-      return {
-        dominantEmotion: 'neutral',
-        emotionalVolatility: 0.5,
-        recentEmotions: {},
-        currentMood: this.moodStates.current
-      };
-    }
-    
-    try {
-      const result = await pool.query(
-        `SELECT 
-          memory_type,
-          AVG(emotional_weight) as avg_emotion,
-          COUNT(*) as count,
-          AVG(importance) as avg_importance
-         FROM user_memories
-         WHERE user_id = $1 
-           AND memory_type IN ('emotion', 'trigger')
-           AND is_active = true
-         GROUP BY memory_type`,
-        [userId]
-      );
-
-      const emotionData = result.rows.reduce((acc, row) => {
-        acc[row.memory_type] = {
-          average: parseFloat(row.avg_emotion),
-          count: parseInt(row.count),
-          importance: parseFloat(row.avg_importance)
-        };
-        return acc;
-      }, {});
-
-      // Calculate emotional volatility
-      const emotionCounts = result.rows.reduce((sum, row) => sum + parseInt(row.count), 0);
-      const emotionalVolatility = emotionCounts > 10 ? 
-        Math.min(emotionCounts / 100, 1) : 0.3;
-
-      return {
-        dominantEmotion: this.moodStates.current.valence > 0.6 ? 'positive' :
-                        this.moodStates.current.valence < 0.4 ? 'negative' : 'neutral',
-        emotionalVolatility,
-        recentEmotions: emotionData,
-        currentMood: this.moodStates.current
-      };
-    } catch (error) {
-      // Silently handle if table doesn't exist
-      if (error.code !== '42P01') {
-        console.error('Emotional profile error:', error);
-      }
-      return {
-        dominantEmotion: 'neutral',
-        emotionalVolatility: 0.5,
-        recentEmotions: {},
-        currentMood: this.moodStates.current
-      };
-    }
-  }
-}
+// ============================================================
+// 🧠 ELLIE MEMORY SYSTEM v2.0 - ADVANCED SEMANTIC MEMORY
+// ============================================================
+const EllieMemorySystem = require('./EllieMemorySystem');
 
 // Initialize memory system (will be disabled if Supabase not configured)
 let memorySystem = null;
@@ -4648,12 +4142,13 @@ const MAX_HISTORY_MESSAGES = 50;
 async function getHistory(userId) {
   try {
     // Load conversation history from Supabase database
+    // NOTE: Database stores 100+ messages for UI, but we only load last 30 for AI context
     const result = await pool.query(
       `SELECT role, content 
        FROM conversation_history 
        WHERE user_id = $1 
-       ORDER BY created_at ASC 
-       LIMIT 100`,
+       ORDER BY created_at DESC 
+       LIMIT 30`,
       [userId]
     );
     
@@ -5981,7 +5476,7 @@ app.post("/api/chat", async (req, res) => {
       // Memory recall with 1.5s timeout for speed
       (memorySystem && memorySystem.enabled) 
         ? Promise.race([
-            memorySystem.recallRelevantMemories(userId, message, {
+            memorySystem.recallMemories(userId, message, {
               limit: 5,  // Optimized count
               minImportance: 0.5  // Higher threshold for speed
             }),
@@ -6004,106 +5499,76 @@ app.post("/api/chat", async (req, res) => {
     // 🧠 FORMAT MEMORY CONTEXT (if memories found)
     let memoriesContext = '';
     if (relevantMemories && relevantMemories.length > 0) {
-      try {
-        const memoryGroups = {
-          fact: [],
-          preference: [],
-          emotion: [],
-          promise: [],
-          other: []
-        };
-        
-        relevantMemories.forEach(mem => {
-          const type = mem.memory_type || 'other';
-          if (memoryGroups[type]) {
-            memoryGroups[type].push(mem);
-          } else {
-            memoryGroups.other.push(mem);
-          }
-        });
-        
-        memoriesContext = '\n\n🧠 RELEVANT CONTEXT:\n';
-        
-        // Quick formatting - only essentials
-        ['fact', 'preference', 'emotion', 'promise'].forEach(type => {
-          if (memoryGroups[type].length > 0) {
-            memoryGroups[type].slice(0, 2).forEach(m => {
-              memoriesContext += `  • ${m.content}\n`;
-            });
-          }
-        });
-        
-        memoriesContext += '\n⚠️ Use these naturally in conversation!\n';
-        
-        if (relevantMemories && relevantMemories.length > 0) {
-          // Group memories by type for better organization
-          const memoryGroups = {
-            fact: [],
-            preference: [],
-            emotion: [],
-            event: [],
-            relationship: [],
-            promise: [],
-            other: []
-          };
-          
-          relevantMemories.forEach(mem => {
-            const type = mem.memory_type || 'other';
-            if (memoryGroups[type]) {
-              memoryGroups[type].push(mem);
-            } else {
-              memoryGroups.other.push(mem);
-            }
-          });
-          
-          memoriesContext = '\n\n🧠 WHAT YOU REMEMBER ABOUT THEM:\n';
-          
-          // Prioritize important facts and preferences
-          if (memoryGroups.fact.length > 0) {
-            memoriesContext += '📋 Facts:\n';
-            memoryGroups.fact.forEach(m => {
-              memoriesContext += `  • ${m.content}\n`;
-            });
-          }
-          
-          if (memoryGroups.preference.length > 0) {
-            memoriesContext += '❤️ Preferences:\n';
-            memoryGroups.preference.forEach(m => {
-              memoriesContext += `  • ${m.content}\n`;
-            });
-          }
-          
-          if (memoryGroups.emotion.length > 0) {
-            memoriesContext += '😊 Emotional context:\n';
-            memoryGroups.emotion.forEach(m => {
-              memoriesContext += `  • ${m.content}\n`;
-            });
-          }
-          
-          if (memoryGroups.promise.length > 0) {
-            memoriesContext += '🤝 Promises:\n';
-            memoryGroups.promise.forEach(m => {
-              memoriesContext += `  • ${m.content}\n`;
-            });
-          }
-          
-          // Add other relevant memories
-          const otherMems = [...memoryGroups.event, ...memoryGroups.relationship, ...memoryGroups.other];
-          if (otherMems.length > 0) {
-            otherMems.slice(0, 3).forEach(m => {
-              memoriesContext += `  • ${m.content}\n`;
-            });
-          }
-          
-          memoriesContext += '\n⚠️ CRITICAL: When relevant to conversation, USE these memories NATURALLY!\n';
-          memoriesContext += '   - DON\'t say "I remember" or "you told me"\n';
-          memoriesContext += '   - Just KNOW these facts and reference them casually\n';
-          memoriesContext += '   - Especially mention safety-related info (allergies, health) when relevant!\n';
-          
-          console.log(`✅ Added ${relevantMemories.length} memories to context for user ${userId}`);
+      const memoryGroups = {
+        fact: [],
+        preference: [],
+        emotion: [],
+        event: [],
+        plan: [],
+        promise: [],
+        other: []
+      };
+      
+      relevantMemories.forEach(mem => {
+        const type = mem.memory_type || 'other';
+        if (memoryGroups[type]) {
+          memoryGroups[type].push(mem);
         } else {
-          console.log(`ℹ️ No relevant memories found for user ${userId} message: "${message.substring(0, 50)}"`);
+          memoryGroups.other.push(mem);
         }
+      });
+      
+      memoriesContext = '\n\n🧠 WHAT YOU REMEMBER:\n';
+      
+      if (memoryGroups.fact.length > 0) {
+        memoriesContext += '📋 Facts:\n';
+        memoryGroups.fact.forEach(m => {
+          memoriesContext += `  • ${m.content}\n`;
+        });
+      }
+      
+      if (memoryGroups.preference.length > 0) {
+        memoriesContext += '❤️ Preferences:\n';
+        memoryGroups.preference.forEach(m => {
+          memoriesContext += `  • ${m.content}\n`;
+        });
+      }
+      
+      if (memoryGroups.emotion.length > 0) {
+        memoriesContext += '😊 Recent emotions:\n';
+        memoryGroups.emotion.forEach(m => {
+          memoriesContext += `  • ${m.content}\n`;
+        });
+      }
+
+      if (memoryGroups.plan.length > 0) {
+        memoriesContext += '📅 Plans:\n';
+        memoryGroups.plan.forEach(m => {
+          memoriesContext += `  • ${m.content}\n`;
+        });
+      }
+
+      if (memoryGroups.promise.length > 0) {
+        memoriesContext += '🤝 Promises:\n';
+        memoryGroups.promise.forEach(m => {
+          memoriesContext += `  • ${m.content}\n`;
+        });
+      }
+      
+      const otherMems = [...memoryGroups.event, ...memoryGroups.other];
+      if (otherMems.length > 0) {
+        otherMems.slice(0, 3).forEach(m => {
+          memoriesContext += `  • ${m.content}\n`;
+        });
+      }
+      
+      memoriesContext += '\n⚠️ CRITICAL: USE these memories NATURALLY!\n';
+      memoriesContext += '   - DON\'t say "I remember you told me..."\n';
+      memoriesContext += '   - Just KNOW these facts and reference casually\n';
+      memoriesContext += '   - Example: "How\'s Marcus?" not "I remember you have a cat named Marcus"\n';
+      
+      console.log(`✅ Added ${relevantMemories.length} memories to context`);
+    }
       } catch (memErr) {
         console.error('❌ Memory recall error:', {
           error: memErr.message,
@@ -6359,7 +5824,7 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     // 💭 Check for dream/thought generation (before micro-expressions)
     if (memorySystem && memorySystem.enabled) {
       try {
-        const memories = await memorySystem.recallRelevantMemories(userId, message, { limit: 10 });
+        const memories = await memorySystem.recallMemories(userId, message, { limit: 10 });
         
         // Generate dream sequence
         const dreamMessage = await dreamSystem.generateDreamSequence(userId, memories);
@@ -8621,7 +8086,7 @@ app.get('/api/test-memory/:userId', async (req, res) => {
       });
     }
     
-    const memories = await memorySystem.recallRelevantMemories(userId, message, {
+    const memories = await memorySystem.recallMemories(userId, message, {
       limit: 10,
       minImportance: 0.2
     });
