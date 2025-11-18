@@ -1071,7 +1071,7 @@ function detectNSFWContext(messages, lookbackCount = 4) {
 }
 
 // 🆕 DETECT LLAMA REFUSAL - Catches when Llama refuses to engage
-// If Llama outputs a refusal, we automatically retry with Mythomax
+// If Llama outputs a refusal, we automatically retry with Hermes 3
 function detectLlamaRefusal(response) {
   const refusalPhrases = [
     "i can't engage in explicit conversations",
@@ -1336,8 +1336,8 @@ const response = await fetch(GROQ_ENDPOINT, {
   }
 }
 
-// Call OpenRouter API (Mythomax 13B)
-async function callMythomax(messages, temperature = 0.9) {
+// Call OpenRouter API (Hermes 3 70B)
+async function callHermes(messages, temperature = 0.85) {
   try {
     // 🔥 ULTRA-STRONG CHARACTER PROTECTION + STAGE OVERRIDE
     const enhancedMessages = [...messages];
@@ -1520,12 +1520,12 @@ async function getHybridResponse(userId, userMessage, messages, pool) {
     } else {
       // Paid users
       if (isNSFW) {
-        console.log(`[Routing] Paid user + NSFW (current OR context) -> OpenRouter Mythomax 13B`);
+        console.log(`[Routing] Paid user + NSFW (current OR context) -> OpenRouter Hermes 3 70B`);
         if (!OPENROUTER_API_KEY) {
           console.warn('⚠️ OPENROUTER_API_KEY not configured, falling back to Groq');
           return await callGroq(messages);
         }
-        return await callMythomax(messages);
+        return await callHermes(messages);
       } else {
         console.log(`[Routing] Paid user + Normal -> Groq Llama 70B (FREE)`);
         if (!GROQ_API_KEY) {
@@ -1535,14 +1535,14 @@ async function getHybridResponse(userId, userMessage, messages, pool) {
         // 🆕 TRY LLAMA FIRST, BUT CHECK FOR REFUSAL
         const response = await callGroq(messages);
         
-        // 🆕 IF LLAMA REFUSED, AUTOMATICALLY RETRY WITH MYTHOMAX
+        // 🆕 IF LLAMA REFUSED, AUTOMATICALLY RETRY WITH HERMES 3
         if (detectLlamaRefusal(response)) {
-          console.log(`[Routing] ⚠️ Llama refused! Retrying with Mythomax...`);
+          console.log(`[Routing] ⚠️ Llama refused! Retrying with Hermes 3...`);
           if (OPENROUTER_API_KEY) {
-            return await callMythomax(messages);
+            return await callHermes(messages);
           } else {
-            console.warn('[Routing] Cannot retry with Mythomax (no API key), returning refusal');
-            return response; // Return the refusal if no Mythomax available
+            console.warn('[Routing] Cannot retry with Hermes 3 (no API key), returning refusal');
+            return response; // Return the refusal if no Hermes 3 available
           }
         }
         
@@ -6198,7 +6198,7 @@ app.post("/api/chat", async (req, res) => {
     ];
 
     // 🔀 HYBRID MODEL ROUTING
-    // Route to Groq (free) or Mythomax (NSFW) based on user tier and content
+    // Route to Groq (free) or Hermes 3 (NSFW) based on user tier and content
     let reply;
     let retryCount = 0;
     const MAX_RETRIES = 2;
@@ -6548,7 +6548,7 @@ app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
 });
 
 // Voice chat (language REQUIRED) + TTS (record/send flow)
-// ✨ NOW USING HYBRID ROUTING (Llama 70B + Mythomax) + CARTESIA VOICE!
+// ✨ NOW USING HYBRID ROUTING (Llama 70B + Hermes 3 70B) + CARTESIA VOICE!
 app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
   const startTime = Date.now(); // Track call duration
   try {
@@ -6953,7 +6953,7 @@ wsPhone.on("connection", (ws, req) => {
   console.log("================================");
   console.log("[phone] ✅ NEW CONNECTION - HYBRID ROUTING + CARTESIA");
   console.log("[phone] Origin:", req?.headers?.origin);
-  console.log("[phone] AI: Llama 70B + Mythomax (uncensored)");
+  console.log("[phone] AI: Llama 70B + Hermes 3 70B (uncensored)");
   console.log("[phone] Voice: Cartesia Sonic");
   console.log("================================");
 
@@ -9128,7 +9128,7 @@ server.listen(PORT, () => {
     console.log("🔀 Hybrid Routing: ENABLED (Groq + OpenRouter)");
     console.log("   ├─ Free tier: Groq Llama 70B (FREE)");
     console.log("   ├─ Paid normal: Groq Llama 70B (FREE)");
-    console.log("   └─ Paid NSFW: OpenRouter Mythomax 13B");
+    console.log("   └─ Paid NSFW: OpenRouter Hermes 3 70B");
   } else if (GROQ_API_KEY) {
     console.log("🔀 Hybrid Routing: PARTIAL (Groq only - no NSFW model)");
   } else if (OPENROUTER_API_KEY) {
@@ -9140,7 +9140,7 @@ server.listen(PORT, () => {
     console.log("🔊 Voice System: Cartesia Sonic (realistic voice)");
     console.log("🧠 Voice AI Brain: Using hybrid routing (same as chat)");
     console.log("   ├─ Transcription: OpenAI Whisper");
-    console.log("   ├─ AI Response: Hybrid routing (Llama 70B + Mythomax)");
+    console.log("   ├─ AI Response: Hybrid routing (Llama 70B + Hermes 3 70B)");
     console.log("   └─ Voice Synthesis: Cartesia Sonic (3000x cheaper!)");
   } else {
     console.log("🔊 Voice System: OpenAI TTS (set CARTESIA_API_KEY for 90% cost savings)");
