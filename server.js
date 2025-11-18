@@ -4350,173 +4350,6 @@ async function setPreferredLanguage(userId, langCode) {
 }
 
 // Fact & emotion extraction / persistence
-async function extractFacts(text) {
-  const prompt = `
-From the following text, extract any personal facts, events, secrets, or stable preferences about the speaker.
-Also capture any explicit emotion they express.
-Return ONLY strict JSON array; each item:
-{
-  "category": "name|likes|dislikes|pet|relationship|event|career|hobby|health|location|secret|other",
-  "fact": "string",
-  "sentiment": "happy|sad|angry|anxious|proud|hopeful|neutral",
-  "confidence": 0.0-1.0
-}
-If nothing to save, return []. Text: """${text}"""
-  `.trim();
-
-  const ac = new AbortController();
-  const to = setTimeout(() => ac.abort(), OPENAI_TIMEOUT_MS);
-  try {
-    const completion = await client.chat.completions.create(
-      {
-        model: CHAT_MODEL,
-        messages: [
-          { role: "system", content: "You are a precise extractor. Respond with valid JSON only; no prose." },
-          { role: "user", content: prompt }
-        ],
-        temperature: 0
-      },
-      { signal: ac.signal }
-    );
-    try {
-      const parsed = JSON.parse(completion.choices[0].message.content);
-      if (Array.isArray(parsed)) return parsed;
-    } catch {}
-    return [];
-  } finally { clearTimeout(to); }
-}
-
-async function extractEmotionPoint(text) {
-  const prompt = `
-Classify the speaker's current emotion and intensity from 0.0 to 1.0.
-Return ONLY JSON: {"label":"happy|sad|angry|anxious|proud|hopeful|neutral","intensity":0.0-1.0}
-Text: """${text}"""
-  `.trim();
-
-  const ac = new AbortController();
-  const to = setTimeout(() => ac.abort(), OPENAI_TIMEOUT_MS);
-  try {
-    const completion = await client.chat.completions.create(
-      {
-        model: CHAT_MODEL,
-        messages: [
-          { role: "system", content: "You are an emotion rater. Respond with strict JSON only." },
-          { role: "user", content: prompt }
-        ],
-        temperature: 0
-      },
-      { signal: ac.signal }
-    );
-    try {
-      const obj = JSON.parse(completion.choices[0].message.content);
-      if (obj && typeof obj.label === "string") return obj;
-    } catch {}
-    return null;
-  } finally { clearTimeout(to); }
-}
-
-// User helpers
-async function upsertUserEmail(email) {
-  const { rows } = await pool.query(
-    `INSERT INTO users (email) VALUES ($1)
-     ON CONFLICT (email) DO UPDATE SET updated_at = NOW()
-     RETURNING id, email, paid, user_id`,
-    [email.toLowerCase()]
-  );
-  return rows[0];
-}
-
-async function getUserByEmail(email) {
-  const { rows } = await pool.query(
-    `SELECT id, email, paid, user_id FROM users WHERE email=$1 LIMIT 1`,
-    [email.toLowerCase()]
-  );
-  return rows[0] || null;
-}
-
-async function upsertFact(userId, fObj, sourceText) {
-  const { category = null, fact, sentiment = null, confidence = null } = fObj;
-  if (!fact) return;
-
-  const { rows } = await pool.query(
-    `
-    SELECT id, fact, similarity(lower(fact), lower($3)) AS sim
-      FROM facts
-     WHERE user_id = $1
-       AND (category IS NOT DISTINCT FROM $2)
-       AND similarity(lower(fact), lower($3)) > $4
-     ORDER BY sim DESC
-     LIMIT 1
-    `,
-    [userId, category, fact, FACT_DUP_SIM_THRESHOLD]
-  );
-
-  const now = new Date();
-  const sourceExcerpt = redactSecrets((sourceText || "").slice(0, 280));
-
-  if (rows.length) {
-    await pool.query(
-      `UPDATE facts
-          SET sentiment  = COALESCE($2, sentiment),
-              confidence = COALESCE($3, confidence),
-              source     = $4,
-              source_ts  = $5,
-              updated_at = NOW()
-        WHERE id = $1`,
-      [rows[0].id, sentiment, confidence, sourceExcerpt, now]
-    );
-  } else {
-    await pool.query(
-      `INSERT INTO facts (user_id, category, fact, sentiment, confidence, source, source_ts)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [userId, category, fact, sentiment, confidence, sourceExcerpt, now]
-    );
-  }
-}
-async function saveFacts(userId, facts, sourceText) {
-  for (const f of facts) await upsertFact(userId, f, sourceText);
-}
-async function getFacts(userId) {
-  const { rows } = await pool.query(
-    `
-    SELECT category,
-           fact,
-           sentiment,
-           confidence,
-           (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - COALESCE(updated_at, created_at))) / 86400.0)) AS recency_factor,
-           (COALESCE(confidence, 0) * $2) +
-           ((1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - COALESCE(updated_at, created_at))) / 86400.0)) * $3) AS score
-      FROM facts
-     WHERE user_id = $1
-     ORDER BY score DESC, COALESCE(updated_at, created_at) DESC
-     LIMIT 60
-    `,
-    [userId, WEIGHT_CONFIDENCE, WEIGHT_RECENCY]
-  );
-  return rows;
-}
-async function saveEmotion(userId, emo, sourceText) {
-  if (!emo) return;
-  const intensity = typeof emo.intensity === "number"
-    ? Math.max(0, Math.min(1, emo.intensity))
-    : null;
-  await pool.query(
-    `INSERT INTO emotions (user_id, label, intensity, source)
-     VALUES ($1, $2, $3, $4)`,
-    [userId, emo.label, intensity, redactSecrets((sourceText || "").slice(0, 280))]
-  );
-}
-async function getLatestEmotion(userId) {
-  const { rows } = await pool.query(
-    `SELECT label, intensity, created_at
-       FROM emotions
-      WHERE user_id=$1
-      ORDER BY created_at DESC
-      LIMIT 1`,
-    [userId]
-  );
-  return rows[0] || null;
-}
 
 // Voice presets (no FX). Store chosen preset name in facts.
 async function getVoicePreset(userId) {
@@ -4715,7 +4548,7 @@ Language rules:
   
   const memoryPrompt = {
     role: "system",
-    content: `${systemPrompt}\n\n${languageRules}\n\n${factsSummary}${moodLine}${moodStyle ? `\n${moodStyle}` : ""}\n${freshBlock}\n${VOICE_MODE_HINT}`
+    content: `${systemPrompt}\n\n${languageRules}\n\n${moodStyle ? `\n${moodStyle}` : ""}\n${freshBlock}\n${VOICE_MODE_HINT}`
   };
 
   const fullConversation = [memoryPrompt, ...history.slice(1), { role: "user", content: userText }];
@@ -5620,12 +5453,6 @@ app.post("/api/chat", async (req, res) => {
     }
 
     // ⚡ MOVED TO BACKGROUND:     const [extractedFacts, overallEmotion] = await Promise.all([
-    // ⚡ MOVED TO BACKGROUND:       extractFacts(message),
-    // ⚡ MOVED TO BACKGROUND:       extractEmotionPoint(message),
-    // ⚡ MOVED TO BACKGROUND:     ]);
-    // ⚡ MOVED TO BACKGROUND: 
-    // ⚡ MOVED TO BACKGROUND:     if (extractedFacts?.length) await saveFacts(userId, extractedFacts, message);
-    // ⚡ MOVED TO BACKGROUND:     if (overallEmotion) await saveEmotion(userId, overallEmotion, message);
 
     // Update system prompt with dynamic personality
     if (history[0]?.role === 'system') {
@@ -5929,24 +5756,6 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
       }
     });
 
-    // ⚡ BACKGROUND PROCESSING - Extract facts/emotions AFTER response sent
-    // This doesn't block the user from getting their response
-    setImmediate(async () => {
-      try {
-        const [extractedFacts, overallEmotion] = await Promise.all([
-          extractFacts(message),
-          extractEmotionPoint(message),
-        ]);
-        
-        if (extractedFacts?.length) await saveFacts(userId, extractedFacts, message);
-        if (overallEmotion) await saveEmotion(userId, overallEmotion, message);
-        
-        console.log(`✅ Background fact/emotion extraction complete for user ${userId}`);
-      } catch (bgErr) {
-        console.error('Background processing error:', bgErr);
-        // Don't fail - this is non-critical
-      }
-    });
 
     // 🧠 QUEUE MEMORY EXTRACTION (processes later, one at a time)
     if (memorySystem && memorySystem.enabled) {
@@ -6150,21 +5959,12 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     }
 
     // ===== RELATIONSHIP TRACKING =====
-    const [relationship, facts, emo] = await Promise.all([
-      getUserRelationship(userId),
-      extractFacts(userText),
-      extractEmotionPoint(userText)
-    ]);
-    
-    // Update relationship tracking in background
+    const relationship = await getUserRelationship(userId);
     Promise.all([
       updateStreak(userId),
       updateRelationshipLevel(userId, 1),
       calculateEmotionalInvestment(userId, userText)
     ]).catch(err => console.error('Background relationship update error:', err));
-    
-    if (facts.length) await saveFacts(userId, facts, userText);
-    if (emo) await saveEmotion(userId, emo, userText);
 
     // 🧠 STEP 2: Get AI response using HYBRID ROUTING (same as chat!)
     const history = await getHistory(userId);
@@ -6341,10 +6141,6 @@ wss.on("connection", (ws, req) => {
           return;
         }
 
-        // Track facts and emotions in background
-        const [facts, emo] = await Promise.all([extractFacts(userText), extractEmotionPoint(userText)]);
-        if (facts.length) await saveFacts(userId, facts, userText);
-        if (emo) await saveEmotion(userId, emo, userText);
 
         // 🧠 STEP 2: Get AI response using HYBRID ROUTING
         const relationship = await getUserRelationship(userId);
@@ -6643,21 +6439,7 @@ wsPhone.on("connection", (ws, req) => {
       const relationship = await getUserRelationship(userId);
       await updateStreak(userId);
       
-      // Background: facts & emotions
-      Promise.all([
-        extractFacts(userText).then(facts => facts?.length && saveFacts(userId, facts, userText)),
-        extractEmotionPoint(userText).then(emo => emo && saveEmotion(userId, emo, userText))
-      ]).catch(err => console.error('[phone] Background save error:', err));
 
-      const history = await getHistory(userId);
-      const [storedFacts, latestMood] = await Promise.all([
-        getFacts(userId),
-        getLatestEmotion(userId),
-      ]);
-      
-      const factsLines = storedFacts.slice(0, 12).map(r => `- ${r.fact}`).join("\n");
-      const factsSummary = factsLines ? `\nKnown facts:\n${factsLines}` : "";
-      const moodLine = latestMood ? `\nUser mood: ${latestMood.label}` : "";
 
       let personalityInstructions = getPersonalityInstructions(relationship);
       personalityInstructions += `
@@ -6670,7 +6452,7 @@ wsPhone.on("connection", (ws, req) => {
 • Build on what he JUST said - conversational flow
 • React authentically - like you're actually talking to him
 
-${factsSummary}${moodLine}`;
+`;
 
       history.push({ role: "user", content: userText });
 
