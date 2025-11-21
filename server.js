@@ -2175,6 +2175,24 @@ Relationship Level: ${relationship_level}/100
 Streak: ${streak_days} days
 Current Mood: ${last_mood}
 
+🕐 CURRENT DATE & TIME CONTEXT:
+${(() => {
+  const now = new Date();
+  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const dayName = days[now.getDay()];
+  const monthName = months[now.getMonth()];
+  const date = now.getDate();
+  const year = now.getFullYear();
+  const hours = now.getHours();
+  const minutes = now.getMinutes().toString().padStart(2, '0');
+  const timeOfDay = hours < 12 ? 'morning' : hours < 17 ? 'afternoon' : hours < 21 ? 'evening' : 'night';
+  
+  return `Today is ${dayName}, ${monthName} ${date}, ${year}
+Current time: ${hours}:${minutes} (${timeOfDay})
+IMPORTANT: Use this info naturally in conversation - if you mention days, use the ACTUAL day!`;
+})()}
+
 `;
 
   switch(current_stage) {
