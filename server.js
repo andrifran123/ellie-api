@@ -1264,7 +1264,7 @@ Him: "Good"
         messages: enhancedMessages,
         temperature: temperature,
         max_tokens: 300,
-        stop: ["###", "[/INST]", "[INST]", "Human:", "Assistant:", "</s>"]
+        stop: ["###", "[/INST]", "[INST]", "Human:", "Assistant:", "</s>", "</SOLUTION>", "<SOLUTION>", "</THOUGHT>", "<THOUGHT>", "</REASONING>", "<REASONING>", "</ANSWER>", "<ANSWER>"]
       })
     });
     
