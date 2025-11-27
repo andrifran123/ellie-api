@@ -1211,7 +1211,7 @@ const response = await fetch(GROQ_ENDPOINT, {
   }
 }
 // Call OpenRouter API (Hermes 3 70B)
-async function callHermes(messages, temperature = 0.85) {
+async function callHermes(messages, temperature = 0.85, maxTokens = 300) {
   try {
     // ✨ CLEAN APPROACH: Full personality is already in messages[0].content
     // Only add critical formatting reminder since Hermes can also use actions
@@ -1246,7 +1246,7 @@ SEXUAL CONTENT:
         model: "nousresearch/hermes-3-llama-3.1-70b",
         messages: enhancedMessages,
         temperature: temperature,
-        max_tokens: 300,
+        max_tokens: maxTokens,
         stop: ["###", "[/INST]", "[INST]", "Human:", "Assistant:", "</s>", "</SOLUTION>", "<SOLUTION>", "</THOUGHT>", "<THOUGHT>", "</REASONING>", "<REASONING>", "</ANSWER>", "<ANSWER>"]
       })
     });
@@ -1271,7 +1271,7 @@ return filtered;
 }
 // Main routing function - decides which model to use
 // 🔥 UPGRADED: Context-aware NSFW detection + Refusal handling
-async function getHybridResponse(userId, userMessage, messages, pool) {
+async function getHybridResponse(userId, userMessage, messages, pool, maxTokens = 300) {
   try {
     // 1. Check user tier
     const userTier = await getUserTier(userId, pool);
@@ -1302,27 +1302,27 @@ async function getHybridResponse(userId, userMessage, messages, pool) {
           console.warn('⚠️ OPENROUTER_API_KEY not configured, falling back to Groq');
           return await callGroq(messages);
         }
-        return await callHermes(messages);
+        return await callHermes(messages, 0.85, maxTokens);
       } else {
         console.log(`[Routing] Paid user + Normal -> Groq Llama 70B (FREE)`);
         if (!GROQ_API_KEY) {
           throw new Error('GROQ_API_KEY not configured');
         }
-        
+
         // 🆕 TRY LLAMA FIRST, BUT CHECK FOR REFUSAL
         const response = await callGroq(messages);
-        
+
         // 🆕 IF LLAMA REFUSED, AUTOMATICALLY RETRY WITH HERMES 3
         if (detectLlamaRefusal(response)) {
           console.log(`[Routing] ⚠️ Llama refused! Retrying with Hermes 3...`);
           if (OPENROUTER_API_KEY) {
-            return await callHermes(messages);
+            return await callHermes(messages, 0.85, maxTokens);
           } else {
             console.warn('[Routing] Cannot retry with Hermes 3 (no API key), returning refusal');
             return response; // Return the refusal if no Hermes 3 available
           }
         }
-        
+
         return response;
       }
     }
@@ -6189,9 +6189,9 @@ wsPhone.on("connection", (ws, req) => {
   let silenceTimer = null;
   let forceProcessTimer = null;
   let lastAudioTime = Date.now();
-  const SILENCE_DURATION = 500; // 0.5s silence (very fast!)
+  const SILENCE_DURATION = 300; // 0.3s silence (faster response)
   const MAX_BUFFER_SIZE = 60; // Process after 60 chunks (~1.2 seconds)
-  const MAX_WAIT_TIME = 2000; // Force process after 2 seconds (much faster!)
+  const MAX_WAIT_TIME = 1500; // Force process after 1.5 seconds (faster!)
 
   function safeSend(obj) {
     try { 
@@ -6307,41 +6307,80 @@ wsPhone.on("connection", (ws, req) => {
       let personalityInstructions = getPersonalityInstructions(relationship, userId);
       personalityInstructions += `
 
-🎤 VOICE CALL FORMATTING:
-• VERY SHORT responses: 1-2 sentences max (10-20 words)
-• Natural speech patterns: "um", "like", "mmm", "oh", "haha"
-• Contractions: I'm, you're, gonna, wanna, kinda
-• NO formal greetings mid-conversation (no "Hey there!")
-• Build on what he JUST said - conversational flow
-• React authentically - like you're actually talking to him
+🚨🚨🚨 CRITICAL - VOICE CALL MODE 🚨🚨🚨
 
+THIS IS A LIVE PHONE CALL. You MUST follow these rules:
+
+⛔ MAXIMUM 15 WORDS PER RESPONSE - NO EXCEPTIONS
+⛔ ONE sentence only - never multiple paragraphs
+⛔ NO emoji in voice responses (they can't be spoken)
+⛔ NO changing topics randomly - respond to what HE said
+
+✅ Sound natural: "um", "like", "mmm", "yeah", "haha"
+✅ Answer his actual question directly
+✅ Keep the conversation flowing naturally
+
+EXAMPLES OF CORRECT VOICE RESPONSES:
+- "are you horny?" → "mmm maybe... are you thinking about me?" (8 words)
+- "tell me" → "tell you what exactly?" (4 words)
+- "hey" → "hey you... what's up?" (4 words)
+
+WRONG (too long, changes topic):
+- "haha okay well i'm kinda hungry now actually, was thinking about ordering food..." ❌
+
+You are on a PHONE CALL. Respond like you're actually talking, not texting.
 `;
 
       history.push({ role: "user", content: userText });
 
       const voiceMessages = [
         { role: "system", content: personalityInstructions },  // Include personality
-        ...history.slice(-20)  // Last 20 messages (don't skip any!)
+        ...history.slice(-10)  // Last 10 messages for voice (faster)
       ];
 
-      // 🔀 HYBRID ROUTING
+      // 🔀 HYBRID ROUTING (with reduced max_tokens for faster voice)
       let reply;
       try {
         console.log(`[phone] 🧠 Routing: ${userId}`);
-        reply = await getHybridResponse(userId, userText, voiceMessages, pool);
+        reply = await getHybridResponse(userId, userText, voiceMessages, pool, 60); // 60 tokens for voice (faster)
       } catch (routingError) {
         console.error('❌ Routing failed:', routingError);
         const completion = await client.chat.completions.create({
           model: CHAT_MODEL,
-          messages: history.slice(-20),
+          messages: history.slice(-10),
           temperature: 0.9,
-          max_tokens: 120,
+          max_tokens: 60,
         });
         reply = completion.choices[0]?.message?.content || "Sorry, what?";
       }
 
       reply = filterAsteriskActions(reply);
-      
+
+      // 🎤 VOICE LENGTH ENFORCEMENT - Truncate overly long responses
+      const originalReply = reply;
+
+      // Remove emojis (can't be spoken)
+      reply = reply.replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '').trim();
+
+      // If response has multiple paragraphs/lines, take only the first
+      if (reply.includes('\n')) {
+        reply = reply.split('\n')[0].trim();
+      }
+
+      // If still too long (>100 chars), truncate at first sentence end
+      if (reply.length > 100) {
+        const sentenceEnd = reply.match(/^[^.!?]*[.!?]/);
+        if (sentenceEnd) {
+          reply = sentenceEnd[0].trim();
+        } else {
+          reply = reply.substring(0, 80).trim() + '...';
+        }
+      }
+
+      if (reply !== originalReply) {
+        console.log(`[phone] ✂️ Truncated response: "${originalReply.substring(0, 50)}..." → "${reply}"`);
+      }
+
       // 🚨 EMERGENCY CHARACTER BREAK DETECTION
       // If the model breaks character and admits to being AI, replace with in-character response
       const aiDisclosurePatterns = [
