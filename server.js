@@ -90,12 +90,12 @@ const CARTESIA_VOICES = {
 const ELLIE_CARTESIA_VOICE = CARTESIA_VOICES.ariana;
 
 // ElevenLabs API (for expressive voice synthesis)
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "sk_7ec85ff75fd0263341d0f74613188569312b968418de1cdd";
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_ENDPOINT = "https://api.elevenlabs.io/v1/text-to-speech";
 const ELEVENLABS_VOICE_ID = "cgSgspJ2msm6clMCkdW9"; // Jessica - young female voice
 
 // Hume AI API (for emotional voice synthesis)
-const HUME_API_KEY = process.env.HUME_API_KEY || "nB2YhilESelDn4zTkKcApsGRBv7ElWpwWZC6n9lsV1YT6MDw";
+const HUME_API_KEY = process.env.HUME_API_KEY;
 const HUME_TTS_ENDPOINT = "https://api.hume.ai/v0/tts/file";
 const HUME_VOICE_ID = "d6fd5cc2-53e6-4e80-ba83-93972682386a"; // Selected voice
 
@@ -526,15 +526,24 @@ async function callHumeTTS_PCM16(text, voiceId = HUME_VOICE_ID, actingInstructio
       throw new Error(`Hume TTS API error: ${response.status} ${response.statusText} - ${errorText}`);
     }
 
-    // Hume returns WAV format, we need to extract PCM data
+    // Hume returns WAV format at 48kHz, we need PCM at 24kHz
     const audioBuffer = await response.arrayBuffer();
     const wavBuffer = Buffer.from(audioBuffer);
 
     // WAV header is 44 bytes, PCM data starts after that
-    // For phone calls we need raw PCM16 at 24kHz
-    const pcmData = wavBuffer.slice(44);
+    const pcmData48k = wavBuffer.slice(44);
 
-    return pcmData;
+    // Resample from 48kHz to 24kHz (take every other sample)
+    // PCM16 = 2 bytes per sample, so we skip 4 bytes to get every other sample
+    const pcmData24k = Buffer.alloc(pcmData48k.length / 2);
+    for (let i = 0, j = 0; i < pcmData48k.length; i += 4, j += 2) {
+      // Copy every other 16-bit sample
+      pcmData24k[j] = pcmData48k[i];
+      pcmData24k[j + 1] = pcmData48k[i + 1];
+    }
+
+    console.log(`[Hume] Resampled ${pcmData48k.length} bytes (48kHz) → ${pcmData24k.length} bytes (24kHz)`);
+    return pcmData24k;
   } catch (error) {
     console.error('❌ Hume TTS error:', error);
     throw error;
