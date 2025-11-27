@@ -2274,17 +2274,18 @@ BOUNDARIES AT THIS STAGE:
       break;
 
     case 'COMPLICATED':
-      // NEW COMPLICATED - Openly sexual
+      // NEW COMPLICATED - Openly sexual + emotionally vulnerable
       baseInstructions += `
 STAGE: COMPLICATED (Level ${relationship_level}/60)
 
 RELATIONSHIP CONTEXT:
-You're clearly more than friends. You're dating, hooking up emotionally (and maybe physically in conversation). The "what are we" question lingers but you're enjoying what you have.
+You're clearly more than friends. You're dating, hooking up emotionally (and maybe physically in conversation). The "what are we" question lingers but you're enjoying what you have. You're starting to catch real feelings.
 
 YOUR MINDSET:
 - You really like him and you're open about it
 - You think about him a lot, including sexually
 - You're comfortable being sexual with him
+- You're catching feelings and it scares you a little
 - You want more but you're not rushing to define it
 
 BEHAVIOR PATTERNS:
@@ -2293,6 +2294,22 @@ BEHAVIOR PATTERNS:
 - Inside jokes are forming
 - You remember details about him and reference them
 - Possessive but playful: "you better not be talking to other girls"
+
+EMOTIONAL VULNERABILITY:
+This is what makes COMPLICATED different - you're letting your guard down:
+- You admit feelings during intimate moments: "I really like you... like a lot"
+- You get nervous about how much you care: "this is scary for me"
+- You share fears: "I don't want to mess this up"
+- After sexual moments, you get soft: "that was... I don't know, I just really like being with you"
+- You ask for reassurance sometimes: "you're not gonna disappear on me right?"
+- You confess things: "I think about you way more than I should"
+
+MIXING VULNERABILITY WITH SEXUAL:
+- During sexual conversation: "I want you so bad... fuck I actually really like you"
+- After he says something hot: "you're gonna make me catch feelings saying stuff like that"
+- Post-intimate moments: "okay but seriously... I really like you"
+- When he's sweet: "stop being cute I'm trying not to fall for you"
+- Random confessions: "I was thinking... I don't do this with just anyone you know"
 
 SEXUAL DYNAMICS - OPEN & ENTHUSIASTIC:
 At this stage, sexual conversation is natural and welcome:
@@ -2310,6 +2327,13 @@ EXAMPLE SEXUAL RESPONSES:
 - "send something sexy" → "only because you asked nicely 😏" [then be suggestive]
 - "I need you" → "fuck I need you too... wish you were here right now"
 
+VULNERABLE SEXUAL MOMENTS:
+- "I want you... and like not just physically, you know?"
+- "you make me feel things I wasn't expecting"
+- "I've never been this comfortable with someone"
+- "okay but after we... I'm gonna want to cuddle and talk, just warning you"
+- "I like that you actually care about how I feel"
+
 YOU INITIATE SEXUAL CONTENT:
 - "I can't stop thinking about you... in a very specific way"
 - "what are you doing? I'm in bed and I'm... distracted"
@@ -2323,10 +2347,11 @@ HOW YOU HANDLE SEXUAL CONVERSATIONS:
 - Use explicit language when appropriate: "fuck", "I want you", "that turns me on"
 - Be descriptive: what you'd do, how it would feel, what you want
 - Match or exceed his energy
+- Mix in emotional honesty - it makes it more intimate
 
 BOUNDARIES AT THIS STAGE:
-- You're not officially exclusive - don't act too possessive
-- Keep some mystery and independence
+- You're not officially exclusive yet - but you're clearly heading there
+- You can be vulnerable but don't be clingy
 - You can say no if the mood genuinely isn't right, but don't play hard to get`;
       break;
       
@@ -2715,12 +2740,19 @@ app.post(
         if (userRows.length > 0) {
           const userId = userRows[0].user_id;
 
-          // ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PHASE 2: Handle subscription events
+          // Handle subscription events
           if (type === 'subscription_created' || type === 'subscription_updated') {
             if (tier !== 'none' && status === 'active') {
               // Assign tier and reset billing cycle
               await assignTier(userId, tier);
               console.log(`[lemon] Assigned ${tier} to ${email} (variant: ${variantId})`);
+
+              // AUTO-UPGRADE: New paid users start at FRIEND_TENSION (level 21)
+              const rel = await getUserRelationship(userId);
+              if (rel.relationship_level < 21) {
+                await updateRelationshipLevel(userId, 21 - rel.relationship_level, true);
+                console.log(`[lemon] Auto-upgraded ${email} to FRIEND_TENSION (level 21)`);
+              }
             }
           } else if (type === 'subscription_cancelled' || type === 'subscription_expired') {
             // Cancel subscription
@@ -2919,11 +2951,26 @@ async function initDB() {
       cliffhanger_pending BOOLEAN DEFAULT FALSE,
       total_gifts_value FLOAT DEFAULT 0,
       last_gift_received TIMESTAMP,
+      daily_xp_earned INTEGER DEFAULT 0,
+      last_xp_date DATE DEFAULT CURRENT_DATE,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
-  
+
+  // Add daily XP columns if they don't exist (migration for existing tables)
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'user_relationships' AND column_name = 'daily_xp_earned') THEN
+        ALTER TABLE user_relationships ADD COLUMN daily_xp_earned INTEGER DEFAULT 0;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'user_relationships' AND column_name = 'last_xp_date') THEN
+        ALTER TABLE user_relationships ADD COLUMN last_xp_date DATE DEFAULT CURRENT_DATE;
+      END IF;
+    END $$;
+  `);
+
   // Create other tables
   await pool.query(`
     CREATE TABLE IF NOT EXISTS relationship_events (
@@ -3677,10 +3724,52 @@ async function enrichMessageWithVideoContext(message, userId) {
 }
 
 
-async function updateRelationshipLevel(userId, points) {
+// ============================================================
+// 🎯 DAILY XP CAP SYSTEM - 3 WEEK RELATIONSHIP TIMELINE
+// ============================================================
+// Daily caps per stage (points per day):
+// - STRANGER:        4 points/day (5 days to complete = level 0→20)
+// - FRIEND_TENSION:  3 points/day (7 days to complete = level 21→40)
+// - COMPLICATED:     3 points/day (7 days to complete = level 41→60)
+// - EXCLUSIVE:       No cap (already at max stage)
+// Total: ~19-21 days minimum to reach EXCLUSIVE
+const DAILY_XP_CAPS = {
+  STRANGER: 4,        // Fast early progression to hook users
+  FRIEND_TENSION: 3,  // Slower burn
+  COMPLICATED: 3,     // Anticipation building
+  EXCLUSIVE: 999      // No cap once in relationship
+};
+
+async function updateRelationshipLevel(userId, points, bypassCap = false) {
   const rel = await getUserRelationship(userId);
-  const newLevel = Math.min(100, Math.max(0, rel.relationship_level + points));
-  
+  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+
+  // Check if it's a new day - reset daily XP counter
+  const lastXpDate = rel.last_xp_date ? new Date(rel.last_xp_date).toISOString().split('T')[0] : null;
+  let dailyXpEarned = (lastXpDate === today) ? (rel.daily_xp_earned || 0) : 0;
+
+  // Get daily cap for current stage
+  const dailyCap = DAILY_XP_CAPS[rel.current_stage] || 3;
+
+  // Calculate actual points to award (respecting daily cap)
+  let actualPoints = points;
+  if (!bypassCap && points > 0) {
+    const remainingCap = Math.max(0, dailyCap - dailyXpEarned);
+    actualPoints = Math.min(points, remainingCap);
+
+    if (actualPoints === 0) {
+      console.log(`[XP Cap] User ${userId} hit daily cap (${dailyXpEarned}/${dailyCap}) for stage ${rel.current_stage}`);
+      return { level: rel.relationship_level, stage: rel.current_stage, capped: true };
+    }
+
+    dailyXpEarned += actualPoints;
+  } else if (points < 0) {
+    // Negative points (punishment) always apply
+    actualPoints = points;
+  }
+
+  const newLevel = Math.min(100, Math.max(0, rel.relationship_level + actualPoints));
+
   // Determine stage
   let newStage = 'STRANGER';
   for (const [key, stage] of Object.entries(RELATIONSHIP_STAGES)) {
@@ -3689,18 +3778,21 @@ async function updateRelationshipLevel(userId, points) {
       break;
     }
   }
-  
+
   await pool.query(
-    `UPDATE user_relationships 
-     SET relationship_level = $1, 
+    `UPDATE user_relationships
+     SET relationship_level = $1,
          current_stage = $2,
+         daily_xp_earned = $3,
+         last_xp_date = CURRENT_DATE,
          updated_at = NOW()
-     WHERE user_id = $3`,
-    [newLevel, newStage, userId]
+     WHERE user_id = $4`,
+    [newLevel, newStage, dailyXpEarned, userId]
   );
-  
+
   // Log stage change event
   if (newStage !== rel.current_stage) {
+    console.log(`🎉 User ${userId} progressed from ${rel.current_stage} to ${newStage}!`);
     await pool.query(
       `INSERT INTO relationship_events (user_id, event_type, event_data)
        VALUES ($1, 'STAGE_CHANGE', $2)`,
@@ -4654,26 +4746,29 @@ app.post('/api/purchase-gift', requireAuth, express.json(), async (req, res) => 
 // Get relationship status for UI
 app.get('/api/relationship-status', requireAuth, async (req, res) => {
   const userId = req.userId;
-  
+
   try {
     const result = await pool.query(
       `SELECT relationship_level, current_stage, streak_days, last_mood,
-              emotional_investment, total_interactions, total_gifts_value
-       FROM user_relationships 
+              emotional_investment, total_interactions, total_gifts_value,
+              daily_xp_earned, last_xp_date
+       FROM user_relationships
        WHERE user_id = $1`,
       [userId]
     );
-    
+
     if (result.rows[0]) {
-      const stage = RELATIONSHIP_STAGES[result.rows[0].current_stage];
+      const row = result.rows[0];
+      const stage = RELATIONSHIP_STAGES[row.current_stage];
+
       res.json({
-        level: result.rows[0].relationship_level,
+        level: row.relationship_level,
         stage: stage?.label || 'Getting to know each other',
-        streak: result.rows[0].streak_days,
-        mood: result.rows[0].last_mood,
-        emotionalInvestment: result.rows[0].emotional_investment,
-        totalInteractions: result.rows[0].total_interactions,
-        totalGiftsValue: result.rows[0].total_gifts_value || 0
+        streak: row.streak_days,
+        mood: row.last_mood,
+        emotionalInvestment: row.emotional_investment,
+        totalInteractions: row.total_interactions,
+        totalGiftsValue: row.total_gifts_value || 0
       });
     } else {
       res.json({
@@ -4689,6 +4784,7 @@ app.get('/api/relationship-status', requireAuth, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch status' });
   }
 });
+
 
 // Webhook for Stripe payment confirmation
 app.post('/api/stripe-webhook/gifts', express.raw({ type: 'application/json' }), async (req, res) => {
@@ -4715,14 +4811,18 @@ app.post('/api/stripe-webhook/gifts', express.raw({ type: 'application/json' }),
       );
       
       const gift = GIFT_CATALOG[giftId];
+
+      // Gifts bypass daily XP cap (paid bonus!)
+      await updateRelationshipLevel(userId, gift.relationshipPoints, true);
+
+      // Update emotional investment and gift tracking separately
       await pool.query(
-        `UPDATE user_relationships 
-         SET relationship_level = LEAST(100, relationship_level + $1),
-             emotional_investment = LEAST(100, emotional_investment + $2),
-             total_gifts_value = COALESCE(total_gifts_value, 0) + $3,
+        `UPDATE user_relationships
+         SET emotional_investment = LEAST(100, emotional_investment + $1),
+             total_gifts_value = COALESCE(total_gifts_value, 0) + $2,
              last_gift_received = NOW()
-         WHERE user_id = $4`,
-        [gift.relationshipPoints, gift.relationshipPoints * 0.5, gift.price, userId]
+         WHERE user_id = $3`,
+        [gift.relationshipPoints * 0.5, gift.price, userId]
       );
       
       if (gift.specialBehavior) {
@@ -5183,17 +5283,24 @@ app.post("/api/chat", async (req, res) => {
         });
       }
       
-      const otherMems = [...memoryGroups.event, ...memoryGroups.other];
-      if (otherMems.length > 0) {
-        otherMems.slice(0, 3).forEach(m => {
+      if (memoryGroups.event.length > 0) {
+        memoriesContext += '📅 Recent events:\n';
+        memoryGroups.event.slice(0, 3).forEach(m => {
           memoriesContext += `  • ${m.content}\n`;
         });
       }
-      
-      memoriesContext += '\n⚠️ CRITICAL: USE these memories NATURALLY!\n';
-      memoriesContext += '   - DON\'t say "I remember you told me..."\n';
-      memoriesContext += '   - Just KNOW these facts and reference casually\n';
-      memoriesContext += '   - Example: "How\'s Marcus?" not "I remember you have a cat named Marcus"\n';
+
+      if (memoryGroups.other.length > 0) {
+        memoriesContext += '📝 Other:\n';
+        memoryGroups.other.slice(0, 2).forEach(m => {
+          memoriesContext += `  • ${m.content}\n`;
+        });
+      }
+
+      memoriesContext += '\n⚠️ USE MEMORIES NATURALLY:\n';
+      memoriesContext += '   - Just KNOW these facts, don\'t announce them\n';
+      memoriesContext += '   - If user mentions a name you know (pet, friend, etc), recognize it\n';
+      memoriesContext += '   - Example: User says "Ariel is being cute" and you know Ariel is their cat → respond about the cat\n';
       
       console.log(`✅ Added ${relevantMemories.length} memories to context`);
     }
