@@ -97,7 +97,7 @@ const ELEVENLABS_VOICE_ID = "cgSgspJ2msm6clMCkdW9"; // Jessica - young female vo
 // Hume AI API (for emotional voice synthesis)
 const HUME_API_KEY = process.env.HUME_API_KEY;
 const HUME_TTS_ENDPOINT = "https://api.hume.ai/v0/tts/file";
-const HUME_VOICE_ID = "8a7dd58c-0cda-4073-9ce6-654184695e99"; // Custom voice ID
+const HUME_VOICE_NAME = "Warm American Female"; // Hume Library voice
 
 // Video metadata extraction
 const videoMetadata = require('./videoMetadata');
@@ -490,20 +490,19 @@ async function callElevenLabsTTS_PCM16(text, voiceId = ELEVENLABS_VOICE_ID) {
  * @param {number} speed - Speech speed multiplier (default 1.0)
  * @returns {Promise<Buffer>} - Audio buffer (PCM16 24kHz)
  */
-async function callHumeTTS_PCM16(text, voiceId = HUME_VOICE_ID, actingInstructions = null, speed = 1.0) {
+async function callHumeTTS_PCM16(text, voiceName = HUME_VOICE_NAME, actingInstructions = null, speed = 1.0) {
   if (!HUME_API_KEY) {
     throw new Error('HUME_API_KEY not configured');
   }
 
   try {
-    // Build utterance object - try preset voice by name first
+    // Build utterance object with Hume Library voice
     const utterance = {
       text: text,
       voice: {
-        name: "Stella",  // Using Hume preset voice
+        name: voiceName,
         provider: "HUME_AI"
-      },
-      speed: speed
+      }
     };
 
     // Add acting instructions for emotional guidance (if provided)
@@ -511,8 +510,7 @@ async function callHumeTTS_PCM16(text, voiceId = HUME_VOICE_ID, actingInstructio
       utterance.description = actingInstructions;
     }
 
-    console.log(`[Hume] Request: voice=${voiceId}, speed=${speed}, description="${actingInstructions?.substring(0, 50)}..."`);
-    console.log(`[Hume] Using API key: ${HUME_API_KEY ? HUME_API_KEY.substring(0, 12) + '...' : 'NOT SET'}`);
+    console.log(`[Hume] Request: voice=${voiceName}, speed=${speed}, description="${actingInstructions?.substring(0, 50)}..."`);
 
     const response = await fetch(HUME_TTS_ENDPOINT, {
       method: 'POST',
@@ -6672,7 +6670,7 @@ You are on an INTIMATE PHONE CALL. Sound aroused, breathy, and connected.
         if (HUME_API_KEY) {
           try {
             console.log(`[phone] 🔊 Hume TTS - synthesizing with emotion: "${humeEmotionDetected}"`);
-            pcm16Audio = await callHumeTTS_PCM16(reply, HUME_VOICE_ID, humeActingInstructions, humeSpeed);
+            pcm16Audio = await callHumeTTS_PCM16(reply, HUME_VOICE_NAME, humeActingInstructions, humeSpeed);
             ttsProvider = 'Hume';
             console.log(`[phone] 🎵 Hume audio: ${pcm16Audio.length} bytes`);
           } catch (humeError) {
