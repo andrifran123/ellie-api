@@ -512,6 +512,7 @@ async function callHumeTTS_PCM16(text, voiceId = HUME_VOICE_ID, actingInstructio
     }
 
     console.log(`[Hume] Request: voice=${voiceId}, speed=${speed}, description="${actingInstructions?.substring(0, 50)}..."`);
+    console.log(`[Hume] Using API key: ${HUME_API_KEY ? HUME_API_KEY.substring(0, 12) + '...' : 'NOT SET'}`);
 
     const response = await fetch(HUME_TTS_ENDPOINT, {
       method: 'POST',
