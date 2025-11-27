@@ -89,6 +89,11 @@ const CARTESIA_VOICES = {
 // Ellie's voice - using Ariana voice
 const ELLIE_CARTESIA_VOICE = CARTESIA_VOICES.ariana;
 
+// ElevenLabs API (for expressive voice synthesis)
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "sk_7ec85ff75fd0263341d0f74613188569312b968418de1cdd";
+const ELEVENLABS_ENDPOINT = "https://api.elevenlabs.io/v1/text-to-speech";
+const ELEVENLABS_VOICE_ID = "cgSgspJ2msm6clMCkdW9"; // Jessica - young female voice
+
 // Video metadata extraction
 const videoMetadata = require('./videoMetadata');
 
@@ -415,6 +420,54 @@ async function callCartesiaTTS_PCM16(text, voiceId = ELLIE_CARTESIA_VOICE, langu
     return Buffer.from(audioBuffer);
   } catch (error) {
     console.error('❌ Cartesia TTS PCM16 error:', error);
+    throw error;
+  }
+}
+
+
+// ============================================================
+// 🔊 ELEVENLABS TTS - EXPRESSIVE VOICE SYNTHESIS
+// ============================================================
+
+/**
+ * Call ElevenLabs TTS API with PCM16 output (for phone calls)
+ * @param {string} text - Text to synthesize
+ * @param {string} voiceId - ElevenLabs voice ID
+ * @returns {Promise<Buffer>} - Audio buffer (PCM16)
+ */
+async function callElevenLabsTTS_PCM16(text, voiceId = ELEVENLABS_VOICE_ID) {
+  if (!ELEVENLABS_API_KEY) {
+    throw new Error('ELEVENLABS_API_KEY not configured');
+  }
+
+  try {
+    const response = await fetch(`${ELEVENLABS_ENDPOINT}/${voiceId}?output_format=pcm_24000`, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': ELEVENLABS_API_KEY,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        text: text,
+        model_id: "eleven_turbo_v2_5", // Fast, expressive model
+        voice_settings: {
+          stability: 0.4,        // Lower = more expressive/emotional
+          similarity_boost: 0.75, // Voice clarity
+          style: 0.6,            // Higher = more expressive style
+          use_speaker_boost: true
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`ElevenLabs API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    const audioBuffer = await response.arrayBuffer();
+    return Buffer.from(audioBuffer);
+  } catch (error) {
+    console.error('❌ ElevenLabs TTS error:', error);
     throw error;
   }
 }
@@ -6467,56 +6520,68 @@ You are on an INTIMATE PHONE CALL. Sound aroused, breathy, and connected.
         ).catch(err => console.error('[phone] ⚠️ Failed to save assistant message:', err));
       });
 
-      // Detect emotion for voice synthesis
+      // Detect emotion for voice synthesis (kept for logging)
       const voiceEmotions = detectVoiceEmotion(reply);
       console.log(`[phone] 🎭 Voice emotions: ${voiceEmotions.join(', ')}`);
 
-      // 3️⃣ CARTESIA - PCM16 output
-      // 3️⃣ CARTESIA - PCM16 output with automatic fallback
+      // 3️⃣ ELEVENLABS TTS - Expressive voice synthesis
       try {
         let pcm16Audio;
-        let usingCartesia = false;
-        
-        // Try Cartesia first
-        if (CARTESIA_API_KEY) {
+        let ttsProvider = 'unknown';
+
+        // Try ElevenLabs first (more expressive)
+        if (ELEVENLABS_API_KEY) {
           try {
-            console.log(`[phone] 🔊 Cartesia TTS - synthesizing...`);
-            pcm16Audio = await callCartesiaTTS_PCM16(reply, ELLIE_CARTESIA_VOICE, sessionLang, expectRate, voiceEmotions);
-            usingCartesia = true;
-            console.log(`[phone] 🎵 Cartesia audio: ${pcm16Audio.length} bytes`);
-          } catch (cartesiaError) {
-            console.warn('[phone] ⚠️ Cartesia failed, falling back to OpenAI TTS:', cartesiaError.message);
-            // Fall through to OpenAI TTS
+            console.log(`[phone] 🔊 ElevenLabs TTS - synthesizing...`);
+            pcm16Audio = await callElevenLabsTTS_PCM16(reply);
+            ttsProvider = 'ElevenLabs';
+            console.log(`[phone] 🎵 ElevenLabs audio: ${pcm16Audio.length} bytes`);
+          } catch (elevenLabsError) {
+            console.warn('[phone] ⚠️ ElevenLabs failed:', elevenLabsError.message);
+            // Fall through to Cartesia
           }
         }
-        
-        // Fallback to OpenAI TTS if Cartesia failed or not configured
+
+        // Fallback to Cartesia if ElevenLabs failed
+        if (!pcm16Audio && CARTESIA_API_KEY) {
+          try {
+            console.log(`[phone] 🔊 Cartesia TTS (fallback) - synthesizing...`);
+            pcm16Audio = await callCartesiaTTS_PCM16(reply, ELLIE_CARTESIA_VOICE, sessionLang, expectRate, voiceEmotions);
+            ttsProvider = 'Cartesia';
+            console.log(`[phone] 🎵 Cartesia audio: ${pcm16Audio.length} bytes`);
+          } catch (cartesiaError) {
+            console.warn('[phone] ⚠️ Cartesia failed:', cartesiaError.message);
+          }
+        }
+
+        // Final fallback to OpenAI TTS
         if (!pcm16Audio) {
-          console.log('[phone] 🔊 Using OpenAI TTS (fallback)');
+          console.log('[phone] 🔊 OpenAI TTS (final fallback)');
           const speech = await client.audio.speech.create({
             model: "tts-1",
-            voice: "nova", // Female voice
+            voice: "nova",
             input: reply,
             format: "pcm",
           });
           pcm16Audio = Buffer.from(await speech.arrayBuffer());
+          ttsProvider = 'OpenAI';
           console.log(`[phone] 🎵 OpenAI audio: ${pcm16Audio.length} bytes`);
         }
-        
+
         // Stream audio to browser
         const base64Audio = pcm16Audio.toString('base64');
         const chunkSize = 8192;
         const totalChunks = Math.ceil(base64Audio.length / chunkSize);
         console.log(`[phone] 📤 Streaming ${totalChunks} audio chunks to browser...`);
-        
+
         for (let i = 0; i < base64Audio.length; i += chunkSize) {
           safeSend({ type: "audio.delta", audio: base64Audio.slice(i, i + chunkSize) });
         }
-        
-        console.log(`[phone] 📤 All audio chunks sent! (${usingCartesia ? 'Cartesia' : 'OpenAI'})`);
+
+        console.log(`[phone] 📤 All audio chunks sent! (${ttsProvider})`);
         safeSend({ type: "response.done" });
         console.log(`[phone] ✅ Complete`);
-        
+
       } catch (ttsError) {
         console.error('❌ TTS error (all methods failed):', ttsError);
         safeSend({ type: "error", message: "Voice synthesis failed" });
