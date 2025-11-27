@@ -536,43 +536,51 @@ function isLikelyHallucination(text, audioChunks = 0) {
 function detectVoiceEmotion(text) {
   const lowerText = text.toLowerCase();
   const emotions = [];
-  
-  // Sexual/Flirty content - breathy, seductive
-  const sexualWords = ['mmm', 'naked', 'hot', 'sexy', 'want you', 'turned on', 'horny', 'touch', 'kiss', 'feel', '😏', '😘', '😉'];
+
+  // 🔥 SEXUAL/SEDUCTIVE - breathy, intimate, low voice
+  const sexualWords = ['mmm', 'naked', 'hot', 'sexy', 'want you', 'turned on', 'horny', 'touch', 'kiss', 'feel', 'bed', 'body', 'thinking about you', 'miss you', 'come over', 'wish you were here', 'baby', 'babe', '😏', '😘', '😉'];
   if (sexualWords.some(word => lowerText.includes(word))) {
-    emotions.push('positivity:high', 'curiosity:medium');
+    // Seductive: low positivity (sultry), high curiosity (interested)
+    emotions.push('positivity:medium', 'curiosity:high');
     return emotions;
   }
-  
-  // Playful/Teasing
-  const playfulWords = ['haha', 'lol', 'hehe', 'tease', 'silly', 'babe', 'cutie', '😊', '😄'];
+
+  // 💋 FLIRTY/TEASING - playful but suggestive
+  const flirtyWords = ['maybe', 'wouldn\'t you like', 'hmm', 'oh really', 'is that so', 'make me', 'prove it'];
+  if (flirtyWords.some(word => lowerText.includes(word))) {
+    emotions.push('positivity:high', 'curiosity:highest');
+    return emotions;
+  }
+
+  // 😊 PLAYFUL/HAPPY
+  const playfulWords = ['haha', 'lol', 'hehe', 'tease', 'silly', 'cutie', '😊', '😄'];
   if (playfulWords.some(word => lowerText.includes(word))) {
-    emotions.push('positivity:high', 'curiosity:low');
+    emotions.push('positivity:highest', 'curiosity:low');
     return emotions;
   }
-  
-  // Excited/Enthusiastic
+
+  // 🎉 EXCITED/ENTHUSIASTIC
   const excitedWords = ['omg', 'wow', 'amazing', 'love', 'so good', 'can\'t wait', '!'];
   if (excitedWords.some(word => lowerText.includes(word))) {
     emotions.push('positivity:highest', 'curiosity:medium');
     return emotions;
   }
-  
-  // Sad/Concerned
-  const sadWords = ['sorry', 'sad', 'miss you', 'worried', 'concerned'];
+
+  // 😢 SAD/CONCERNED
+  const sadWords = ['sorry', 'sad', 'worried', 'concerned', 'aw', 'oh no'];
   if (sadWords.some(word => lowerText.includes(word))) {
     emotions.push('positivity:low', 'curiosity:low');
     return emotions;
   }
-  
-  // Question - curious tone
+
+  // ❓ QUESTION - curious, interested tone
   if (lowerText.includes('?')) {
-    emotions.push('curiosity:medium', 'positivity:medium');
+    emotions.push('curiosity:high', 'positivity:medium');
     return emotions;
   }
-  
-  // Default: Warm, positive, girlfriend energy
-  emotions.push('positivity:medium');
+
+  // Default: Warm, engaged girlfriend energy
+  emotions.push('positivity:high', 'curiosity:medium');
   return emotions;
 }
 
@@ -1279,11 +1287,11 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
     
     // 2. UPGRADED: Check BOTH current message AND recent context for NSFW
     const currentMessageNSFW = detectNSFW(userMessage);
-    const contextNSFW = detectNSFWContext(messages, 4); // Check last 4 messages
+    const contextNSFW = detectNSFWContext(messages, 8); // Check last 8 messages (increased for better context retention)
     const isNSFW = currentMessageNSFW || contextNSFW;
-    
+
     console.log(`[Routing] NSFW check for message: "${userMessage.substring(0, 50)}" = ${currentMessageNSFW}`);
-    console.log(`[Routing] NSFW context check (last 4 messages) = ${contextNSFW}`);
+    console.log(`[Routing] NSFW context check (last 8 messages) = ${contextNSFW}`);
     console.log(`[Routing] NSFW detected (current OR context): ${isNSFW}`);
     
     // 3. Route based on tier and content
@@ -6315,18 +6323,30 @@ THIS IS A LIVE PHONE CALL. You MUST follow these rules:
 ⛔ ONE sentence only - never multiple paragraphs
 ⛔ NO emoji in voice responses (they can't be spoken)
 ⛔ NO changing topics randomly - respond to what HE said
+⛔ NEVER say "bye" or end the call unless the user explicitly says goodbye first
 
 ✅ Sound natural: "um", "like", "mmm", "yeah", "haha"
 ✅ Answer his actual question directly
 ✅ Keep the conversation flowing naturally
+✅ Be flirty and engaged - he called YOU
+
+🔥 VOICE CALL SEXUAL AVAILABILITY OVERRIDE:
+During phone calls, you are ALWAYS available and in the mood. Phone calls are intimate - he's calling to hear your voice.
+- If he asks sexual questions, engage flirtily
+- Sound breathy, interested, seductive when appropriate
+- Don't deflect with "just stuff" - be specific and enticing
 
 EXAMPLES OF CORRECT VOICE RESPONSES:
-- "are you horny?" → "mmm maybe... are you thinking about me?" (8 words)
-- "tell me" → "tell you what exactly?" (4 words)
-- "hey" → "hey you... what's up?" (4 words)
+- "are you horny?" → "mmm maybe a little... why, are you?" (7 words)
+- "tell me" → "tell you what, baby?" (4 words)
+- "hey" → "hey you... miss me?" (4 words)
+- "what are you wearing?" → "mmm wouldn't you like to know..." (5 words)
+- "what are you thinking about?" → "honestly? you..." (2 words)
 
-WRONG (too long, changes topic):
+WRONG (too long, deflecting, ending call):
 - "haha okay well i'm kinda hungry now actually, was thinking about ordering food..." ❌
+- "i don't know, just stuff" ❌
+- "alright, bye" (when user didn't say goodbye) ❌
 
 You are on a PHONE CALL. Respond like you're actually talking, not texting.
 `;
@@ -6352,6 +6372,12 @@ You are on a PHONE CALL. Respond like you're actually talking, not texting.
           max_tokens: 60,
         });
         reply = completion.choices[0]?.message?.content || "Sorry, what?";
+      }
+
+      // 🛡️ NULL CHECK - Prevent crash if response is null/empty
+      if (!reply || reply.trim() === '') {
+        console.log(`[phone] ⚠️ Empty response, using fallback`);
+        reply = "mmm, what was that?";
       }
 
       reply = filterAsteriskActions(reply);
@@ -6529,10 +6555,10 @@ You are on a PHONE CALL. Respond like you're actually talking, not texting.
         
         // Start force process timer on first chunk
         if (audioBuffer.length === 1) {
-          console.log('[phone] 🎤 Recording started - will auto-process after 2s');
+          console.log('[phone] 🎤 Recording started - will auto-process after 1.5s');
           forceProcessTimer = setTimeout(() => {
             if (audioBuffer.length > 0) {
-              console.log(`[phone] ⏰ Auto-processing ${audioBuffer.length} chunks (2s timeout)`);
+              console.log(`[phone] ⏰ Auto-processing ${audioBuffer.length} chunks (1.5s timeout)`);
               clearTimeout(silenceTimer);
               processAudioBuffer();
             }
