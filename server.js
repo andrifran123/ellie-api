@@ -520,8 +520,8 @@ function isLikelyHallucination(text, audioChunks = 0) {
     return true;
   }
   
-  // If audio is too short (less than 20 chunks = ~0.4s)
-  if (audioChunks > 0 && audioChunks < 20) {
+  // If audio is too short (less than 10 chunks = ~0.2s)
+  if (audioChunks > 0 && audioChunks < 10) {
     return true;
   }
   
