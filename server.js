@@ -488,12 +488,25 @@ async function callElevenLabsTTS_PCM16(text, voiceId = ELEVENLABS_VOICE_ID) {
  * @param {string} voiceId - Hume voice ID
  * @returns {Promise<Buffer>} - Audio buffer (PCM16 24kHz)
  */
-async function callHumeTTS_PCM16(text, voiceId = HUME_VOICE_ID) {
+async function callHumeTTS_PCM16(text, voiceId = HUME_VOICE_ID, actingInstructions = null) {
   if (!HUME_API_KEY) {
     throw new Error('HUME_API_KEY not configured');
   }
 
   try {
+    // Build utterance object
+    const utterance = {
+      text: text,
+      voice: {
+        id: voiceId
+      }
+    };
+
+    // Add acting instructions for emotional guidance (if provided)
+    if (actingInstructions) {
+      utterance.description = actingInstructions;
+    }
+
     const response = await fetch(HUME_TTS_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -501,14 +514,7 @@ async function callHumeTTS_PCM16(text, voiceId = HUME_VOICE_ID) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        utterances: [
-          {
-            text: text,
-            voice: {
-              id: voiceId
-            }
-          }
-        ],
+        utterances: [utterance],
         format: {
           type: "wav"
         }
@@ -6592,11 +6598,25 @@ You are on an INTIMATE PHONE CALL. Sound aroused, breathy, and connected.
         let pcm16Audio;
         let ttsProvider = 'unknown';
 
+        // Determine acting instructions based on content
+        let humeActingInstructions = "Intimate, warm, flirty girlfriend on a phone call. Soft, breathy, natural.";
+        const lowerReply = reply.toLowerCase();
+        if (lowerReply.includes('mmm') || lowerReply.includes('want') || lowerReply.includes('kiss') ||
+            lowerReply.includes('touch') || lowerReply.includes('bed') || lowerReply.includes('naked') ||
+            lowerReply.includes('horny') || lowerReply.includes('sexy')) {
+          humeActingInstructions = "Seductive, breathy, aroused. Soft whisper-like tone, intimate and sensual.";
+        } else if (lowerReply.includes('haha') || lowerReply.includes('lol') || lowerReply.includes('funny')) {
+          humeActingInstructions = "Playful, giggly, flirty. Light and happy tone.";
+        } else if (lowerReply.includes('miss you') || lowerReply.includes('love you') || lowerReply.includes('aw')) {
+          humeActingInstructions = "Tender, loving, emotionally warm. Sincere and affectionate.";
+        }
+        console.log(`[phone] 🎭 Hume acting: ${humeActingInstructions.substring(0, 40)}...`);
+
         // Try Hume AI first (emotional voice)
         if (HUME_API_KEY) {
           try {
             console.log(`[phone] 🔊 Hume TTS - synthesizing...`);
-            pcm16Audio = await callHumeTTS_PCM16(reply);
+            pcm16Audio = await callHumeTTS_PCM16(reply, HUME_VOICE_ID, humeActingInstructions);
             ttsProvider = 'Hume';
             console.log(`[phone] 🎵 Hume audio: ${pcm16Audio.length} bytes`);
           } catch (humeError) {
