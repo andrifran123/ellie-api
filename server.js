@@ -97,7 +97,7 @@ const ELEVENLABS_VOICE_ID = "cgSgspJ2msm6clMCkdW9"; // Jessica - young female vo
 // Hume AI API (for emotional voice synthesis)
 const HUME_API_KEY = process.env.HUME_API_KEY;
 const HUME_TTS_ENDPOINT = "https://api.hume.ai/v0/tts/file";
-const HUME_VOICE_ID = "d6fd5cc2-53e6-4e80-ba83-93972682386a"; // Selected voice
+const HUME_VOICE_ID = "8a7dd58c-0cda-4073-9ce6-654184695e99"; // Custom voice ID
 
 // Video metadata extraction
 const videoMetadata = require('./videoMetadata');
@@ -485,7 +485,9 @@ async function callElevenLabsTTS_PCM16(text, voiceId = ELEVENLABS_VOICE_ID) {
 /**
  * Call Hume AI TTS API with PCM16 output (for phone calls)
  * @param {string} text - Text to synthesize
- * @param {string} voiceId - Hume voice ID
+ * @param {string} voiceId - Hume voice ID (custom voice)
+ * @param {string} actingInstructions - Emotional/acting direction for the voice
+ * @param {number} speed - Speech speed multiplier (default 1.0)
  * @returns {Promise<Buffer>} - Audio buffer (PCM16 24kHz)
  */
 async function callHumeTTS_PCM16(text, voiceId = HUME_VOICE_ID, actingInstructions = null, speed = 1.0) {
@@ -494,12 +496,12 @@ async function callHumeTTS_PCM16(text, voiceId = HUME_VOICE_ID, actingInstructio
   }
 
   try {
-    // Build utterance object with voice provider
+    // Build utterance object with custom voice ID
     const utterance = {
       text: text,
       voice: {
         id: voiceId,
-        provider: "CUSTOM_VOICE"  // Use CUSTOM_VOICE for custom voices, HUME_AI for preset voices
+        provider: "CUSTOM_VOICE"  // Use CUSTOM_VOICE for custom voice IDs
       },
       speed: speed
     };
