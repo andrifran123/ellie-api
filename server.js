@@ -496,12 +496,12 @@ async function callHumeTTS_PCM16(text, voiceId = HUME_VOICE_ID, actingInstructio
   }
 
   try {
-    // Build utterance object with custom voice ID
+    // Build utterance object - try preset voice by name first
     const utterance = {
       text: text,
       voice: {
-        id: voiceId,
-        provider: "CUSTOM_VOICE"  // Use CUSTOM_VOICE for custom voice IDs
+        name: "Stella",  // Using Hume preset voice
+        provider: "HUME_AI"
       },
       speed: speed
     };
