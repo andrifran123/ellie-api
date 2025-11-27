@@ -6536,20 +6536,31 @@ You are on an INTIMATE PHONE CALL. Sound aroused, breathy, and connected.
         reply = reply.split('\n')[0].trim();
       }
 
-      // If still too long (>150 chars), truncate at second sentence or first if needed
-      if (reply.length > 150) {
-        // Try to get first two sentences
-        const twoSentences = reply.match(/^[^.!?]*[.!?]\s*[^.!?]*[.!?]/);
-        if (twoSentences && twoSentences[0].length <= 150) {
-          reply = twoSentences[0].trim();
-        } else {
-          // Fall back to first sentence
-          const sentenceEnd = reply.match(/^[^.!?]*[.!?]/);
-          if (sentenceEnd) {
-            reply = sentenceEnd[0].trim();
+      // If still too long (>200 chars), truncate smartly
+      // BUT don't break on ellipses (...) - they're not sentence endings!
+      if (reply.length > 200) {
+        // Replace ellipses temporarily to protect them
+        const protected = reply.replace(/\.\.\./g, '<<<ELLIPSIS>>>');
+
+        // Find actual sentence endings (single . ! or ? followed by space or end)
+        const sentences = protected.split(/(?<=[.!?])\s+/);
+
+        // Take sentences until we hit ~150 chars
+        let truncated = '';
+        for (const sentence of sentences) {
+          if ((truncated + sentence).length <= 180) {
+            truncated += (truncated ? ' ' : '') + sentence;
           } else {
-            reply = reply.substring(0, 120).trim() + '...';
+            break;
           }
+        }
+
+        // If we got at least one sentence, use it
+        if (truncated.length > 20) {
+          reply = truncated.replace(/<<<ELLIPSIS>>>/g, '...');
+        } else {
+          // Fallback: just take first 180 chars at a word boundary
+          reply = reply.substring(0, 180).replace(/\s+\S*$/, '') + '...';
         }
       }
 
