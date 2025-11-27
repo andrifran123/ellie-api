@@ -502,13 +502,10 @@ async function callHumeTTS_PCM16(text, voiceName = HUME_VOICE_NAME, actingInstru
       voice: {
         name: voiceName,
         provider: "HUME_AI"
-      }
+      },
+      speed: speed,
+      description: actingInstructions || "Young woman speaking naturally, warm and engaging"
     };
-
-    // Add acting instructions for emotional guidance (if provided)
-    if (actingInstructions) {
-      utterance.description = actingInstructions;
-    }
 
     console.log(`[Hume] Request: voice=${voiceName}, speed=${speed}, description="${actingInstructions?.substring(0, 50)}..."`);
 
@@ -6613,54 +6610,53 @@ You are on an INTIMATE PHONE CALL. Sound aroused, breathy, and connected.
         let ttsProvider = 'unknown';
 
         // Determine acting instructions and speed based on content emotion
-        let humeActingInstructions = "Warm, intimate girlfriend voice. Natural and conversational, slightly flirty.";
-        let humeSpeed = 0.95; // Slightly slower for intimate feel
+        let humeActingInstructions = "Flirty girlfriend on a phone call. Warm, natural, expressive. Speak with energy and emotion.";
+        let humeSpeed = 1.0; // Normal speed by default
         const lowerReply = reply.toLowerCase();
 
-        // Seductive/Sexual content - whisper, breathy, slow
+        // Seductive/Sexual content - breathy, sensual
         if (lowerReply.includes('mmm') || lowerReply.includes('want you') || lowerReply.includes('kiss') ||
-            lowerReply.includes('touch') || lowerReply.includes('bed') || lowerReply.includes('naked') ||
+            lowerReply.includes('touch') || lowerReply.includes('naked') ||
             lowerReply.includes('horny') || lowerReply.includes('sexy') || lowerReply.includes('fuck') ||
             lowerReply.includes('cock') || lowerReply.includes('pussy') || lowerReply.includes('wet') ||
             lowerReply.includes('hard') || lowerReply.includes('moan')) {
-          humeActingInstructions = "Seductive and aroused. Breathy whisper, intimate and sensual. Slow, drawn-out words with soft moans between phrases.";
-          humeSpeed = 0.8;
-        }
-        // Playful/Laughing - light, giggly
-        else if (lowerReply.includes('haha') || lowerReply.includes('lol') || lowerReply.includes('funny') ||
-                 lowerReply.includes('silly') || lowerReply.includes('😂') || lowerReply.includes('tease')) {
-          humeActingInstructions = "Playful and giggly. Light-hearted, teasing tone with genuine laughter in the voice.";
-          humeSpeed = 1.05;
-        }
-        // Loving/Affectionate - warm, tender
-        else if (lowerReply.includes('miss you') || lowerReply.includes('love you') || lowerReply.includes('aw') ||
-                 lowerReply.includes('sweetheart') || lowerReply.includes('baby') || lowerReply.includes('honey')) {
-          humeActingInstructions = "Tender and loving. Warm, emotionally sincere, affectionate girlfriend expressing genuine care.";
+          humeActingInstructions = "Seductive, breathy, turned on. Whisper intimately like you're in bed together. Let arousal come through in your voice.";
           humeSpeed = 0.9;
         }
-        // Sad/Concerned - soft, caring
-        else if (lowerReply.includes('sorry') || lowerReply.includes('sad') || lowerReply.includes('worried') ||
-                 lowerReply.includes('wrong') || lowerReply.includes('hurt')) {
-          humeActingInstructions = "Soft and concerned. Gentle, caring tone showing empathy and emotional support.";
-          humeSpeed = 0.85;
-        }
-        // Excited/Happy - upbeat, energetic
-        else if (lowerReply.includes('!') || lowerReply.includes('excited') || lowerReply.includes('amazing') ||
-                 lowerReply.includes('omg') || lowerReply.includes('can\'t wait') || lowerReply.includes('yay')) {
-          humeActingInstructions = "Excited and happy. Upbeat, enthusiastic energy with bright, joyful delivery.";
+        // Playful/Laughing - energetic, fun
+        else if (lowerReply.includes('haha') || lowerReply.includes('lol') || lowerReply.includes('funny') ||
+                 lowerReply.includes('silly') || lowerReply.includes('😂') || lowerReply.includes('tease')) {
+          humeActingInstructions = "Playful and laughing! Giggly, teasing, having fun. Let the smile come through in your voice.";
           humeSpeed = 1.1;
         }
-        // Curious/Questioning - interested, engaged
-        else if (lowerReply.includes('?') || lowerReply.includes('what') || lowerReply.includes('how') ||
-                 lowerReply.includes('tell me') || lowerReply.includes('really')) {
-          humeActingInstructions = "Curious and interested. Engaged, attentive tone showing genuine interest in what he's saying.";
+        // Loving/Affectionate - warm, sweet
+        else if (lowerReply.includes('miss you') || lowerReply.includes('love you') || lowerReply.includes('aw') ||
+                 lowerReply.includes('sweetheart') || lowerReply.includes('baby') || lowerReply.includes('honey')) {
+          humeActingInstructions = "Sweet and loving. Genuine warmth and affection. Like talking to someone you truly care about.";
           humeSpeed = 0.95;
         }
-        // Sleepy/Tired - drowsy, soft
-        else if (lowerReply.includes('tired') || lowerReply.includes('sleepy') || lowerReply.includes('bed') ||
+        // Sad/Concerned - empathetic
+        else if (lowerReply.includes('sorry') || lowerReply.includes('sad') || lowerReply.includes('worried') ||
+                 lowerReply.includes('wrong') || lowerReply.includes('hurt')) {
+          humeActingInstructions = "Caring and empathetic. Soft, concerned tone. Show you genuinely care about how he feels.";
+          humeSpeed = 0.95;
+        }
+        // Excited/Happy - high energy
+        else if (lowerReply.includes('!') || lowerReply.includes('excited') || lowerReply.includes('amazing') ||
+                 lowerReply.includes('omg') || lowerReply.includes('can\'t wait') || lowerReply.includes('yay')) {
+          humeActingInstructions = "Excited and happy! High energy, enthusiastic, can barely contain your excitement!";
+          humeSpeed = 1.15;
+        }
+        // Curious/Questioning - engaged
+        else if (lowerReply.includes('?')) {
+          humeActingInstructions = "Curious and engaged. Genuinely interested, asking with warmth and attention.";
+          humeSpeed = 1.0;
+        }
+        // Sleepy/Tired - cozy
+        else if (lowerReply.includes('tired') || lowerReply.includes('sleepy') ||
                  lowerReply.includes('yawn') || lowerReply.includes('goodnight')) {
-          humeActingInstructions = "Sleepy and soft. Drowsy, gentle voice like she's getting ready for bed. Warm and cozy.";
-          humeSpeed = 0.8;
+          humeActingInstructions = "Sleepy and cozy. Soft, drowsy voice like you're getting ready to drift off. Warm and comfortable.";
+          humeSpeed = 0.9;
         }
 
         console.log(`[phone] 🎭 Hume acting: ${humeActingInstructions.substring(0, 50)}... (speed: ${humeSpeed})`);
