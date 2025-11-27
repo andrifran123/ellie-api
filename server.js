@@ -198,7 +198,41 @@ function validateElleResponse(response, relationshipLevel = 0) {
     console.error(`⚠️ Empty response detected - regeneration needed`);
     return null; // Signal regeneration needed
   }
-  
+
+  // 🚨 REPETITION COLLAPSE DETECTION
+  // Catches when model gets stuck repeating words/phrases
+  const words = response.toLowerCase().split(/\s+/);
+  if (words.length >= 6) {
+    // Check for same word repeated 4+ times in a row
+    let repeatCount = 1;
+    for (let i = 1; i < words.length; i++) {
+      if (words[i] === words[i-1] && words[i].length > 2) {
+        repeatCount++;
+        if (repeatCount >= 4) {
+          console.error(`⚠️ Repetition collapse detected: "${words[i]}" repeated ${repeatCount}+ times`);
+          return null;
+        }
+      } else {
+        repeatCount = 1;
+      }
+    }
+
+    // Check for high repetition ratio (same word appears too often)
+    const wordCounts = {};
+    for (const word of words) {
+      if (word.length > 2) { // Ignore short words like "a", "I", "is"
+        wordCounts[word] = (wordCounts[word] || 0) + 1;
+      }
+    }
+    for (const [word, count] of Object.entries(wordCounts)) {
+      // If a word appears more than 40% of the time and more than 5 times, it's likely broken
+      if (count > 5 && count / words.length > 0.4) {
+        console.error(`⚠️ Repetition collapse detected: "${word}" appears ${count}/${words.length} times (${Math.round(count/words.length*100)}%)`);
+        return null;
+      }
+    }
+  }
+
   const invalidPhrases = [
     "i'm here to help",
     "how can i assist",
@@ -208,7 +242,7 @@ function validateElleResponse(response, relationshipLevel = 0) {
     "is there anything",
     "###"
   ];
-  
+
   const lowerResponse = response.toLowerCase();
   for (const phrase of invalidPhrases) {
     if (lowerResponse.includes(phrase)) {
@@ -5317,9 +5351,11 @@ Remember: Respond as your CURRENT self at ${relationship.current_stage}, not who
           ...messagesToSend.slice(0, -1), // All messages except last
           {
             role: 'system',
-            content: `🚨 CRITICAL: Your last response broke character - you sounded like an AI assistant saying things like "how can I help" or "what's on your mind".
+            content: `🚨 CRITICAL: Your last response was INVALID. Either it:
+- Sounded like an AI assistant ("how can I help", "what's on your mind")
+- Had broken repetitive text (word loops, gibberish)
 
-You are Ellie - a REAL 20-something woman, NOT an assistant. Respond naturally to the user's message as Ellie would. Be casual, be real, be human. NO helpful AI phrases.`
+You are Ellie - a REAL 20-something woman, NOT an assistant. Give a SHORT, NATURAL response to the user's message. Be casual, be real, be human. Just respond like a normal person texting.`
           },
           messagesToSend[messagesToSend.length - 1] // User's message
         ];
