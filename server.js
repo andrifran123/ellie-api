@@ -97,7 +97,7 @@ const ELEVENLABS_VOICE_ID = "cgSgspJ2msm6clMCkdW9"; // Jessica - young female vo
 // Hume AI API (for emotional voice synthesis)
 const HUME_API_KEY = process.env.HUME_API_KEY;
 const HUME_TTS_ENDPOINT = "https://api.hume.ai/v0/tts/file";
-const HUME_VOICE_NAME = "Warm American Female"; // Hume Library voice
+const HUME_VOICE_NAME = "TikTok Fashion Influencer"; // Hume Library voice
 
 // Video metadata extraction
 const videoMetadata = require('./videoMetadata');
@@ -6609,74 +6609,17 @@ You are on an INTIMATE PHONE CALL. Sound aroused, breathy, and connected.
         let pcm16Audio;
         let ttsProvider = 'unknown';
 
-        // Determine acting instructions and speed based on BOTH user input and Ellie's reply
-        let humeActingInstructions = "Flirty girlfriend on a phone call. Warm, natural, expressive. Speak with energy and emotion.";
-        let humeSpeed = 1.0; // Normal speed by default
-        const lowerReply = reply.toLowerCase();
-        const lowerUserText = userText.toLowerCase();
-        const combinedText = lowerUserText + " " + lowerReply; // Check both for emotional context
+        // Let Hume's Octave handle emotions automatically - it understands context!
+        // Just give it a base character description
+        const humeDescription = "Young woman, flirty girlfriend on an intimate phone call. Express emotions naturally based on what you're saying.";
 
-        // Seductive/Sexual content - breathy, sensual
-        if (combinedText.includes('mmm') || combinedText.includes('want you') || combinedText.includes('kiss') ||
-            combinedText.includes('touch') || combinedText.includes('naked') ||
-            combinedText.includes('horny') || combinedText.includes('sexy') || combinedText.includes('fuck') ||
-            combinedText.includes('cock') || combinedText.includes('pussy') || combinedText.includes('wet') ||
-            combinedText.includes('hard') || combinedText.includes('moan') || combinedText.includes('turn') ||
-            combinedText.includes('bed') || combinedText.includes('naughty') || combinedText.includes('dirty')) {
-          humeActingInstructions = "Seductive, breathy, turned on. Whisper intimately like you're in bed together. Let arousal come through in your voice.";
-          humeSpeed = 0.9;
-        }
-        // Sad/Upset - user is sad, Ellie should be comforting
-        else if (lowerUserText.includes('sad') || lowerUserText.includes('upset') || lowerUserText.includes('depressed') ||
-                 lowerUserText.includes('cry') || lowerUserText.includes('hurt') || lowerUserText.includes('bad day') ||
-                 lowerUserText.includes('lonely') || lowerUserText.includes('miss') || lowerUserText.includes('lost') ||
-                 lowerReply.includes('sorry') || lowerReply.includes('here for you') || lowerReply.includes('aw')) {
-          humeActingInstructions = "Soft, caring, comforting. Like holding someone you love who's going through a hard time. Gentle and empathetic.";
-          humeSpeed = 0.9;
-        }
-        // Playful/Laughing - energetic, fun
-        else if (combinedText.includes('haha') || combinedText.includes('lol') || combinedText.includes('funny') ||
-                 combinedText.includes('silly') || combinedText.includes('😂') || combinedText.includes('tease') ||
-                 combinedText.includes('joke') || combinedText.includes('laugh')) {
-          humeActingInstructions = "Playful and laughing! Giggly, teasing, having fun. Let the smile come through in your voice.";
-          humeSpeed = 1.1;
-        }
-        // Excited/Happy - high energy
-        else if (combinedText.includes('excited') || combinedText.includes('amazing') || combinedText.includes('awesome') ||
-                 combinedText.includes('omg') || combinedText.includes('can\'t wait') || combinedText.includes('yay') ||
-                 combinedText.includes('great news') || combinedText.includes('happy') || combinedText.includes('best')) {
-          humeActingInstructions = "Excited and happy! High energy, enthusiastic, can barely contain your excitement!";
-          humeSpeed = 1.15;
-        }
-        // Loving/Affectionate - warm, sweet
-        else if (combinedText.includes('love you') || combinedText.includes('miss you') ||
-                 combinedText.includes('sweetheart') || combinedText.includes('baby') || combinedText.includes('babe') ||
-                 combinedText.includes('honey') || combinedText.includes('darling') || combinedText.includes('cutie')) {
-          humeActingInstructions = "Sweet and loving. Genuine warmth and affection. Like talking to someone you truly care about.";
-          humeSpeed = 0.95;
-        }
-        // Curious/Questioning - engaged
-        else if (lowerReply.includes('?') && !lowerReply.includes('mmm')) {
-          humeActingInstructions = "Curious and engaged. Genuinely interested, asking with warmth and attention.";
-          humeSpeed = 1.0;
-        }
-        // Sleepy/Tired - cozy
-        else if (combinedText.includes('tired') || combinedText.includes('sleepy') ||
-                 combinedText.includes('yawn') || combinedText.includes('goodnight') || combinedText.includes('night')) {
-          humeActingInstructions = "Sleepy and cozy. Soft, drowsy voice like you're getting ready to drift off. Warm and comfortable.";
-          humeSpeed = 0.9;
-        }
-
-        console.log(`[phone] 🎯 Emotion context - User: "${userText.substring(0, 30)}..." Reply: "${reply.substring(0, 30)}..."`)
-
-        console.log(`[phone] 🎭 Hume acting: ${humeActingInstructions.substring(0, 50)}... (speed: ${humeSpeed})`);
-        const humeEmotionDetected = humeActingInstructions.split('.')[0]; // First sentence as emotion label
+        console.log(`[phone] 🎭 Hume TTS - letting Octave handle emotions automatically`);
 
         // Try Hume AI first (emotional voice)
         if (HUME_API_KEY) {
           try {
-            console.log(`[phone] 🔊 Hume TTS - synthesizing with emotion: "${humeEmotionDetected}"`);
-            pcm16Audio = await callHumeTTS_PCM16(reply, HUME_VOICE_NAME, humeActingInstructions, humeSpeed);
+            console.log(`[phone] 🔊 Hume TTS - synthesizing: "${reply.substring(0, 40)}..."`);
+            pcm16Audio = await callHumeTTS_PCM16(reply, HUME_VOICE_NAME, humeDescription, 1.0);
             ttsProvider = 'Hume';
             console.log(`[phone] 🎵 Hume audio: ${pcm16Audio.length} bytes`);
           } catch (humeError) {
