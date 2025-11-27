@@ -94,6 +94,11 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "sk_7ec85ff75fd0263
 const ELEVENLABS_ENDPOINT = "https://api.elevenlabs.io/v1/text-to-speech";
 const ELEVENLABS_VOICE_ID = "cgSgspJ2msm6clMCkdW9"; // Jessica - young female voice
 
+// Hume AI API (for emotional voice synthesis)
+const HUME_API_KEY = process.env.HUME_API_KEY || "nB2YhilESelDn4zTkKcApsGRBv7ElWpwWZC6n9lsV1YT6MDw";
+const HUME_TTS_ENDPOINT = "https://api.hume.ai/v0/tts/file";
+const HUME_VOICE_ID = "d6fd5cc2-53e6-4e80-ba83-93972682386a"; // Selected voice
+
 // Video metadata extraction
 const videoMetadata = require('./videoMetadata');
 
@@ -468,6 +473,64 @@ async function callElevenLabsTTS_PCM16(text, voiceId = ELEVENLABS_VOICE_ID) {
     return Buffer.from(audioBuffer);
   } catch (error) {
     console.error('❌ ElevenLabs TTS error:', error);
+    throw error;
+  }
+}
+
+
+// ============================================================
+// 🔊 HUME AI TTS - EMOTIONAL VOICE SYNTHESIS
+// ============================================================
+
+/**
+ * Call Hume AI TTS API with PCM16 output (for phone calls)
+ * @param {string} text - Text to synthesize
+ * @param {string} voiceId - Hume voice ID
+ * @returns {Promise<Buffer>} - Audio buffer (PCM16 24kHz)
+ */
+async function callHumeTTS_PCM16(text, voiceId = HUME_VOICE_ID) {
+  if (!HUME_API_KEY) {
+    throw new Error('HUME_API_KEY not configured');
+  }
+
+  try {
+    const response = await fetch(HUME_TTS_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'X-Hume-Api-Key': HUME_API_KEY,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        utterances: [
+          {
+            text: text,
+            voice: {
+              id: voiceId
+            }
+          }
+        ],
+        format: {
+          type: "wav"
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Hume TTS API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    // Hume returns WAV format, we need to extract PCM data
+    const audioBuffer = await response.arrayBuffer();
+    const wavBuffer = Buffer.from(audioBuffer);
+
+    // WAV header is 44 bytes, PCM data starts after that
+    // For phone calls we need raw PCM16 at 24kHz
+    const pcmData = wavBuffer.slice(44);
+
+    return pcmData;
+  } catch (error) {
+    console.error('❌ Hume TTS error:', error);
     throw error;
   }
 }
@@ -6524,21 +6587,33 @@ You are on an INTIMATE PHONE CALL. Sound aroused, breathy, and connected.
       const voiceEmotions = detectVoiceEmotion(reply);
       console.log(`[phone] 🎭 Voice emotions: ${voiceEmotions.join(', ')}`);
 
-      // 3️⃣ ELEVENLABS TTS - Expressive voice synthesis
+      // 3️⃣ TTS - Voice synthesis (Hume > ElevenLabs > Cartesia > OpenAI)
       try {
         let pcm16Audio;
         let ttsProvider = 'unknown';
 
-        // Try ElevenLabs first (more expressive)
-        if (ELEVENLABS_API_KEY) {
+        // Try Hume AI first (emotional voice)
+        if (HUME_API_KEY) {
           try {
-            console.log(`[phone] 🔊 ElevenLabs TTS - synthesizing...`);
+            console.log(`[phone] 🔊 Hume TTS - synthesizing...`);
+            pcm16Audio = await callHumeTTS_PCM16(reply);
+            ttsProvider = 'Hume';
+            console.log(`[phone] 🎵 Hume audio: ${pcm16Audio.length} bytes`);
+          } catch (humeError) {
+            console.warn('[phone] ⚠️ Hume failed:', humeError.message);
+            // Fall through to ElevenLabs
+          }
+        }
+
+        // Fallback to ElevenLabs if Hume failed
+        if (!pcm16Audio && ELEVENLABS_API_KEY) {
+          try {
+            console.log(`[phone] 🔊 ElevenLabs TTS (fallback) - synthesizing...`);
             pcm16Audio = await callElevenLabsTTS_PCM16(reply);
             ttsProvider = 'ElevenLabs';
             console.log(`[phone] 🎵 ElevenLabs audio: ${pcm16Audio.length} bytes`);
           } catch (elevenLabsError) {
             console.warn('[phone] ⚠️ ElevenLabs failed:', elevenLabsError.message);
-            // Fall through to Cartesia
           }
         }
 
