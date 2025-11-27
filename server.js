@@ -6300,8 +6300,9 @@ wsPhone.on("connection", (ws, req) => {
       // 2️⃣ AI RESPONSE - HYBRID ROUTING
       const relationship = await getUserRelationship(userId);
       await updateStreak(userId);
-      
 
+      // Get conversation history from database
+      const history = await getHistory(userId);
 
       let personalityInstructions = getPersonalityInstructions(relationship, userId);
       personalityInstructions += `
