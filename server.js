@@ -6622,6 +6622,7 @@ You are on an INTIMATE PHONE CALL. Sound aroused, breathy, and connected.
         console.log(`[phone] 🎭 Hume acting: ${humeActingInstructions.substring(0, 40)}...`);
 
         // Try Hume AI first (emotional voice)
+        console.log(`[phone] 🔑 HUME_API_KEY configured: ${HUME_API_KEY ? 'YES (' + HUME_API_KEY.substring(0, 8) + '...)' : 'NO'}`);
         if (HUME_API_KEY) {
           try {
             console.log(`[phone] 🔊 Hume TTS - synthesizing...`);
