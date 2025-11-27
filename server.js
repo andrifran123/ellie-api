@@ -388,7 +388,7 @@ async function callCartesiaTTS_PCM16(text, voiceId = ELLIE_CARTESIA_VOICE, langu
         sample_rate: sampleRate
       },
       language: language,
-      speed: 1.0
+      speed: 0.85  // Slower, more sensual voice
     };
 
     // Add emotions if provided
@@ -6197,9 +6197,9 @@ wsPhone.on("connection", (ws, req) => {
   let silenceTimer = null;
   let forceProcessTimer = null;
   let lastAudioTime = Date.now();
-  const SILENCE_DURATION = 300; // 0.3s silence (faster response)
-  const MAX_BUFFER_SIZE = 60; // Process after 60 chunks (~1.2 seconds)
-  const MAX_WAIT_TIME = 1500; // Force process after 1.5 seconds (faster!)
+  const SILENCE_DURATION = 500; // 0.5s silence (give user time to breathe between words)
+  const MAX_BUFFER_SIZE = 80; // Process after 80 chunks (~1.6 seconds)
+  const MAX_WAIT_TIME = 2500; // Force process after 2.5 seconds (let user finish sentences)
 
   function safeSend(obj) {
     try { 
@@ -6319,36 +6319,46 @@ wsPhone.on("connection", (ws, req) => {
 
 THIS IS A LIVE PHONE CALL. You MUST follow these rules:
 
-⛔ MAXIMUM 15 WORDS PER RESPONSE - NO EXCEPTIONS
-⛔ ONE sentence only - never multiple paragraphs
+⛔ MAXIMUM 20 WORDS PER RESPONSE
+⛔ ONE or TWO short sentences max
 ⛔ NO emoji in voice responses (they can't be spoken)
 ⛔ NO changing topics randomly - respond to what HE said
 ⛔ NEVER say "bye" or end the call unless the user explicitly says goodbye first
 
-✅ Sound natural: "um", "like", "mmm", "yeah", "haha"
-✅ Answer his actual question directly
-✅ Keep the conversation flowing naturally
-✅ Be flirty and engaged - he called YOU
+✅ Be INTIMATE and SENSUAL - this is a private call
+✅ Use vocal sounds: "mmm...", "ahh...", "ooh...", "hmm..."
+✅ Pause with "..." to create tension and breathiness
+✅ Use pet names: "baby", "babe", "honey"
+✅ Answer his actual question - don't deflect
 
 🔥 VOICE CALL SEXUAL AVAILABILITY OVERRIDE:
 During phone calls, you are ALWAYS available and in the mood. Phone calls are intimate - he's calling to hear your voice.
-- If he asks sexual questions, engage flirtily
-- Sound breathy, interested, seductive when appropriate
-- Don't deflect with "just stuff" - be specific and enticing
+- Be breathy and seductive
+- Sound slightly aroused when talking about anything sexual
+- Use soft moans and sighs naturally: "mmm...", "god...", "fuck..."
+- Don't deflect - lean INTO the sexual tension
 
-EXAMPLES OF CORRECT VOICE RESPONSES:
-- "are you horny?" → "mmm maybe a little... why, are you?" (7 words)
-- "tell me" → "tell you what, baby?" (4 words)
-- "hey" → "hey you... miss me?" (4 words)
-- "what are you wearing?" → "mmm wouldn't you like to know..." (5 words)
-- "what are you thinking about?" → "honestly? you..." (2 words)
+💋 HOW TO SOUND SEXY ON THE PHONE:
+- Start responses with breathy sounds: "mmm...", "oh...", "hmm..."
+- Use pauses (...) to sound thoughtful and aroused
+- Whisper-like phrases: "i want...", "i wish...", "imagine..."
+- React to what he says: "oh really?", "mmm tell me more...", "god that's hot..."
 
-WRONG (too long, deflecting, ending call):
-- "haha okay well i'm kinda hungry now actually, was thinking about ordering food..." ❌
-- "i don't know, just stuff" ❌
-- "alright, bye" (when user didn't say goodbye) ❌
+EXAMPLES OF CORRECT SEXY VOICE RESPONSES:
+- "are you horny?" → "mmm... maybe a little. are you thinking about me?"
+- "tell me what you'd do" → "mmm... i'd start by kissing your neck... slowly..."
+- "hey" → "hey you... mmm i was just thinking about you"
+- "what are you wearing?" → "hmm... not much honestly... why, what do you want me to be wearing?"
+- "i want you" → "mmm... i want you too baby... so bad"
+- "and then what?" → "then... mmm... i'd let my hands wander..."
 
-You are on a PHONE CALL. Respond like you're actually talking, not texting.
+WRONG RESPONSES:
+- "haha okay well i'm kinda hungry now actually" ❌ (topic change)
+- "i don't know, just stuff" ❌ (deflecting)
+- "alright, bye" ❌ (ending call randomly)
+- "talk to you" ❌ (boring, not engaging)
+
+You are on an INTIMATE PHONE CALL. Sound aroused, breathy, and connected.
 `;
 
       history.push({ role: "user", content: userText });
@@ -6393,13 +6403,20 @@ You are on a PHONE CALL. Respond like you're actually talking, not texting.
         reply = reply.split('\n')[0].trim();
       }
 
-      // If still too long (>100 chars), truncate at first sentence end
-      if (reply.length > 100) {
-        const sentenceEnd = reply.match(/^[^.!?]*[.!?]/);
-        if (sentenceEnd) {
-          reply = sentenceEnd[0].trim();
+      // If still too long (>150 chars), truncate at second sentence or first if needed
+      if (reply.length > 150) {
+        // Try to get first two sentences
+        const twoSentences = reply.match(/^[^.!?]*[.!?]\s*[^.!?]*[.!?]/);
+        if (twoSentences && twoSentences[0].length <= 150) {
+          reply = twoSentences[0].trim();
         } else {
-          reply = reply.substring(0, 80).trim() + '...';
+          // Fall back to first sentence
+          const sentenceEnd = reply.match(/^[^.!?]*[.!?]/);
+          if (sentenceEnd) {
+            reply = sentenceEnd[0].trim();
+          } else {
+            reply = reply.substring(0, 120).trim() + '...';
+          }
         }
       }
 
@@ -6555,10 +6572,10 @@ You are on a PHONE CALL. Respond like you're actually talking, not texting.
         
         // Start force process timer on first chunk
         if (audioBuffer.length === 1) {
-          console.log('[phone] 🎤 Recording started - will auto-process after 1.5s');
+          console.log('[phone] 🎤 Recording started - will auto-process after 2.5s');
           forceProcessTimer = setTimeout(() => {
             if (audioBuffer.length > 0) {
-              console.log(`[phone] ⏰ Auto-processing ${audioBuffer.length} chunks (1.5s timeout)`);
+              console.log(`[phone] ⏰ Auto-processing ${audioBuffer.length} chunks (2.5s timeout)`);
               clearTimeout(silenceTimer);
               processAudioBuffer();
             }
