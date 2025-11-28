@@ -1424,7 +1424,7 @@ SEXUAL CONTENT:
       body: JSON.stringify({
         model: "sao10k/l3.3-euryale-70b-v2.3",
         messages: enhancedMessages,
-        temperature: 1.1,
+        temperature: 0.85,
         min_p: 0.1,
         max_tokens: maxTokens,
         stop: ["###", "Human:", "Assistant:", "</s>", "<|eot_id|>", "<|end_of_text|>"]
@@ -1435,15 +1435,32 @@ SEXUAL CONTENT:
       throw new Error(`OpenRouter API error: ${response.status} ${response.statusText}`);
     }
     
-  // Replace lines 1418-1420 with:
-const data = await response.json();
-const rawContent = data.choices[0].message.content;
-let filtered = filterAllActions(rawContent);
+    const data = await response.json();
+    const rawContent = data.choices[0]?.message?.content || "";
 
-// ADD THIS NEW LINE:
-filtered = validateElleResponse(filtered, 80);
+    console.log(`[Euryale] Raw response: "${rawContent.substring(0, 100)}..."`);
 
-return filtered;
+    // Check for garbage/hallucinated output
+    if (!rawContent || rawContent.length < 2) {
+      console.error('[Euryale] ❌ Empty response from model');
+      throw new Error('Empty response from Euryale');
+    }
+
+    // Detect word-salad gibberish (random unrelated words)
+    const words = rawContent.split(/\s+/);
+    const capitalizedWords = words.filter(w => /^[A-Z][a-z]/.test(w)).length;
+    const capsRatio = capitalizedWords / words.length;
+
+    // If more than 40% of words are randomly capitalized names, it's gibberish
+    if (capsRatio > 0.4 && words.length > 5) {
+      console.error(`[Euryale] ❌ Gibberish detected (${Math.round(capsRatio * 100)}% capitalized names): "${rawContent.substring(0, 50)}..."`);
+      throw new Error('Gibberish response from Euryale');
+    }
+
+    let filtered = filterAllActions(rawContent);
+    filtered = validateElleResponse(filtered, 80);
+
+    return filtered;
   } catch (error) {
     console.error('OpenRouter API call failed:', error);
     throw error;
@@ -1482,7 +1499,13 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
           console.warn('⚠️ OPENROUTER_API_KEY not configured, falling back to Groq');
           return await callGroq(messages);
         }
-        return await callEuryale(messages, 1.1, maxTokens);
+        try {
+          return await callEuryale(messages, 1.1, maxTokens);
+        } catch (euryaleError) {
+          console.error('[Routing] ⚠️ Euryale failed, falling back to Groq:', euryaleError.message);
+          // Fall back to Groq if Euryale returns garbage
+          return await callGroq(messages);
+        }
       } else {
         console.log(`[Routing] Paid user + Normal -> Groq Llama 70B (FREE)`);
         if (!GROQ_API_KEY) {
