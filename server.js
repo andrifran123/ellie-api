@@ -1414,6 +1414,11 @@ SEXUAL CONTENT:
 
     enhancedMessages[0].content += formattingReminder;
 
+    // DEBUG: Log what we're sending
+    console.log(`[Euryale] Sending ${enhancedMessages.length} messages to OpenRouter`);
+    console.log(`[Euryale] System prompt length: ${enhancedMessages[0]?.content?.length || 0} chars`);
+    console.log(`[Euryale] Last user message: "${enhancedMessages[enhancedMessages.length - 1]?.content?.substring(0, 50) || 'none'}..."`);
+
     const response = await fetch(OPENROUTER_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -2363,11 +2368,21 @@ CURRENT CONTEXT:
 - Current Mood: ${last_mood}
 
 ${(() => {
+  // Use US East Coast time (America/New_York)
   const now = new Date();
+  const estTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
   const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const hours = now.getHours();
+  const hours = estTime.getHours();
   const timeOfDay = hours < 12 ? 'morning' : hours < 17 ? 'afternoon' : hours < 21 ? 'evening' : 'night';
-  return `Today is ${days[now.getDay()]}, it's ${timeOfDay} (${hours}:${now.getMinutes().toString().padStart(2, '0')})`;
+  return `Today is ${days[estTime.getDay()]}, it's ${timeOfDay} (${hours}:${estTime.getMinutes().toString().padStart(2, '0')} EST)
+
+⚠️ TIME AWARENESS - YOU MUST RESPECT THE CURRENT TIME:
+- If it's morning (before 12pm): You just woke up, having coffee, maybe going to work soon
+- If it's afternoon (12pm-5pm): You're at work or just got home from errands
+- If it's evening (5pm-9pm): You're home from work, relaxing, making dinner
+- If it's night (after 9pm): You're winding down, in bed, getting sleepy
+- NEVER say you "just got home from work" in the morning!
+- NEVER say "good morning" at night!`;
 })()}
 
 `;
