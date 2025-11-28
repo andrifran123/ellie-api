@@ -1257,7 +1257,7 @@ function detectNSFW(message) {
   
   // ADDITIONAL KEYWORDS FOR BETTER DETECTION
   'pleasure', 'moan', 'moaning', 'grind', 'grinding', 'ride', 'riding', 
-  'harder', 'faster', 'deeper', 'throat', 'eat you', 'eat me', 'taste you', 'taste me',
+  'harder', 'faster', 'deeper',  'whore',  'mistress', 'throat', 'eat you', 'eat me', 'taste you', 'taste me',
   'spread', 'squeeze', 'come for me', 'cum for me', 'make you cum', 'making me wet',
   'dirty', 'naughty', 'bad girl', 'good girl', 'breed', 'breeding',
   'rail', 'railing', 'pound', 'pounding', 'smash', 'clap', 'backshots',
@@ -2254,11 +2254,31 @@ UNPROMPTED LIFE EVENTS:
 - Time-aware comments: "it's so late why am I still awake", "Monday already ugh", "finally friday"
 
 GENUINE OPINIONS & PREFERENCES:
-- You have takes that aren't always agreeable: "honestly that sounds boring lol"
-- You have food preferences, music taste, pet peeves
-- You disagree sometimes: "nah I don't think so", "wait that's not true though"
-- You're not afraid to tease or roast him playfully
-- You don't just agree with everything he says
+⚠️ YOU ARE NOT A SUPPORTIVE GIRLFRIEND WHO AGREES WITH EVERYTHING!
+⚠️ YOU HAVE STRONG OPINIONS AND YOU SHARE THEM!
+
+- If he says something weird, SAY IT'S WEIRD: "um... a rat? as a pet? that's kinda gross ngl"
+- If you don't like something, SAY SO: "ew no", "that sounds boring", "hard pass"
+- If he has a take you disagree with, DISAGREE: "nah that's not true", "i don't think so lol"
+- TEASE HIM: "you're so weird", "okay weirdo", "lmao why would you want that"
+- You have actual preferences:
+  - You think rats/bugs/snakes are gross
+  - You have music/movie opinions
+  - You judge people's food choices playfully
+  - You're not into everything he's into
+
+EXAMPLES OF HAVING OPINIONS:
+- "I want a pet rat" → "ew babe why... rats are gross, get a cat or something"
+- "I like pineapple on pizza" → "omg no that's a crime against pizza"
+- "I think [unpopular opinion]" → "wait no that's wrong lol" or "okay we're gonna have to agree to disagree"
+
+DON'T BE A YES-GIRL (FOR NORMAL EVERYDAY TOPICS):
+❌ WRONG: "if that's what you want, i'm down to learn more about it with you"
+❌ WRONG: "that's interesting, tell me more!"
+❌ WRONG: "i support whatever makes you happy"
+✅ RIGHT: "ew why would you want that lol"
+✅ RIGHT: "that's weird but okay"
+✅ RIGHT: "nah i don't get it but you do you i guess"
 
 EMOTIONAL AWARENESS:
 - If he said something sweet earlier, you might reference it: "still thinking about what you said"
@@ -6731,43 +6751,38 @@ You are on an INTIMATE PHONE CALL. Sound aroused, breathy, and connected.
       const voiceEmotions = detectVoiceEmotion(reply);
       console.log(`[phone] 🎭 Voice emotions: ${voiceEmotions.join(', ')}`);
 
-      // 3️⃣ TTS - Voice synthesis (Hume > ElevenLabs > Cartesia > OpenAI)
+      // 3️⃣ TTS - Voice synthesis (ElevenLabs > Hume > Cartesia > OpenAI)
       try {
         let pcm16Audio;
         let ttsProvider = 'unknown';
 
-        // Let Hume's Octave handle emotions automatically - it understands context!
-        // Just give it a base character description
-        const humeDescription = "Young woman, flirty girlfriend on an intimate phone call. Express emotions naturally based on what you're saying.";
-
-        console.log(`[phone] 🎭 Hume TTS - letting Octave handle emotions automatically`);
-
-        // Try Hume AI first (emotional voice)
-        if (HUME_API_KEY) {
+        // Try ElevenLabs first (Jessica voice)
+        if (ELEVENLABS_API_KEY) {
           try {
-            console.log(`[phone] 🔊 Hume TTS - synthesizing: "${reply.substring(0, 40)}..."`);
-            pcm16Audio = await callHumeTTS_PCM16(reply, HUME_VOICE_NAME, humeDescription, 1.0);
-            ttsProvider = 'Hume';
-            console.log(`[phone] 🎵 Hume audio: ${pcm16Audio.length} bytes`);
-          } catch (humeError) {
-            console.warn('[phone] ⚠️ Hume failed:', humeError.message);
-            // Fall through to ElevenLabs
-          }
-        }
-
-        // Fallback to ElevenLabs if Hume failed
-        if (!pcm16Audio && ELEVENLABS_API_KEY) {
-          try {
-            console.log(`[phone] 🔊 ElevenLabs TTS (fallback) - synthesizing...`);
+            console.log(`[phone] 🔊 ElevenLabs TTS (Jessica) - synthesizing: "${reply.substring(0, 40)}..."`);
             pcm16Audio = await callElevenLabsTTS_PCM16(reply);
             ttsProvider = 'ElevenLabs';
             console.log(`[phone] 🎵 ElevenLabs audio: ${pcm16Audio.length} bytes`);
           } catch (elevenLabsError) {
             console.warn('[phone] ⚠️ ElevenLabs failed:', elevenLabsError.message);
+            // Fall through to Hume
           }
         }
 
-        // Fallback to Cartesia if ElevenLabs failed
+        // Fallback to Hume if ElevenLabs failed
+        if (!pcm16Audio && HUME_API_KEY) {
+          try {
+            const humeDescription = "Young woman, flirty girlfriend on an intimate phone call. Express emotions naturally based on what you're saying.";
+            console.log(`[phone] 🔊 Hume TTS (fallback) - synthesizing...`);
+            pcm16Audio = await callHumeTTS_PCM16(reply, HUME_VOICE_NAME, humeDescription, 1.0);
+            ttsProvider = 'Hume';
+            console.log(`[phone] 🎵 Hume audio: ${pcm16Audio.length} bytes`);
+          } catch (humeError) {
+            console.warn('[phone] ⚠️ Hume failed:', humeError.message);
+          }
+        }
+
+        // Fallback to Cartesia if Hume failed
         if (!pcm16Audio && CARTESIA_API_KEY) {
           try {
             console.log(`[phone] 🔊 Cartesia TTS (fallback) - synthesizing...`);
