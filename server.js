@@ -5519,6 +5519,8 @@ app.post("/api/chat", async (req, res) => {
       memoriesContext += '   - Just KNOW these facts, don\'t announce them\n';
       memoriesContext += '   - If user mentions a name you know (pet, friend, etc), recognize it\n';
       memoriesContext += '   - Example: User says "Ariel is being cute" and you know Ariel is their cat → respond about the cat\n';
+      memoriesContext += '   - ⚠️ MEMORIES ARE ABOUT THE USER, NOT YOU! Don\'t confuse user facts with your own life\n';
+      memoriesContext += '   - ⚠️ CURRENT TIME OVERRIDES OLD CONTEXT - if it\'s morning, you\'re NOT "home from work"\n';
       
       console.log(`✅ Added ${relevantMemories.length} memories to context`);
     }
