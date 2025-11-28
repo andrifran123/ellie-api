@@ -554,11 +554,49 @@ async function callHumeTTS_PCM16(text, voiceName = HUME_VOICE_NAME, actingInstru
 
 
 // ============================================================
-// 🎤 OPENAI WHISPER - TRANSCRIPTION
+// 🎤 DEEPGRAM NOVA-3 - TRANSCRIPTION (Primary)
 // ============================================================
 
 /**
- * Transcribe audio using OpenAI Whisper
+ * Transcribe audio using Deepgram Nova-3
+ * @param {Buffer} audioBuffer - Audio file buffer (WAV format)
+ * @param {string} language - Language code (default: "en")
+ * @returns {Promise<string>} - Transcribed text
+ */
+async function transcribeWithDeepgram(audioBuffer, language = "en") {
+  if (!process.env.DEEPGRAM_API_KEY) {
+    throw new Error('DEEPGRAM_API_KEY not configured');
+  }
+
+  try {
+    const response = await fetch('https://api.deepgram.com/v1/listen?model=nova-3&language=' + language + '&smart_format=true&punctuate=true', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Token ${process.env.DEEPGRAM_API_KEY}`,
+        'Content-Type': 'audio/wav'
+      },
+      body: audioBuffer
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Deepgram API error: ${response.status} - ${errorText}`);
+    }
+
+    const result = await response.json();
+    const transcript = result?.results?.channels?.[0]?.alternatives?.[0]?.transcript || "";
+    return transcript.trim();
+  } catch (error) {
+    throw new Error(`Deepgram error: ${error.message}`);
+  }
+}
+
+// ============================================================
+// 🎤 OPENAI WHISPER - TRANSCRIPTION (Fallback)
+// ============================================================
+
+/**
+ * Transcribe audio using OpenAI Whisper (fallback if Deepgram fails)
  * @param {Buffer} audioBuffer - Audio file buffer (WAV format)
  * @param {string} language - Language code (default: "en")
  * @returns {Promise<string>} - Transcribed text
@@ -6381,20 +6419,27 @@ wsPhone.on("connection", (ws, req) => {
       const wavBuffer = pcm16ToWav(combinedAudio, expectRate);
       
       let userText = '';
-      
-      // Transcribe with OpenAI Whisper
+
+      // Transcribe with Deepgram Nova-3 (primary) - much lower hallucination rate
+      // Falls back to OpenAI Whisper if Deepgram fails
       try {
-        console.log(`[phone] 🎤 Transcribing with OpenAI Whisper...`);
-        userText = await transcribeWithOpenAIWhisper(wavBuffer, sessionLang);
-        console.log(`[phone] ✅ OpenAI Whisper: "${userText}"`);
-      } catch (openaiError) {
-        console.error('[phone] ❌ OpenAI Whisper failed!', openaiError);
-        isProcessing = false;
-        return;
+        console.log(`[phone] 🎤 Transcribing with Deepgram Nova-3...`);
+        userText = await transcribeWithDeepgram(wavBuffer, sessionLang);
+        console.log(`[phone] ✅ Deepgram: "${userText}"`);
+      } catch (deepgramError) {
+        console.warn('[phone] ⚠️ Deepgram failed, falling back to OpenAI Whisper:', deepgramError.message);
+        try {
+          userText = await transcribeWithOpenAIWhisper(wavBuffer, sessionLang);
+          console.log(`[phone] ✅ OpenAI Whisper (fallback): "${userText}"`);
+        } catch (openaiError) {
+          console.error('[phone] ❌ Both transcription services failed!', openaiError);
+          isProcessing = false;
+          return;
+        }
       }
 
       userText = userText.trim();
-      console.log(`[phone] 📝 Raw transcription (openai): "${userText}"`);
+      console.log(`[phone] 📝 Final transcription: "${userText}"`);
       
       // Clean up common Icelandic-accented English mis-transcriptions
       const originalText = userText;
@@ -6413,19 +6458,33 @@ wsPhone.on("connection", (ws, req) => {
       // Also filter out long-form YouTube hallucinations
       const youtubeHallucinations = [
         'thanks for watching',
-        'thank you for watching', 
+        'thank you for watching',
         'please subscribe',
         'like and subscribe',
         'see you next time',
         'transcribed by',
         'subtitles by'
       ];
-      
+
       const lowerText = userText.toLowerCase();
       const isYouTubeHallucination = youtubeHallucinations.some(phrase => lowerText.includes(phrase));
-      
+
       if (isYouTubeHallucination) {
         console.log(`[phone] ⚠️ YouTube hallucination detected, ignoring: "${userText}"`);
+        isProcessing = false;
+        return;
+      }
+
+      // Detect garbage/word-salad transcriptions (Whisper hallucinating random words)
+      // Signs: too many commas, repetitive structure, nonsensical word chains
+      const commaCount = (userText.match(/,/g) || []).length;
+      const wordCount = userText.split(/\s+/).length;
+      const commaRatio = commaCount / wordCount;
+
+      // If more than 30% of words are separated by commas, it's likely garbage
+      // e.g., "what, really, are you, can you, want, like, love" = garbage
+      if (commaRatio > 0.3 && wordCount > 5) {
+        console.log(`[phone] 🚫 Word-salad hallucination detected (${commaCount} commas in ${wordCount} words), ignoring: "${userText}"`);
         isProcessing = false;
         return;
       }
@@ -6578,20 +6637,36 @@ You are on an INTIMATE PHONE CALL. Sound aroused, breathy, and connected.
         /i cannot|i can'?t (physically|actually)/i,
         /as (an? )?(ai|language model)/i
       ];
-      
+
+      // 🚨 NONSENSE/HALLUCINATION DETECTION
+      // Catch random off-topic garbage like "Herbal baths can help"
+      const nonsensePatterns = [
+        /herbal (baths?|tea|remedy)/i,
+        /consult (a |your )?(doctor|physician|therapist)/i,
+        /medical advice/i,
+        /disclaimer/i,
+        /terms (of|and) (service|conditions)/i,
+        /copyright/i,
+        /all rights reserved/i,
+        /click here/i,
+        /visit our website/i,
+        /subscribe to/i
+      ];
+
       const hasAIDisclosure = aiDisclosurePatterns.some(pattern => pattern.test(reply));
-      if (hasAIDisclosure) {
-        console.log(`[phone] 🚨 CHARACTER BREAK DETECTED! Replacing with in-character response`);
+      const hasNonsense = nonsensePatterns.some(pattern => pattern.test(reply));
+
+      if (hasAIDisclosure || hasNonsense) {
+        console.log(`[phone] 🚨 ${hasAIDisclosure ? 'CHARACTER BREAK' : 'NONSENSE'} DETECTED! Replacing with in-character response`);
         console.log(`[phone] ❌ Blocked: "${reply}"`);
-        
+
         // Replace with contextual in-character responses
         const inCharacterResponses = [
-          "um, what? that's a weird thing to ask...",
-          "I don't know what you're talking about",
-          "why are you asking me that?",
-          "that's random... anyway",
-          "um, okay...?",
-          "what kind of question is that lol"
+          "mmm... sorry, what were you saying baby?",
+          "hmm... i got distracted... tell me again?",
+          "wait, what? i was thinking about something else...",
+          "mm... say that again for me?",
+          "sorry babe, i zoned out... what?"
         ];
         reply = inCharacterResponses[Math.floor(Math.random() * inCharacterResponses.length)];
         console.log(`[phone] ✅ Replaced with: "${reply}"`);
