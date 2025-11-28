@@ -1422,12 +1422,12 @@ SEXUAL CONTENT:
         'HTTP-Referer': 'https://yourdomain.com',
       },
       body: JSON.stringify({
-        model: "sao10k/l3.3-euryale-70b",
+        model: "sao10k/l3.3-euryale-70b-v2.3",
         messages: enhancedMessages,
-        temperature: temperature,
-        min_p: 0.1,
+        temperature: 0.9,
+        min_p: 0.05,
         max_tokens: maxTokens,
-        stop: ["###", "[/INST]", "[INST]", "Human:", "Assistant:", "</s>"]
+        stop: ["###", "[/INST]", "[INST]", "Human:", "Assistant:", "</s>", "//", "TODO", "```"]
       })
     });
     
@@ -1482,7 +1482,7 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
           console.warn('⚠️ OPENROUTER_API_KEY not configured, falling back to Groq');
           return await callGroq(messages);
         }
-        return await callEuryale(messages, 1.1, maxTokens);
+        return await callEuryale(messages, 0.9, maxTokens);
       } else {
         console.log(`[Routing] Paid user + Normal -> Groq Llama 70B (FREE)`);
         if (!GROQ_API_KEY) {
@@ -1496,7 +1496,7 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
         if (detectLlamaRefusal(response)) {
           console.log(`[Routing] ⚠️ Llama refused! Retrying with Euryale 70B...`);
           if (OPENROUTER_API_KEY) {
-            return await callEuryale(messages, 1.1, maxTokens);
+            return await callEuryale(messages, 0.9, maxTokens);
           } else {
             console.warn('[Routing] Cannot retry with Euryale (no API key), returning refusal');
             return response; // Return the refusal if no Euryale available
