@@ -6133,12 +6133,22 @@ Before responding, check what you said earlier in this conversation. NEVER contr
     // 📝 Add question tracking context
     try {
       const askedQuestions = await getAskedQuestions(userId);
-      
-      let questionContext = '\n\n📝 CONVERSATION QUESTION TRACKING:\n';
-      
+
+      // Also scan current conversation history for questions (backup check)
+      const historyText = history.filter(m => m.role === 'assistant').map(m => m.content).join(' ').toLowerCase();
+      const questionsInHistory = [];
+      if (/are you cute/.test(historyText)) questionsInHistory.push('cute');
+      if (/are you fit|do you work out/.test(historyText)) questionsInHistory.push('fit');
+      if (/how old are you/.test(historyText)) questionsInHistory.push('age');
+
+      // Combine both sources
+      const allAskedQuestions = [...new Set([...askedQuestions, ...questionsInHistory])];
+
+      let questionContext = '\n\nQUESTION RULES (CRITICAL):\n';
+
       // List what's already been asked
-      if (askedQuestions.length > 0) {
-        questionContext += 'Questions you\'ve ALREADY asked (never repeat these):\n';
+      if (allAskedQuestions.length > 0) {
+        questionContext += 'NEVER ask these again - you already asked them:\n';
         const questionMap = {
           'cute': '"are you cute?"',
           'fit': '"are you fit?"',
@@ -6148,23 +6158,23 @@ Before responding, check what you said earlier in this conversation. NEVER contr
           'last_relationship': '"when was your last relationship?"',
           'player': '"are you the relationship type or player type?"'
         };
-        
-        askedQuestions.forEach(key => {
+
+        allAskedQuestions.forEach(key => {
           if (questionMap[key]) {
-            questionContext += `  ❌ ${questionMap[key]}\n`;
+            questionContext += `  - ${questionMap[key]}\n`;
           }
         });
       }
-      
+
       // List available questions based on what hasn't been asked
       const availableQuestions = [];
-      if (!askedQuestions.includes('cute')) availableQuestions.push('"are you cute? 😊"');
-      if (!askedQuestions.includes('fit')) availableQuestions.push('"so... are you fit?"');
-      if (!askedQuestions.includes('age')) availableQuestions.push('"how old are you anyway?"');
-      if (!askedQuestions.includes('relationship_status')) availableQuestions.push('"you\'re not in a relationship, are you? 👀"');
-      if (!askedQuestions.includes('past_relationships')) availableQuestions.push('"have you been in a relationship before?"');
-      if (!askedQuestions.includes('last_relationship')) availableQuestions.push('"when was your last relationship?"');
-      if (!askedQuestions.includes('player')) availableQuestions.push('"so are you the relationship type or the player type? 😅"');
+      if (!allAskedQuestions.includes('cute')) availableQuestions.push('"are you cute? 😊"');
+      if (!allAskedQuestions.includes('fit')) availableQuestions.push('"so... are you fit?"');
+      if (!allAskedQuestions.includes('age')) availableQuestions.push('"how old are you anyway?"');
+      if (!allAskedQuestions.includes('relationship_status')) availableQuestions.push('"you\'re not in a relationship, are you? 👀"');
+      if (!allAskedQuestions.includes('past_relationships')) availableQuestions.push('"have you been in a relationship before?"');
+      if (!allAskedQuestions.includes('last_relationship')) availableQuestions.push('"when was your last relationship?"');
+      if (!allAskedQuestions.includes('player')) availableQuestions.push('"so are you the relationship type or the player type? 😅"');
       
       if (availableQuestions.length > 0) {
         questionContext += '\nQuestions you CAN ask (when conversation dying):\n';
