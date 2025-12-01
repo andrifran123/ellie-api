@@ -54,6 +54,68 @@ const crypto = require("crypto");
 const http = require("http");
 const WebSocket = require("ws");
 const { WebSocketServer } = require("ws");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+
+// ============================================================
+// 🔒 SECURITY: Environment validation (fail fast on startup)
+// ============================================================
+const REQUIRED_ENV_VARS = ['DATABASE_URL', 'OPENAI_API_KEY'];
+const RECOMMENDED_ENV_VARS = ['SESSION_SECRET', 'RESEND_API_KEY'];
+
+for (const envVar of REQUIRED_ENV_VARS) {
+  if (!process.env[envVar]) {
+    console.error(`❌ FATAL: Missing required environment variable: ${envVar}`);
+    process.exit(1);
+  }
+}
+
+// Warn about weak session secret
+if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET === 'dev-secret-change-me') {
+  console.warn('⚠️ WARNING: SESSION_SECRET is not set or using default. Set a strong secret in production!');
+}
+
+for (const envVar of RECOMMENDED_ENV_VARS) {
+  if (!process.env[envVar]) {
+    console.warn(`⚠️ WARNING: Recommended environment variable not set: ${envVar}`);
+  }
+}
+
+// ============================================================
+// 🔒 SECURITY: Rate limiters
+// ============================================================
+const authStartLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 requests per email per 15 min
+  message: { ok: false, message: 'Too many login attempts. Please try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.body?.email?.toLowerCase?.()?.trim?.() || req.ip,
+});
+
+const authVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 attempts per IP per 15 min
+  message: { ok: false, message: 'Too many verification attempts. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60, // 60 requests per minute
+  message: { error: 'Too many requests. Please slow down.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30, // 30 admin requests per 15 min
+  message: { error: 'Too many admin requests.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // file uploads (voice)
 const multer = require("multer");
@@ -3041,8 +3103,20 @@ app.post(
 // ------------------------------------------------------------
 // After webhook: JSON & cookies for all other routes
 // ------------------------------------------------------------
-app.use(express.json());
+
+// 🔒 SECURITY: Helmet security headers
+app.use(helmet({
+  contentSecurityPolicy: false, // Disable CSP for API (frontend handles this)
+  crossOriginEmbedderPolicy: false, // Allow embedding
+}));
+
+// 🔒 SECURITY: Request body size limits
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use(cookieParser());
+
+// 🔒 SECURITY: General API rate limiting
+app.use('/api/', apiLimiter);
 
 app.use(extractUserId); // Extract userId from session for all routes
 
@@ -4684,7 +4758,8 @@ Language rules:
 // AUTH ROUTES (email + 6-digit code) -Â now backed by DB
 
 // Start login -> send code (stores code in DB, expires in 10 min)
-app.post("/api/auth/start", async (req, res) => {
+// 🔒 SECURITY: Rate limited to prevent email bombing and brute force
+app.post("/api/auth/start", authStartLimiter, async (req, res) => {
   try {
     const email = String(req.body?.email || "").toLowerCase().trim();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
@@ -4716,7 +4791,8 @@ app.post("/api/auth/start", async (req, res) => {
 });
 
 // Verify code -> set httpOnly session cookie (consumes DB code)
-app.post("/api/auth/verify", async (req, res) => {
+// 🔒 SECURITY: Rate limited to prevent brute force code guessing
+app.post("/api/auth/verify", authVerifyLimiter, async (req, res) => {
   try {
     const email = String(req.body?.email || "").toLowerCase().trim();
     const code = String(req.body?.code || "").trim();
@@ -5166,14 +5242,24 @@ app.get("/api/usage", async (req, res) => {
   }
 });
 
+// 🔒 SECURITY: Admin authentication middleware
+function requireAdmin(req, res, next) {
+  const adminKey = req.headers['x-admin-key'];
+  if (!process.env.ADMIN_API_KEY) {
+    console.error('[admin] ADMIN_API_KEY not configured');
+    return res.status(503).json({ error: "ADMIN_NOT_CONFIGURED" });
+  }
+  if (!adminKey || adminKey !== process.env.ADMIN_API_KEY) {
+    console.warn(`[admin] Unauthorized access attempt from IP: ${req.ip}`);
+    return res.status(403).json({ error: "FORBIDDEN" });
+  }
+  next();
+}
+
 // Admin: Assign tier to user (for testing / manual assignment)
-app.post("/api/admin/assign-tier", async (req, res) => {
+// 🔒 SECURITY: Rate limited and requires admin key
+app.post("/api/admin/assign-tier", adminLimiter, requireAdmin, async (req, res) => {
   try {
-    // Simple admin check - in production use proper auth
-    const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== process.env.ADMIN_API_KEY) {
-      return res.status(403).json({ error: "FORBIDDEN" });
-    }
 
     const { userId, tier, customMinutes } = req.body;
     if (!userId || !tier) {
@@ -5190,13 +5276,9 @@ app.post("/api/admin/assign-tier", async (req, res) => {
 });
 
 // Admin: Reset billing cycle for user
-app.post("/api/admin/reset-cycle", async (req, res) => {
+// 🔒 SECURITY: Rate limited and requires admin key
+app.post("/api/admin/reset-cycle", adminLimiter, requireAdmin, async (req, res) => {
   try {
-    const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== process.env.ADMIN_API_KEY) {
-      return res.status(403).json({ error: "FORBIDDEN" });
-    }
-
     const { userId } = req.body;
     if (!userId) {
       return res.status(400).json({ error: "Missing userId" });
@@ -5212,13 +5294,9 @@ app.post("/api/admin/reset-cycle", async (req, res) => {
 });
 
 // Admin: Add extra minutes
-app.post("/api/admin/add-minutes", async (req, res) => {
+// 🔒 SECURITY: Rate limited and requires admin key
+app.post("/api/admin/add-minutes", adminLimiter, requireAdmin, async (req, res) => {
   try {
-    const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== process.env.ADMIN_API_KEY) {
-      return res.status(403).json({ error: "FORBIDDEN" });
-    }
-
     const { userId, minutes } = req.body;
     if (!userId || !minutes) {
       return res.status(400).json({ error: "Missing userId or minutes" });
@@ -6180,17 +6258,26 @@ function extractUserIdFromWsRequest(req) {
 const wss = new WebSocket.Server({ noServer: true });
 
 wss.on("connection", (ws, req) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  let userId = extractUserIdFromWsRequest(req) || url.searchParams.get("userId") || "guest";
+  // 🔒 SECURITY: Only accept userId from authenticated session cookie, never from query params
+  const authenticatedUserId = extractUserIdFromWsRequest(req);
+  let userId = authenticatedUserId || "guest";
   let sessionLang = null;
   let sessionVoice = ELLIE_CARTESIA_VOICE; // Use Cartesia voice
+
+  // 🔒 SECURITY: Log WebSocket connections for monitoring
+  console.log(`[WS] Connection: userId=${userId}, authenticated=${!!authenticatedUserId}, ip=${req.socket.remoteAddress}`);
 
   ws.on("message", async (raw) => {
     try {
       const msg = JSON.parse(raw.toString("utf8"));
 
       if (msg.type === "hello") {
-        userId = msg.userId || userId;
+        // 🔒 SECURITY: Don't allow userId override from message if already authenticated
+        // Only accept userId from message if not authenticated (guest mode)
+        if (!authenticatedUserId && msg.userId) {
+          console.warn(`[WS] Guest attempting to set userId via message: ${msg.userId} - IGNORED for security`);
+        }
+        // Keep the authenticated userId, don't allow override
         
         // Get user's preferred language
         const code = await getPreferredLanguage(userId);
@@ -6422,7 +6509,11 @@ wsPhone.on("connection", (ws, req) => {
     console.error("[phone ws send error]", e);
   }
 
-  let userId = extractUserIdFromWsRequest(req) || "guest";
+  // 🔒 SECURITY: Only accept userId from authenticated session cookie
+  const authenticatedUserId = extractUserIdFromWsRequest(req);
+  let userId = authenticatedUserId || "guest";
+  console.log(`[phone WS] Connection: userId=${userId}, authenticated=${!!authenticatedUserId}, ip=${req.socket.remoteAddress}`);
+
   let sessionLang = "en";
   let expectRate = 24000;
   let isProcessing = false;
@@ -6978,13 +7069,12 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 
 // ============================================================
 // ANALYTICS ENDPOINTS (For Dashboard)
+// 🔒 SECURITY: All analytics endpoints require admin authentication
 // ============================================================
 
 // Analytics Overview - User distribution by stage
-app.get("/api/analytics/overview", async (req, res) => {
+app.get("/api/analytics/overview", adminLimiter, requireAdmin, async (req, res) => {
   try {
-    // Optional: Add admin authentication here
-    // if (!req.isAdmin) return res.status(403).json({ error: "Forbidden" });
     
     const { rows: stageData } = await pool.query(`
       SELECT 
@@ -7019,7 +7109,7 @@ app.get("/api/analytics/overview", async (req, res) => {
 });
 
 // Engagement Metrics - Detailed user behavior
-app.get("/api/analytics/engagement", async (req, res) => {
+app.get("/api/analytics/engagement", adminLimiter, requireAdmin, async (req, res) => {
   try {
     // Get engagement over time (last 7 days)
     const { rows: dailyEngagement } = await pool.query(`
@@ -7080,7 +7170,7 @@ app.get("/api/analytics/engagement", async (req, res) => {
 });
 
 // Revenue Analytics - Monetization opportunities
-app.get("/api/analytics/revenue", async (req, res) => {
+app.get("/api/analytics/revenue", adminLimiter, requireAdmin, async (req, res) => {
   try {
     // Users by stage with payment potential
     const { rows: revenueByStage } = await pool.query(`
@@ -7160,7 +7250,7 @@ app.get("/api/analytics/revenue", async (req, res) => {
 });
 
 // Addiction Metrics - Track how hooked users are
-app.get("/api/analytics/addiction", async (req, res) => {
+app.get("/api/analytics/addiction", adminLimiter, requireAdmin, async (req, res) => {
   try {
     // Get addiction indicators
     const { rows: addictionMetrics } = await pool.query(`
@@ -7207,7 +7297,7 @@ app.get("/api/analytics/addiction", async (req, res) => {
 });
 
 // Individual User Detail (for debugging specific users)
-app.get("/api/analytics/user/:userId", async (req, res) => {
+app.get("/api/analytics/user/:userId", adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
     
@@ -7253,7 +7343,7 @@ app.get("/api/analytics/user/:userId", async (req, res) => {
 });
 
 // Real-Time Activity Feed
-app.get("/api/analytics/activity-feed", async (req, res) => {
+app.get("/api/analytics/activity-feed", adminLimiter, requireAdmin, async (req, res) => {
   try {
     const feed = [];
     
@@ -7314,7 +7404,7 @@ app.get("/api/analytics/activity-feed", async (req, res) => {
 });
 
 // Streak Recovery Opportunities
-app.get("/api/analytics/streak-recovery", async (req, res) => {
+app.get("/api/analytics/streak-recovery", adminLimiter, requireAdmin, async (req, res) => {
   try {
     // Users who broke streaks recently
     const { rows: brokenToday } = await pool.query(`
@@ -7368,7 +7458,7 @@ app.get("/api/analytics/streak-recovery", async (req, res) => {
 });
 
 // Message Content Analysis
-app.get("/api/analytics/message-analysis", async (req, res) => {
+app.get("/api/analytics/message-analysis", adminLimiter, requireAdmin, async (req, res) => {
   try {
     let total_messages = 0;
     let avg_length = 0;
@@ -7436,7 +7526,7 @@ app.get("/api/analytics/message-analysis", async (req, res) => {
 });
 
 // Revenue Forecasting
-app.get("/api/analytics/forecast", async (req, res) => {
+app.get("/api/analytics/forecast", adminLimiter, requireAdmin, async (req, res) => {
   try {
     // Get current metrics
     const { rows: current } = await pool.query(`
@@ -7516,7 +7606,7 @@ app.get("/api/analytics/forecast", async (req, res) => {
  * GET /api/analytics/active-users
  * Returns list of recently active users for the Live Activity tab
  */
-app.get("/api/analytics/active-users", async (req, res) => {
+app.get("/api/analytics/active-users", adminLimiter, requireAdmin, async (req, res) => {
   try {
     const query = `
       SELECT 
@@ -7613,8 +7703,9 @@ app.get("/api/chat-view/messages/:userId", async (req, res) => {
 /**
  * POST /api/manual-override/start
  * Start manual override for a specific user
+ * 🔒 SECURITY: Requires admin authentication
  */
-app.post("/api/manual-override/start", async (req, res) => {
+app.post("/api/manual-override/start", adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { user_id } = req.body;
 
@@ -7669,7 +7760,7 @@ app.post("/api/manual-override/start", async (req, res) => {
  * POST /api/manual-override/send
  * Send a manual response (stored as normal assistant message)
  */
-app.post("/api/manual-override/send", async (req, res) => {
+app.post("/api/manual-override/send", adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { user_id, message } = req.body;
 
@@ -7722,7 +7813,7 @@ app.post("/api/manual-override/send", async (req, res) => {
  * For user's chat interface to poll for manual responses
  * Returns any assistant messages sent since their last check (timestamp-based)
  */
-app.get("/api/manual-override/pending-response/:userId", async (req, res) => {
+app.get("/api/manual-override/pending-response/:userId", adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
     const lastCheckTimestamp = req.query.since || '1970-01-01'; // Timestamp of last successful fetch
@@ -7792,7 +7883,7 @@ app.get("/api/manual-override/pending-response/:userId", async (req, res) => {
  * POST /api/manual-override/end
  * End manual override and resume normal API operation
  */
-app.post("/api/manual-override/end", async (req, res) => {
+app.post("/api/manual-override/end", adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { user_id } = req.body;
 
@@ -7830,7 +7921,7 @@ app.post("/api/manual-override/end", async (req, res) => {
  * POST /api/manual-override/typing
  * Update typing status for manual override
  */
-app.post("/api/manual-override/typing", async (req, res) => {
+app.post("/api/manual-override/typing", adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { user_id, is_typing } = req.body;
 
@@ -7869,7 +7960,7 @@ app.post("/api/manual-override/typing", async (req, res) => {
  * GET /api/manual-override/status/:userId
  * Check if a user is currently in manual override mode
  */
-app.get("/api/manual-override/status/:userId", (req, res) => {
+app.get("/api/manual-override/status/:userId", adminLimiter, requireAdmin, (req, res) => {
   try {
     const { userId } = req.params;
     const session = manualOverrideSessions.get(userId);
@@ -7892,7 +7983,7 @@ app.get("/api/manual-override/status/:userId", (req, res) => {
  * GET /api/manual-override/active-sessions
  * Get list of all active manual override sessions
  */
-app.get("/api/manual-override/active-sessions", (req, res) => {
+app.get("/api/manual-override/active-sessions", adminLimiter, requireAdmin, (req, res) => {
   try {
     const activeSessions = [];
     
@@ -7923,7 +8014,7 @@ app.get("/api/manual-override/active-sessions", (req, res) => {
  * POST /api/manual-override/force-clear
  * Force clear a user's manual override session (for stuck/stale sessions)
  */
-app.post("/api/manual-override/force-clear", async (req, res) => {
+app.post("/api/manual-override/force-clear", adminLimiter, requireAdmin, async (req, res) => {
   try {
     const { user_id } = req.body;
 
@@ -8585,22 +8676,39 @@ app.post("/api/missed-call/create-message", requireAuth, async (req, res) => {
 // 🔧 GLOBAL ERROR HANDLERS!
 // ============================================================
 
+// 🔒 SECURITY: Sanitize request body for logging (remove sensitive fields)
+function sanitizeForLogging(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  const sanitized = { ...obj };
+  const sensitiveFields = ['password', 'code', 'token', 'secret', 'key', 'authorization', 'cookie'];
+  for (const field of sensitiveFields) {
+    if (field in sanitized) sanitized[field] = '[REDACTED]';
+  }
+  return sanitized;
+}
+
 // Error handling middleware
 app.use((err, req, res, next) => {
+  // 🔒 SECURITY: Don't log sensitive data
   console.error('❌ Global error handler:', {
     error: err.message,
-    stack: err.stack,
     url: req.url,
     method: req.method,
-    body: req.body
+    userId: req.userId || 'anonymous',
+    ip: req.ip,
+    // Don't log full body or stack in production
+    ...(process.env.NODE_ENV !== 'production' && {
+      body: sanitizeForLogging(req.body),
+      stack: err.stack
+    })
   });
 
-  // Don't leak error details in production
+  // 🔒 SECURITY: Never leak error details to client in production
   const isDev = process.env.NODE_ENV !== 'production';
-  
+
   res.status(err.status || 500).json({
     error: isDev ? err.message : 'Internal server error',
-    ...(isDev && { stack: err.stack })
+    // Never send stack traces to client, even in dev
   });
 });
 
