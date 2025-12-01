@@ -302,6 +302,7 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
 /**
  * Select a photo that matches conversation context
  * Uses GPT-tagged metadata for intelligent matching
+ * Column names match actual ellie_photos Supabase table
  */
 async function selectContextualPhoto(pool, userId, criteria, relationshipLevel = 0) {
   try {
@@ -311,6 +312,7 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
       (categories.includes('intimate') || categories.includes('suggestive') ? 2 : 1) : 0;
 
     // Build dynamic matching conditions based on topics
+    // Using actual column names: location, activity, mood, category
     let topicConditions = [];
     let topicValues = [];
     let paramIndex = 6; // Start after base params
@@ -318,7 +320,8 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
     if (topics && topics.length > 0) {
       for (const topic of topics) {
         if (topic.type === 'activity') {
-          topicConditions.push(`LOWER(p.activity) LIKE $${paramIndex}`);
+          // Match activity column or category
+          topicConditions.push(`(LOWER(p.activity) LIKE $${paramIndex} OR LOWER(p.category) LIKE $${paramIndex})`);
           topicValues.push(`%${topic.value}%`);
           paramIndex++;
         } else if (topic.type === 'mood') {
@@ -326,7 +329,8 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
           topicValues.push(`%${topic.value}%`);
           paramIndex++;
         } else if (topic.type === 'setting') {
-          topicConditions.push(`LOWER(p.setting) LIKE $${paramIndex}`);
+          // Match location or sub_location columns
+          topicConditions.push(`(LOWER(p.location) LIKE $${paramIndex} OR LOWER(p.sub_location) LIKE $${paramIndex})`);
           topicValues.push(`%${topic.value}%`);
           paramIndex++;
         }
@@ -411,73 +415,90 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
 /**
  * Build rich context string from photo metadata for AI
  * This tells Ellie exactly what she's sending
+ * Column names match the actual ellie_photos Supabase table
  */
 function buildPhotoContext(photo) {
   if (!photo) return null;
 
-  // Debug: Log available photo columns
-  console.log('📸 Photo metadata available:', Object.keys(photo).filter(k => photo[k] != null));
-
   const parts = [];
 
-  // Core description - try multiple possible column names
-  const description = photo.description || photo.photo_description || photo.gpt_description;
-  if (description) {
-    parts.push(`Photo description: ${description}`);
+  // Full description from GPT tagging
+  if (photo.description) {
+    parts.push(`Photo: ${photo.description}`);
   }
 
-  // What she's wearing
-  const outfit = photo.outfit || photo.clothing || photo.attire;
-  if (outfit) {
-    parts.push(`Outfit: ${outfit}`);
+  // Location and setting
+  if (photo.location) {
+    let locationStr = photo.location;
+    if (photo.sub_location) locationStr += ` (${photo.sub_location})`;
+    parts.push(`Location: ${locationStr}`);
   }
 
-  // Where she is
-  const setting = photo.setting || photo.location || photo.environment || photo.background;
-  if (setting) {
-    parts.push(`Setting: ${setting}`);
+  // What she's wearing - build from top and bottom
+  const outfitParts = [];
+  if (photo.top_description) {
+    outfitParts.push(photo.top_description);
+  } else if (photo.top_type && photo.top_color) {
+    outfitParts.push(`${photo.top_color} ${photo.top_type}`);
+  }
+  if (photo.bottom_description) {
+    outfitParts.push(photo.bottom_description);
+  } else if (photo.bottom_type && photo.bottom_color) {
+    outfitParts.push(`${photo.bottom_color} ${photo.bottom_type}`);
+  }
+  if (outfitParts.length > 0) {
+    parts.push(`Wearing: ${outfitParts.join(' and ')}`);
   }
 
-  // Her pose/expression
-  const pose = photo.pose || photo.body_pose;
-  if (pose) {
-    parts.push(`Pose: ${pose}`);
+  // Pose and body position
+  if (photo.pose_type) {
+    parts.push(`Pose: ${photo.pose_type.replace(/_/g, ' ')}`);
+  }
+  if (photo.body_position) {
+    parts.push(`Position: ${photo.body_position.replace(/_/g, ' ')}`);
   }
 
-  const expression = photo.expression || photo.facial_expression || photo.face;
-  if (expression) {
-    parts.push(`Expression: ${expression}`);
-  }
-
-  // Mood/vibe
-  const mood = photo.mood || photo.vibe || photo.tone;
-  if (mood) {
-    parts.push(`Mood: ${mood}`);
+  // Facial expression
+  if (photo.facial_expression) {
+    parts.push(`Expression: ${photo.facial_expression}`);
   }
 
   // Activity
-  const activity = photo.activity || photo.action || photo.doing;
-  if (activity) {
-    parts.push(`Activity: ${activity}`);
+  if (photo.activity) {
+    parts.push(`Activity: ${photo.activity}`);
   }
 
-  // Body details if relevant
-  const bodyParts = photo.visible_body_parts || photo.body_parts || photo.visible;
-  if (bodyParts) {
-    parts.push(`Visible: ${bodyParts}`);
+  // Mood
+  if (photo.mood) {
+    parts.push(`Mood: ${photo.mood}`);
   }
 
-  // Suggested caption from GPT tagging
-  const caption = photo.suggested_caption || photo.caption || photo.suggested_message;
-  if (caption) {
-    parts.push(`Suggested caption style: ${caption}`);
+  // Room/environment details
+  if (photo.room_style) {
+    parts.push(`Room style: ${photo.room_style}`);
   }
 
-  // If we have almost no context, log a warning
+  // Lighting and time
+  if (photo.lighting) {
+    parts.push(`Lighting: ${photo.lighting}`);
+  }
+
+  // Hair
+  if (photo.hair_style || photo.hair_color) {
+    const hairDesc = [photo.hair_color, photo.hair_style].filter(Boolean).join(' ');
+    if (hairDesc) parts.push(`Hair: ${hairDesc}`);
+  }
+
+  // AI suggested message (use this as caption hint)
+  if (photo.ai_prompt) {
+    parts.push(`Suggested caption: "${photo.ai_prompt}"`);
+  }
+
+  // Log what we built
   if (parts.length === 0) {
-    console.warn('⚠️ No photo context found! Photo columns:', JSON.stringify(photo, null, 2));
+    console.warn('⚠️ No photo context found! Photo ID:', photo.id);
   } else {
-    console.log('📸 Photo context built:', parts.join('. '));
+    console.log(`📸 Photo context built (${parts.length} details):`, parts.slice(0, 3).join('. ') + '...');
   }
 
   return parts.join('. ');
