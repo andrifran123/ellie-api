@@ -4644,11 +4644,14 @@ function capOneEmoji(text) {
 // ============================================================
 
 async function upsertUserEmail(email) {
+  const newUserId = crypto.randomUUID();
   const { rows } = await pool.query(
-    `INSERT INTO users (email) VALUES ($1)
-     ON CONFLICT (email) DO UPDATE SET updated_at = NOW()
+    `INSERT INTO users (email, user_id) VALUES ($1, $2)
+     ON CONFLICT (email) DO UPDATE SET
+       updated_at = NOW(),
+       user_id = COALESCE(users.user_id, EXCLUDED.user_id)
      RETURNING id, email, paid, user_id`,
-    [email.toLowerCase()]
+    [email.toLowerCase(), newUserId]
   );
   return rows[0];
 }
@@ -5090,11 +5093,11 @@ app.post("/api/auth/verify", authVerifyLimiter, async (req, res) => {
       return res.status(400).json({ ok: false, message: "Invalid or expired code." });
     }
 
-    // ensure user row exists
+    // ensure user row exists (also generates user_id if missing)
     const user = await upsertUserEmail(email);
 
-    // set session cookie
-    const token = signSession({ email: user.email });
+    // set session cookie using userId for consistency with signup
+    const token = signSession({ userId: user.user_id });
     setSessionCookie(res, token);
 
     // paid = subscriptions.status or users.paid
@@ -5110,8 +5113,56 @@ app.post("/api/auth/verify", authVerifyLimiter, async (req, res) => {
   }
 });
 
-// âœ“ Authoritative me (returns 401 when not logged in; Supabase is source of truth)
-// ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Helper: Get user by UUID
+// Password-based login (for test users and users who signed up with password)
+app.post("/api/auth/login", authVerifyLimiter, async (req, res) => {
+  try {
+    const email = String(req.body?.email || "").toLowerCase().trim();
+    const password = String(req.body?.password || "").trim();
+
+    if (!email || !password) {
+      return res.status(400).json({ ok: false, message: "Email and password are required." });
+    }
+
+    // Find user by email
+    const { rows } = await pool.query(
+      `SELECT user_id, email, password_hash, paid FROM users WHERE email = $1 LIMIT 1`,
+      [email]
+    );
+
+    if (!rows.length) {
+      return res.status(401).json({ ok: false, message: "Invalid email or password." });
+    }
+
+    const user = rows[0];
+
+    // Check if user has a password set
+    if (!user.password_hash) {
+      return res.status(401).json({ ok: false, message: "This account uses email code login. Please use 'Sign in' with email code instead." });
+    }
+
+    // Verify password
+    const passwordValid = await bcrypt.compare(password, user.password_hash);
+    if (!passwordValid) {
+      return res.status(401).json({ ok: false, message: "Invalid email or password." });
+    }
+
+    // Create session with userId (consistent with signup)
+    const token = signSession({ userId: user.user_id });
+    setSessionCookie(res, token);
+
+    // Check paid status
+    const sub = await getSubByEmail(email);
+    const paid = isPaidStatus(sub?.status) || Boolean(user?.paid);
+
+    return res.json({ ok: true, paid });
+  } catch (e) {
+    console.error("auth/login error:", e);
+    return res.status(500).json({ ok: false, message: "Login failed." });
+  }
+});
+
+// Authoritative me (returns 401 when not logged in; Supabase is source of truth)
+// Helper: Get user by UUID
 async function getUserByUserId(userId) {
   const { rows } = await pool.query(
     `SELECT id, email, paid, user_id, subscription_tier, subscription_status, voice_minutes_used, voice_minutes_limit 
@@ -5225,23 +5276,26 @@ app.post("/api/auth/signup", async (req, res) => {
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
+    const newUserId = crypto.randomUUID();
 
     // Insert or update user row; paid remains false by default.
+    // Generate a UUID for new users, keep existing for updates
     // Try with terms_accepted_at first, fall back without it if column doesn't exist
     let rows;
     try {
       const result = await pool.query(
         `
-        INSERT INTO users (email, name, password_hash, paid, terms_accepted_at, updated_at)
-        VALUES ($1, $2, $3, FALSE, NOW(), NOW())
+        INSERT INTO users (email, name, password_hash, paid, user_id, terms_accepted_at, updated_at)
+        VALUES ($1, $2, $3, FALSE, $4, NOW(), NOW())
         ON CONFLICT (email) DO UPDATE
           SET name = EXCLUDED.name,
               password_hash = EXCLUDED.password_hash,
+              user_id = COALESCE(users.user_id, EXCLUDED.user_id),
               terms_accepted_at = COALESCE(users.terms_accepted_at, NOW()),
               updated_at = NOW()
         RETURNING user_id
         `,
-        [email, name, passwordHash]
+        [email, name, passwordHash, newUserId]
       );
       rows = result.rows;
     } catch (colErr) {
@@ -5250,15 +5304,16 @@ app.post("/api/auth/signup", async (req, res) => {
         console.log("terms_accepted_at column not found, using fallback query");
         const result = await pool.query(
           `
-          INSERT INTO users (email, name, password_hash, paid, updated_at)
-          VALUES ($1, $2, $3, FALSE, NOW())
+          INSERT INTO users (email, name, password_hash, paid, user_id, updated_at)
+          VALUES ($1, $2, $3, FALSE, $4, NOW())
           ON CONFLICT (email) DO UPDATE
             SET name = EXCLUDED.name,
                 password_hash = EXCLUDED.password_hash,
+                user_id = COALESCE(users.user_id, EXCLUDED.user_id),
                 updated_at = NOW()
           RETURNING user_id
           `,
-          [email, name, passwordHash]
+          [email, name, passwordHash, newUserId]
         );
         rows = result.rows;
       } else {
