@@ -6022,9 +6022,11 @@ app.post("/api/chat", async (req, res) => {
       finalSystemMsg += `\n\nIMPORTANT: Respond in ${langLabel}.`;
     }
 
-    // Add user's name for natural conversation
+    // Add user's name and emoji guidance
     if (userName) {
-      finalSystemMsg += `\n\nThe user's name is ${userName}. Use it sparingly - maybe once every 5-10 messages, like real people do.`;
+      finalSystemMsg += `\n\nThe user's name is ${userName}. Use it very sparingly - maybe once every 15-20 messages. Emojis can be used occasionally, around every 5 messages.`;
+    } else {
+      finalSystemMsg += `\n\nEmojis can be used occasionally, around every 5 messages.`;
     }
 
     // Add jealousy trigger if available
