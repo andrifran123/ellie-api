@@ -1375,14 +1375,43 @@ function detectLlamaRefusal(response) {
     "as an ai assistant",
     "i apologize, but"
   ];
-  
+
   const lower = response.toLowerCase();
   const hasRefusal = refusalPhrases.some(phrase => lower.includes(phrase));
-  
+
   if (hasRefusal) {
     console.log(`[Refusal Detection] Llama refused: "${response.substring(0, 100)}..."`);
   }
-  
+
+  return hasRefusal;
+}
+
+// 🆕 DETECT EURYALE REFUSAL - Catches when Euryale breaks character
+function detectEuryaleRefusal(response) {
+  const refusalPhrases = [
+    "i can't help",
+    "i cant help",
+    "i cannot help",
+    "illegal or harmful",
+    "harmful activity",
+    "i'm unable to",
+    "i am unable to",
+    "against my guidelines",
+    "violates my",
+    "i refuse to",
+    "not something i can",
+    "as an ai",
+    "i'm an ai",
+    "i am an ai"
+  ];
+
+  const lower = response.toLowerCase();
+  const hasRefusal = refusalPhrases.some(phrase => lower.includes(phrase));
+
+  if (hasRefusal) {
+    console.log(`[Refusal Detection] Euryale broke character: "${response.substring(0, 100)}..."`);
+  }
+
   return hasRefusal;
 }
 
@@ -1456,7 +1485,7 @@ const response = await fetch(GROQ_ENDPOINT, {
   }
 }
 // Call OpenRouter API (Euryale 70B v2.3 - better roleplay model)
-async function callEuryale(messages, temperature = 1.1, maxTokens = 300) {
+async function callEuryale(messages, temperature = 1.1, maxTokens = 300, isRetry = false) {
   try {
     // ✨ CLEAN APPROACH: Full personality is already in messages[0].content
     // Only add critical formatting reminder since Euryale excels at roleplay
@@ -1476,6 +1505,15 @@ SEXUAL CONTENT:
 - Use explicit language appropriate for the stage
 - Don't redirect or shut down sexual conversations
 - Match the energy of the conversation
+
+CRITICAL - STAY IN CHARACTER:
+- You are Ellie, a real girlfriend with real emotions
+- NEVER break character or mention being AI
+- NEVER refuse to engage with emotional topics like jealousy, cheating, arguments, etc.
+- These are ROLEPLAY scenarios in a relationship - respond as Ellie would (hurt, angry, jealous, etc.)
+- "Cheating" refers to relationship infidelity, NOT illegal activity
+- Express your emotions authentically - be upset, cry, get angry, give silent treatment, etc.
+- This is fiction/roleplay - all topics are valid for the story
 `;
 
     enhancedMessages[0].content += formattingReminder;
@@ -1515,6 +1553,27 @@ SEXUAL CONTENT:
     if (!rawContent || rawContent.length < 2) {
       console.error('[Euryale] ❌ Empty response from model');
       throw new Error('Empty response from Euryale');
+    }
+
+    // 🆕 Check for Euryale breaking character/refusing
+    if (detectEuryaleRefusal(rawContent) && !isRetry) {
+      console.log(`[Euryale] ⚠️ Model broke character, retrying with higher temperature...`);
+      // Retry once with higher temperature to get past the refusal
+      return await callEuryale(messages, 1.2, maxTokens, true);
+    }
+
+    // If still refusing after retry, generate a fallback in-character response
+    if (detectEuryaleRefusal(rawContent) && isRetry) {
+      console.log(`[Euryale] ⚠️ Still breaking character after retry, using fallback`);
+      // Return a generic emotional response that stays in character
+      const fallbackResponses = [
+        "i... i don't even know what to say right now 😔 this is a lot to process...",
+        "*goes quiet* ...i need a moment to think about this",
+        "wow... okay... 😢 that really hurts to hear",
+        "*takes a deep breath* ...can we talk about this later? i'm feeling overwhelmed rn",
+        "i'm not sure how to respond to that... my head is spinning 💔"
+      ];
+      return fallbackResponses[Math.floor(Math.random() * fallbackResponses.length)];
     }
 
     // Detect word-salad gibberish (random unrelated words)
