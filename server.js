@@ -6020,9 +6020,37 @@ Remember: Respond as your CURRENT self at ${relationship.current_stage}, not who
       // Continue without question tracking if it fails
     }
 
+    // 📸 PREPARE PHOTO BEFORE AI RESPONSE (so Ellie knows what she's sending)
+    let photoPrep = null;
+    try {
+      // Get recent message count for photo triggers
+      const recentMessagesQuery = await pool.query(
+        `SELECT COUNT(*) as count FROM conversation_history
+         WHERE user_id = $1
+         AND created_at > NOW() - INTERVAL '10 minutes'`,
+        [userId]
+      );
+      const recentMessageCount = parseInt(recentMessagesQuery.rows[0]?.count || 0);
+
+      photoPrep = await photoManager.preparePhotoForMessage(pool, userId, {
+        userMessage: message,
+        relationship: relationship,
+        recentMessageCount: recentMessageCount
+      });
+
+      if (photoPrep) {
+        console.log(`📸 Photo prepared for ${userId}: ${photoPrep.photo.category} (${photoPrep.triggerType})`);
+        // Inject photo context into system message so AI knows about the photo
+        finalSystemMsg += photoPrep.aiPromptInjection;
+      }
+    } catch (photoErr) {
+      console.error('Photo preparation error:', photoErr);
+      // Continue without photo if prep fails
+    }
+
     // Build fresh message array with personality ALWAYS first
     const messagesToSend = [
-      { role: "system", content: finalSystemMsg },  // Personality ALWAYS included
+      { role: "system", content: finalSystemMsg },  // Personality ALWAYS included (+ photo context if applicable)
       ...history.slice(-20)  // Last 20 messages (don't skip any!)
     ];
 
@@ -6224,65 +6252,30 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     // Get updated relationship status
     const updatedRelationship = await getUserRelationship(userId);
 
-   // 📸 CHECK IF PHOTO SHOULD BE SENT (milestone or spontaneous)
-    let photoResult = null;
-    try {
-      // Get recent message count for conversation_flow trigger
-      const recentMessagesQuery = await pool.query(
-        `SELECT COUNT(*) as count FROM conversation_history 
-         WHERE user_id = $1 
-         AND created_at > NOW() - INTERVAL '10 minutes'`,
-        [userId]
-      );
-      const recentMessageCount = parseInt(recentMessagesQuery.rows[0]?.count || 0);
-      
-      photoResult = await photoManager.handlePhotoSending(pool, userId, {
-        userMessage: message,
-        ellieResponse: enhancedReply,
-        relationship: updatedRelationship,
-        recentMessageCount: recentMessageCount
-      });
-      
-      if (photoResult) {
-        console.log(`📸 Photo sent to ${userId}: ${photoResult.isMilestone ? 'MILESTONE!' : photoResult.message}`);
-        
-        // 📝 ADD PHOTO CONTEXT TO CONVERSATION HISTORY
-        // This allows Ellie to remember she sent a photo in the next message
-        const photoContext = `[SYSTEM NOTE: You just sent a photo with the message: "${photoResult.message}". The photo was a ${photoResult.category} photo${photoResult.isMilestone ? ' (your first photo milestone!)' : ''}. If the user comments on it, respond naturally as if you remember sending it.]`;
-        
-        setImmediate(() => {
-          pool.query(
-            `INSERT INTO conversation_history (user_id, role, content, created_at)
-             VALUES ($1, 'system', $2, NOW())`,
-            [userId, photoContext]
-          ).catch(err => console.warn(`⚠️ Could not store photo context:`, err.message));
-        });
-        
-        // Also add to in-memory history for immediate next message
-        history.push({ role: "system", content: photoContext });
-      }
-    } catch (photoErr) {
-      console.error('Photo system error:', photoErr);
-      // Don't fail the chat if photo system has issues
-    }
+    // 📸 PHOTO CONTEXT STORAGE (photo was prepared BEFORE AI response)
+    // The AI already knows about the photo and referenced it in the response
+    if (photoPrep) {
+      console.log(`📸 Photo sent to ${userId}: ${photoPrep.isMilestone ? 'MILESTONE!' : photoPrep.photo.category}`);
 
-// ============================================================
-// QUICK INSTRUCTIONS:
-// ============================================================
-// 1. Open server.js
-// 2. Find line 6149 (search for: "CHECK IF PHOTO SHOULD BE SENT")
-// 3. Select from line 6149 to line 6174
-// 4. Delete those lines
-// 5. Paste this entire code block in their place
-// 6. Save and restart your server
-// 
-// That's it! Ellie will now remember sending photos.
-// ============================================================
+      // Store photo context in conversation history for future reference
+      const photoContext = `[SYSTEM NOTE: You sent a photo (${photoPrep.photo.category}). Photo details: ${photoPrep.photoContext}. ${photoPrep.isMilestone ? 'This was the first photo milestone!' : ''} If the user comments on it, respond naturally as if you remember what you sent.]`;
+
+      setImmediate(() => {
+        pool.query(
+          `INSERT INTO conversation_history (user_id, role, content, created_at)
+           VALUES ($1, 'system', $2, NOW())`,
+          [userId, photoContext]
+        ).catch(err => console.warn(`⚠️ Could not store photo context:`, err.message));
+      });
+
+      // Also add to in-memory history for immediate next message
+      history.push({ role: "system", content: photoContext });
+    }
 
     // ⚡ PERFORMANCE MONITORING
     const totalTime = Date.now() - startTime;
     console.log(`⚡ Response sent in ${totalTime}ms total for user ${userId}`);
-    
+
     res.json({
       reply: enhancedReply,
       language: prefCode,
@@ -6291,15 +6284,16 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
         stage: RELATIONSHIP_STAGES[updatedRelationship.current_stage]?.label || 'Unknown',
         streak: updatedRelationship.streak_days,
         mood: updatedRelationship.last_mood
-      }
-      ,
-      // 📸 Add photo to response if available
-      ...(photoResult && {
+      },
+      // 📸 Add photo to response if prepared (Ellie's message already references it)
+      ...(photoPrep && {
         photo: {
-          url: photoResult.photoUrl,
-          message: photoResult.message,
-          category: photoResult.category,
-          isMilestone: photoResult.isMilestone || false
+          url: photoPrep.photo.url,
+          id: photoPrep.photo.id,
+          category: photoPrep.photo.category,
+          mood: photoPrep.photo.mood,
+          setting: photoPrep.photo.setting,
+          isMilestone: photoPrep.isMilestone || false
         }
       })
     });
