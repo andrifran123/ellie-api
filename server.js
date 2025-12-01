@@ -6409,11 +6409,29 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     const photoId = photoPrep?.photo?.id || null;
     setImmediate(async () => {
       try {
-        await pool.query(
-          `INSERT INTO conversation_history (user_id, role, content, photo_url, photo_id, created_at)
-           VALUES ($1, 'assistant', $2, $3, $4, NOW())`,
-          [userId, enhancedReply, photoUrl, photoId]
-        );
+        // Try with photo columns first, fallback to basic insert
+        if (photoUrl) {
+          try {
+            await pool.query(
+              `INSERT INTO conversation_history (user_id, role, content, photo_url, photo_id, created_at)
+               VALUES ($1, 'assistant', $2, $3, $4, NOW())`,
+              [userId, enhancedReply, photoUrl, photoId]
+            );
+          } catch (colErr) {
+            // Photo columns don't exist yet, insert without them
+            await pool.query(
+              `INSERT INTO conversation_history (user_id, role, content, created_at)
+               VALUES ($1, 'assistant', $2, NOW())`,
+              [userId, enhancedReply]
+            );
+          }
+        } else {
+          await pool.query(
+            `INSERT INTO conversation_history (user_id, role, content, created_at)
+             VALUES ($1, 'assistant', $2, NOW())`,
+            [userId, enhancedReply]
+          );
+        }
         await cleanupOldMessages(userId);
       } catch (historyErr) {
         console.warn(`⚠️ Could not store assistant reply:`, historyErr.message);
@@ -8085,22 +8103,39 @@ app.get("/api/chat-view/messages/:userId", async (req, res) => {
     const { userId } = req.params;
     const limit = parseInt(req.query.limit) || 40;
 
-    // Fetch recent conversation history (including photo data)
-    const query = `
-      SELECT
-        id::text as id,
-        role,
-        content,
-        photo_url,
-        photo_id,
-        created_at
-      FROM conversation_history
-      WHERE user_id = $1
-      ORDER BY created_at DESC
-      LIMIT $2
-    `;
-
-    const result = await pool.query(query, [userId, limit]);
+    // Fetch recent conversation history (including photo data if columns exist)
+    let result;
+    try {
+      // Try with photo columns first
+      result = await pool.query(`
+        SELECT
+          id::text as id,
+          role,
+          content,
+          photo_url,
+          photo_id,
+          created_at
+        FROM conversation_history
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+      `, [userId, limit]);
+    } catch (colErr) {
+      // Fallback without photo columns if they don't exist yet
+      result = await pool.query(`
+        SELECT
+          id::text as id,
+          role,
+          content,
+          NULL as photo_url,
+          NULL as photo_id,
+          created_at
+        FROM conversation_history
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+      `, [userId, limit]);
+    }
 
     // Reverse to show oldest first
     const messages = result.rows.reverse();
