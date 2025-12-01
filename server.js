@@ -4429,10 +4429,11 @@ async function shouldTriggerBreakthrough(userId) {
 
 async function getJealousyTrigger(userId) {
   const rel = await getUserRelationship(userId);
-  
+
   // Ellie mentions other guys to make the USER jealous
   // Only use once per day, and only in middle stages (most effective)
-  if (rel.jealousy_used_today || rel.relationship_level < 20 || rel.relationship_level > 70) {
+  // Also require at least 30 messages - can't "think about" someone you just met
+  if (rel.jealousy_used_today || rel.relationship_level < 20 || rel.relationship_level > 70 || (rel.messages_count || 0) < 30) {
     return null;
   }
   
@@ -6317,7 +6318,8 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
         }
         
         // Generate random thoughts (if not dream)
-        if (!dreamMessage) {
+        // Only for users with 30+ messages - can't "think about" someone you just met
+        if (!dreamMessage && (relationship?.messages_count || 0) >= 30) {
           const thoughtMessage = dreamSystem.generateRandomThoughts(memories, mood);
           if (thoughtMessage) {
             enhancedReply = thoughtMessage + " " + enhancedReply;
