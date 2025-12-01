@@ -4744,6 +4744,23 @@ async function setPreferredLanguage(userId, langCode) {
   );
 }
 
+// Get user's name from facts table (for AI context)
+async function getUserName(userId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT fact FROM facts
+       WHERE user_id = $1 AND category = 'user_name'
+       ORDER BY updated_at DESC NULLS LAST
+       LIMIT 1`,
+      [userId]
+    );
+    return rows[0]?.fact || null;
+  } catch (e) {
+    console.error('Error getting user name:', e.message);
+    return null;
+  }
+}
+
 // Fact & emotion extraction / persistence
 
 // Voice presets (no FX). Store chosen preset name in facts.
@@ -5691,6 +5708,50 @@ app.post("/api/set-language", async (req, res) => {
   }
 });
 
+// User name endpoints
+app.get("/api/get-name", async (req, res) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.json({ name: null });
+    }
+    const { rows } = await pool.query(
+      `SELECT name FROM users WHERE user_id = $1`,
+      [userId]
+    );
+    res.json({ name: rows[0]?.name || null });
+  } catch (e) {
+    res.status(500).json({ error: "E_INTERNAL", message: e.message });
+  }
+});
+
+app.post("/api/set-name", async (req, res) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ ok: false, error: "NOT_LOGGED_IN" });
+    }
+    const { name } = req.body || {};
+    const trimmedName = String(name || "").trim();
+    if (!trimmedName || trimmedName.length > 100) {
+      return res.status(400).json({ ok: false, error: "E_BAD_NAME", message: "Name must be 1-100 characters." });
+    }
+
+    // Update the name in the users table
+    await pool.query(
+      `UPDATE users SET name = $2, updated_at = NOW() WHERE user_id = $1`,
+      [userId, trimmedName]
+    );
+
+    // Also store in facts for easy AI access
+    await upsertFact(userId, { category: "user_name", fact: trimmedName, confidence: 1.0 }, "user:set-name");
+
+    res.json({ ok: true, name: trimmedName });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Voice presets (no FX)
 app.get("/api/get-voice-presets", async (_req, res) => {
   try {
@@ -5800,13 +5861,14 @@ app.post("/api/chat", async (req, res) => {
     const startTime = Date.now();
     
     const [
-      relationship, 
-      mood, 
+      relationship,
+      mood,
       jealousyTrigger,
       history,
       prefCode,
       enrichedMessage,
-      relevantMemories
+      relevantMemories,
+      userName
     ] = await Promise.all([
       getUserRelationship(userId),
       getMoodVariance(userId),
@@ -5815,7 +5877,7 @@ app.post("/api/chat", async (req, res) => {
       getPreferredLanguage(userId),
       enrichMessageWithVideoContext(message, userId),
       // Memory recall with 1.5s timeout for speed
-      (memorySystem && memorySystem.enabled) 
+      (memorySystem && memorySystem.enabled)
         ? Promise.race([
             memorySystem.recallMemories(userId, message, {
               limit: 5,  // Optimized count
@@ -5823,7 +5885,9 @@ app.post("/api/chat", async (req, res) => {
             }),
             new Promise(resolve => setTimeout(() => resolve([]), 1500)) // 1.5s timeout
           ]).catch(() => [])
-        : Promise.resolve([])
+        : Promise.resolve([]),
+      // Get user's name for natural conversation
+      getUserName(userId)
     ]);
     
     // Background tasks (non-blocking)
@@ -5957,7 +6021,17 @@ app.post("/api/chat", async (req, res) => {
     if (prefCode !== "en") {
       finalSystemMsg += `\n\nIMPORTANT: Respond in ${langLabel}.`;
     }
-    
+
+    // Add user's name for natural conversation
+    if (userName) {
+      finalSystemMsg += `\n\n👤 USER'S NAME: ${userName}
+Use their name naturally in conversation - like a real person would:
+- Use it occasionally (not every message) to feel personal
+- Great for greetings, teasing, or emotional moments
+- "Hey ${userName}...", "You know what ${userName}?", "Aw ${userName}..."
+- Don't overuse it - that feels robotic`;
+    }
+
     // Add jealousy trigger if available
     if (jealousyTrigger) {
       finalSystemMsg += `\n\nMENTION THIS CASUALLY: ${jealousyTrigger}`;
