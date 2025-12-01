@@ -282,41 +282,65 @@ function determinePhotoCategory(relationship, context) {
   return categories[stage]?.[context] || ['casual'];
 }
 
-async function selectPhoto(pool, userId, criteria) {
+async function selectPhoto(pool, userId, criteria, relationshipLevel = 0) {
   try {
-    const { categories, nsfwAllowed, triggerType } = criteria;
-    
-    const maxNsfwLevel = nsfwAllowed ? 
-      (categories.includes('intimate') ? 2 : 1) : 0;
-    
+    const { categories, nsfwAllowed, triggerType, mood } = criteria;
+
+    const maxNsfwLevel = nsfwAllowed ?
+      (categories.includes('intimate') || categories.includes('suggestive') ? 2 : 1) : 0;
+
+    // Build query with all the rich metadata from your GPT-tagged photos
+    // Priority: match category, nsfw_level, relationship_level, is_active, and avoid repeats
     const photoQuery = await pool.query(
       `SELECT p.* FROM ellie_photos p
-       WHERE p.category = ANY($1)
+       WHERE p.is_active = true
+       AND p.category = ANY($1)
        AND p.nsfw_level <= $2
+       AND (p.min_relationship_level IS NULL OR p.min_relationship_level <= $4)
        AND p.id NOT IN (
-         SELECT photo_id FROM user_photo_history 
+         SELECT photo_id FROM user_photo_history
          WHERE user_id = $3
        )
-       ORDER BY RANDOM()
+       ORDER BY
+         -- Prefer photos matching the mood if provided
+         CASE WHEN $5 IS NOT NULL AND p.mood = $5 THEN 0 ELSE 1 END,
+         RANDOM()
        LIMIT 1`,
-      [categories, maxNsfwLevel, userId]
+      [categories, maxNsfwLevel, userId, relationshipLevel, mood || null]
     );
-    
+
     if (photoQuery.rows.length === 0) {
+      // Fallback: allow repeats but still respect nsfw and relationship level
       const repeatPhotoQuery = await pool.query(
         `SELECT p.* FROM ellie_photos p
-         WHERE p.category = ANY($1)
+         WHERE p.is_active = true
+         AND p.category = ANY($1)
          AND p.nsfw_level <= $2
+         AND (p.min_relationship_level IS NULL OR p.min_relationship_level <= $3)
          ORDER BY RANDOM()
          LIMIT 1`,
-        [categories, maxNsfwLevel]
+        [categories, maxNsfwLevel, relationshipLevel]
       );
-      
-      return repeatPhotoQuery.rows[0] || null;
+
+      if (repeatPhotoQuery.rows.length === 0) {
+        // Last resort: just get any active photo in the category
+        console.log(`⚠️ No photos found for categories ${categories}, trying any active photo`);
+        const anyPhotoQuery = await pool.query(
+          `SELECT p.* FROM ellie_photos p
+           WHERE p.is_active = true
+           AND p.nsfw_level <= $1
+           ORDER BY RANDOM()
+           LIMIT 1`,
+          [maxNsfwLevel]
+        );
+        return anyPhotoQuery.rows[0] || null;
+      }
+
+      return repeatPhotoQuery.rows[0];
     }
-    
+
     return photoQuery.rows[0];
-    
+
   } catch (error) {
     console.error('❌ Error selecting photo:', error);
     return null;
@@ -390,45 +414,52 @@ async function recordPhotoSent(pool, userId, photoId, context) {
 async function handlePhotoSending(pool, userId, conversationContext) {
   try {
     const decision = await shouldSendPhoto(pool, userId, conversationContext);
-    
+
     if (!decision.shouldSend) {
       return null;
     }
-    
+
     console.log(`📸 Photo trigger for user ${userId}: ${decision.triggerType || decision.reason}`);
-    
-    const photo = await selectPhoto(pool, userId, decision);
-    
+
+    const relationshipLevel = conversationContext.relationship?.relationship_level || 0;
+    const relationshipStage = conversationContext.relationship?.current_stage || 'STRANGER';
+
+    // Add mood from conversation context if available
+    decision.mood = conversationContext.mood || null;
+
+    const photo = await selectPhoto(pool, userId, decision, relationshipLevel);
+
     if (!photo) {
       console.log(`⚠️ No suitable photo found for user ${userId}`);
       return null;
     }
-    
-    const relationshipStage = conversationContext.relationship?.current_stage || 'STRANGER';
+
     const message = generatePhotoMessage(
-      photo, 
-      decision.triggerType || decision.reason, 
+      photo,
+      decision.triggerType || decision.reason,
       relationshipStage,
       decision.message // Custom message for milestone
     );
-    
+
     await recordPhotoSent(
-      pool, 
-      userId, 
-      photo.id, 
+      pool,
+      userId,
+      photo.id,
       conversationContext.userMessage || decision.reason
     );
-    
-    console.log(`✅ Sending photo ${photo.id} to user ${userId}`);
-    
+
+    console.log(`✅ Sending photo ${photo.id} (${photo.category}, nsfw:${photo.nsfw_level}) to user ${userId}`);
+
     return {
       photoUrl: photo.url,
       message: message,
       photoId: photo.id,
       category: photo.category,
+      mood: photo.mood,
+      activity: photo.activity,
       isMilestone: decision.reason === 'stranger_milestone'
     };
-    
+
   } catch (error) {
     console.error('❌ Error in handlePhotoSending:', error);
     return null;

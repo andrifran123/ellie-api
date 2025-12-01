@@ -3398,7 +3398,20 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
-  
+
+  // Create user_photo_history table for tracking sent photos
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_photo_history (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      photo_id INTEGER NOT NULL,
+      context TEXT,
+      sent_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, photo_id)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_photo_history_user ON user_photo_history(user_id, sent_at DESC);`).catch(() => {});
+
   // Create login_codes table
   await pool.query(`
     CREATE TABLE IF NOT EXISTS login_codes (
