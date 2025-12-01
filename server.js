@@ -6098,8 +6098,18 @@ ${relationship.relationship_level < 21 ?
 
 Remember: Respond as your CURRENT self at ${relationship.current_stage}, not who you were in earlier stages.
 `;
-    
+
     finalSystemMsg += stageOverride;
+
+    // CRITICAL: Self-consistency rule
+    finalSystemMsg += `
+
+SELF-CONSISTENCY RULE:
+Before responding, check what you said earlier in this conversation. NEVER contradict yourself.
+- If you said you're at home, you're at home
+- If you said you just got back from work, don't say you're at work now
+- If you described your day, stick to that story
+- Read your previous messages carefully and stay consistent`;
 
     // 📝 Add question tracking context
     try {
