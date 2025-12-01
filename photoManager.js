@@ -141,7 +141,7 @@ async function checkStrangerMilestone(pool, userId, relationship) {
       return { shouldSend: false, reason: 'not_stranger' };
     }
 
-    const messagesCount = relationship.messages_count || 0;
+    const messagesCount = relationship.total_interactions || 0;
 
     // Must have at least 15 messages
     if (messagesCount < 15) {
@@ -182,7 +182,7 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     const relationship = conversationContext.relationship;
     const userMessage = conversationContext.userMessage?.toLowerCase() || '';
 
-    console.log(`📸 [DEBUG] shouldSendPhoto called for ${userId}: stage=${relationship?.current_stage}, msgs=${relationship?.messages_count}`);
+    console.log(`📸 [DEBUG] shouldSendPhoto called for ${userId}: stage=${relationship?.current_stage}, msgs=${relationship?.total_interactions}`);
 
     // PRIORITY 1: Check stranger milestone
     const milestone = await checkStrangerMilestone(pool, userId, relationship);
@@ -212,7 +212,7 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     }
 
     // Minimum messages requirement
-    const messagesCount = relationship.messages_count || 0;
+    const messagesCount = relationship.total_interactions || 0;
     if (relationship.current_stage === 'STRANGER' && messagesCount < 20) {
       return { shouldSend: false, reason: 'too_early' };
     }

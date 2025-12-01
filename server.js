@@ -4451,7 +4451,7 @@ async function getJealousyTrigger(userId) {
   // Ellie mentions other guys to make the USER jealous
   // Only use once per day, and only in middle stages (most effective)
   // Also require at least 30 messages - can't "think about" someone you just met
-  if (rel.jealousy_used_today || rel.relationship_level < 20 || rel.relationship_level > 70 || (rel.messages_count || 0) < 30) {
+  if (rel.jealousy_used_today || rel.relationship_level < 20 || rel.relationship_level > 70 || (rel.total_interactions || 0) < 30) {
     return null;
   }
   
@@ -5780,7 +5780,7 @@ app.post("/api/debug/force-photo", async (req, res) => {
     }
 
     const relationship = await getUserRelationship(userId);
-    console.log(`🔧 [DEBUG] Force photo test for ${userId}: stage=${relationship.current_stage}, msgs=${relationship.messages_count}`);
+    console.log(`🔧 [DEBUG] Force photo test for ${userId}: stage=${relationship.current_stage}, msgs=${relationship.total_interactions}`);
 
     // Force select a photo
     const { rows } = await pool.query(
@@ -5796,7 +5796,7 @@ app.post("/api/debug/force-photo", async (req, res) => {
       relationship: {
         stage: relationship.current_stage,
         level: relationship.relationship_level,
-        messages: relationship.messages_count
+        messages: relationship.total_interactions
       },
       photosAvailable: rows.length,
       samplePhoto: rows[0]
@@ -5868,7 +5868,7 @@ app.post("/api/chat", async (req, res) => {
       const relationship = await getUserRelationship(userId);
       const refusal = photoManager.generatePhotoRequestRefusal(
         relationship.current_stage,
-        relationship.messages_count || 0
+        relationship.total_interactions || 0
       );
       
       console.log(`🚫 User ${userId} asked for photo, refusing with personality`);
@@ -6347,7 +6347,7 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
         
         // Generate random thoughts (if not dream)
         // Only for users with 30+ messages - can't "think about" someone you just met
-        if (!dreamMessage && (relationship?.messages_count || 0) >= 30) {
+        if (!dreamMessage && (relationship?.total_interactions || 0) >= 30) {
           const thoughtMessage = dreamSystem.generateRandomThoughts(memories, mood);
           if (thoughtMessage) {
             enhancedReply = thoughtMessage + " " + enhancedReply;
