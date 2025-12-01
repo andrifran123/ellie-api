@@ -6024,12 +6024,7 @@ app.post("/api/chat", async (req, res) => {
 
     // Add user's name for natural conversation
     if (userName) {
-      finalSystemMsg += `\n\n👤 USER'S NAME: ${userName}
-Use their name naturally in conversation - like a real person would:
-- Use it occasionally (not every message) to feel personal
-- Great for greetings, teasing, or emotional moments
-- "Hey ${userName}...", "You know what ${userName}?", "Aw ${userName}..."
-- Don't overuse it - that feels robotic`;
+      finalSystemMsg += `\n\nThe user's name is ${userName}. Use it sparingly - maybe once every 5-10 messages, like real people do.`;
     }
 
     // Add jealousy trigger if available
