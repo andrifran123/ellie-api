@@ -4766,11 +4766,20 @@ app.post("/api/auth/start", authStartLimiter, async (req, res) => {
       return res.status(400).json({ ok: false, message: "Invalid email." });
     }
 
+    // Check if user exists - don't auto-create for login
+    const existingUser = await getUserByEmail(email);
+    if (!existingUser) {
+      return res.status(404).json({
+        ok: false,
+        message: "Email not found. Please sign up first."
+      });
+    }
+
     // generate 6-digit code
     const code = String(Math.floor(100000 + Math.random() * 900000));
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
-    // ensure user row exists (and update timestamp)
+    // Update user timestamp
     await upsertUserEmail(email);
 
     // one active code per email: delete old + insert new
