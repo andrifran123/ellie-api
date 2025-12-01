@@ -4697,6 +4697,33 @@ const SUPPORTED_LANGUAGES = {
   zh: "Chinese",
 };
 
+/**
+ * Upsert a fact into the facts table
+ * If a fact with the same user_id and category exists, update it
+ * Otherwise, insert a new one
+ */
+async function upsertFact(userId, factData, source = null) {
+  const { category, fact, sentiment = null, confidence = 1.0 } = factData;
+
+  // Try to update existing fact for this category
+  const updateResult = await pool.query(
+    `UPDATE facts
+     SET fact = $3, sentiment = $4, confidence = $5, source = $6, updated_at = NOW()
+     WHERE user_id = $1 AND category = $2
+     RETURNING id`,
+    [userId, category, fact, sentiment, confidence, source]
+  );
+
+  // If no rows updated, insert new fact
+  if (updateResult.rowCount === 0) {
+    await pool.query(
+      `INSERT INTO facts (user_id, category, fact, sentiment, confidence, source, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())`,
+      [userId, category, fact, sentiment, confidence, source]
+    );
+  }
+}
+
 async function getPreferredLanguage(userId) {
   const { rows } = await pool.query(
     `SELECT fact FROM facts
