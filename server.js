@@ -3568,8 +3568,26 @@ async function initDB() {
   `).catch(() => {});
 
   await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_missed_calls_user_created 
+    CREATE INDEX IF NOT EXISTS idx_missed_calls_user_created
     ON missed_calls(user_id, created_at DESC);
+  `).catch(() => {});
+
+  // 📝 Create asked_questions table (tracks questions Ellie has asked to avoid repeats)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS asked_questions (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) NOT NULL,
+      question_key VARCHAR(50) NOT NULL,
+      question_text TEXT,
+      stage VARCHAR(50),
+      asked_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id, question_key)
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_asked_questions_user
+    ON asked_questions(user_id);
   `).catch(() => {});
 
   // Update user_relationships table for missed call tracking
