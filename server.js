@@ -5752,6 +5752,41 @@ app.post("/api/set-name", async (req, res) => {
   }
 });
 
+// DEBUG: Force photo test endpoint (admin only)
+app.post("/api/debug/force-photo", async (req, res) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ ok: false, error: "NOT_LOGGED_IN" });
+    }
+
+    const relationship = await getUserRelationship(userId);
+    console.log(`🔧 [DEBUG] Force photo test for ${userId}: stage=${relationship.current_stage}, msgs=${relationship.messages_count}`);
+
+    // Force select a photo
+    const { rows } = await pool.query(
+      `SELECT * FROM ellie_photos WHERE is_active = true LIMIT 5`
+    );
+
+    if (rows.length === 0) {
+      return res.json({ ok: false, error: "No photos in database", relationship });
+    }
+
+    res.json({
+      ok: true,
+      relationship: {
+        stage: relationship.current_stage,
+        level: relationship.relationship_level,
+        messages: relationship.messages_count
+      },
+      photosAvailable: rows.length,
+      samplePhoto: rows[0]
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Voice presets (no FX)
 app.get("/api/get-voice-presets", async (_req, res) => {
   try {

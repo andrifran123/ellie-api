@@ -180,8 +180,11 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     const relationship = conversationContext.relationship;
     const userMessage = conversationContext.userMessage?.toLowerCase() || '';
 
+    console.log(`📸 [DEBUG] shouldSendPhoto called for ${userId}: stage=${relationship?.current_stage}, msgs=${relationship?.messages_count}`);
+
     // PRIORITY 1: Check stranger milestone
     const milestone = await checkStrangerMilestone(pool, userId, relationship);
+    console.log(`📸 [DEBUG] Milestone check result:`, JSON.stringify(milestone));
     if (milestone.shouldSend) {
       return milestone;
     }
