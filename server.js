@@ -4968,20 +4968,44 @@ app.post("/api/auth/signup", async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 10);
 
     // Insert or update user row; paid remains false by default.
-    // Also record terms_accepted_at for legal compliance
-    const { rows } = await pool.query(
-      `
-      INSERT INTO users (email, name, password_hash, paid, terms_accepted_at, updated_at)
-      VALUES ($1, $2, $3, FALSE, NOW(), NOW())
-      ON CONFLICT (email) DO UPDATE
-        SET name = EXCLUDED.name,
-            password_hash = EXCLUDED.password_hash,
-            terms_accepted_at = COALESCE(users.terms_accepted_at, NOW()),
-            updated_at = NOW()
-      RETURNING user_id
-      `,
-      [email, name, passwordHash]
-    );
+    // Try with terms_accepted_at first, fall back without it if column doesn't exist
+    let rows;
+    try {
+      const result = await pool.query(
+        `
+        INSERT INTO users (email, name, password_hash, paid, terms_accepted_at, updated_at)
+        VALUES ($1, $2, $3, FALSE, NOW(), NOW())
+        ON CONFLICT (email) DO UPDATE
+          SET name = EXCLUDED.name,
+              password_hash = EXCLUDED.password_hash,
+              terms_accepted_at = COALESCE(users.terms_accepted_at, NOW()),
+              updated_at = NOW()
+        RETURNING user_id
+        `,
+        [email, name, passwordHash]
+      );
+      rows = result.rows;
+    } catch (colErr) {
+      // Fallback if terms_accepted_at column doesn't exist yet
+      if (colErr.code === '42703') {
+        console.log("terms_accepted_at column not found, using fallback query");
+        const result = await pool.query(
+          `
+          INSERT INTO users (email, name, password_hash, paid, updated_at)
+          VALUES ($1, $2, $3, FALSE, NOW())
+          ON CONFLICT (email) DO UPDATE
+            SET name = EXCLUDED.name,
+                password_hash = EXCLUDED.password_hash,
+                updated_at = NOW()
+          RETURNING user_id
+          `,
+          [email, name, passwordHash]
+        );
+        rows = result.rows;
+      } else {
+        throw colErr;
+      }
+    }
 
     const userId = rows[0]?.user_id;
     if (!userId) {
@@ -8854,11 +8878,19 @@ console.log('✅ Missed call background job scheduled (runs every 2 hours)');
  */
 
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log("================================");
   console.log(`Â¸Ãƒâ€¦Ã‚Â¡ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Ellie API running at http://localhost:${PORT}`);
   console.log(`Â¸Ãƒâ€¦Ã‚Â½Ãƒâ€šÃ‚Â¤ WebSocket voice at ws://localhost:${PORT}/ws/voice`);
   console.log(`Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¦Ã‚Â¾ Phone WebSocket at ws://localhost:${PORT}/ws/phone`);
+
+  // Try to add terms_accepted_at column if it doesn't exist
+  try {
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMP`);
+    console.log("✅ terms_accepted_at column ensured");
+  } catch (e) {
+    console.log("⚠️ Could not add terms_accepted_at column (may already exist or no permission):", e.message);
+  }
   if (BRAVE_API_KEY) {
     console.log("Â¸Ãƒâ€¦Ã¢â‚¬â„¢Ãƒâ€šÃ‚Â Live web search: ENABLED (Brave)");
   } else {
