@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: ellie-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CORS_ORIGIN
+        value: https://ellie-elite.com,https://www.ellie-elite.com,https://api.ellie-elite.com
+      # Add your other environment variables in the Render dashboard
+      # - OPENAI_API_KEY
+      # - DATABASE_URL
+      # - SUPABASE_URL
+      # - SUPABASE_KEY
+      # - SESSION_SECRET
+      # etc.

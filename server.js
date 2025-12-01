@@ -1154,6 +1154,9 @@ app.get("/api/healthz", (_req, res) => res.type("text/plain").send("ok"));
 
 /** CORS */
 const defaultAllowed = [
+  "https://ellie-elite.com",
+  "https://www.ellie-elite.com",
+  "https://api.ellie-elite.com",
   "https://ellie-web-ochre.vercel.app",
   "https://ellie-web.vercel.app",
   "http://localhost:3000",
@@ -1171,6 +1174,7 @@ app.use(
         if (allowedOrigins.includes(origin)) return cb(null, true);
         const host = new URL(origin).hostname;
         if (host.endsWith(".vercel.app")) return cb(null, true);
+        if (host === "ellie-elite.com" || host.endsWith(".ellie-elite.com")) return cb(null, true);
       } catch {}
       return cb(new Error("Not allowed by CORS"));
     },
