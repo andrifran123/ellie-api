@@ -131,22 +131,24 @@ function generatePhotoRequestRefusal(relationshipStage, messagesCount) {
 // ============================================================
 
 /**
- * Check for stranger milestone (15 messages = first photo as progression teaser)
+ * Check for stranger milestone (after ~15 messages = first photo as progression teaser)
+ * Triggers once user passes 15 messages and hasn't received a photo yet
  */
 async function checkStrangerMilestone(pool, userId, relationship) {
   try {
+    // Works for STRANGER stage only
     if (relationship.current_stage !== 'STRANGER') {
       return { shouldSend: false, reason: 'not_stranger' };
     }
 
     const messagesCount = relationship.messages_count || 0;
 
-    // Trigger at 15 messages (+/- 2 for natural timing)
-    if (messagesCount < 13 || messagesCount > 17) {
+    // Must have at least 15 messages
+    if (messagesCount < 15) {
       return { shouldSend: false, reason: 'milestone_not_reached' };
     }
 
-    // Check if they've already received the stranger milestone photo
+    // Check if they've already received ANY photo (milestone already claimed)
     const photoHistory = await pool.query(
       `SELECT COUNT(*) as count FROM user_photo_history WHERE user_id = $1`,
       [userId]
@@ -156,7 +158,7 @@ async function checkStrangerMilestone(pool, userId, relationship) {
       return { shouldSend: false, reason: 'milestone_already_claimed' };
     }
 
-    console.log(`🎉 MILESTONE: User ${userId} reached 15 messages as STRANGER - sending first photo!`);
+    console.log(`🎉 MILESTONE: User ${userId} at ${messagesCount} messages as STRANGER - sending first photo!`);
 
     return {
       shouldSend: true,
@@ -244,6 +246,19 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
           /thinking (about|of) you/,
         ],
         chance: 0.40,
+      },
+      // Loophole: indirect requests that bypass detection
+      indirect_tease: {
+        patterns: [
+          /i bet you look/i,
+          /you must look/i,
+          /wish i could see what you/i,
+          /what are you wearing/i,
+          /describe yourself/i,
+          /paint me a picture/i,
+          /prove it/i,
+        ],
+        chance: 0.85,  // High chance - reward clever users
       },
       conversation_flow: {
         chance: 0.25,
