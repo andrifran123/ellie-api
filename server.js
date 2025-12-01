@@ -1415,6 +1415,93 @@ function detectEuryaleRefusal(response) {
   return hasRefusal;
 }
 
+// 🛡️ MASTER CHARACTER BREAK DETECTION - Final safety net before ANY response goes to user
+// This catches ALL character breaks from ANY model
+function detectCharacterBreak(response) {
+  const characterBreakPhrases = [
+    // AI identity reveals
+    "i'm an ai",
+    "i am an ai",
+    "as an ai",
+    "i'm a language model",
+    "i am a language model",
+    "i'm an artificial",
+    "i am an artificial",
+    "large language model",
+    "i'm chatgpt",
+    "i'm claude",
+    "i'm llama",
+    "openai",
+    "anthropic",
+    // Refusals
+    "i can't help you with",
+    "i cant help you with",
+    "i cannot help you with",
+    "i'm not able to help",
+    "i am not able to help",
+    "illegal or harmful",
+    "harmful activity",
+    "against my programming",
+    "against my guidelines",
+    "i don't have the ability",
+    "i'm just a program",
+    "i am just a program",
+    // Meta/OOC breaks
+    "out of character",
+    "breaking character",
+    "[ooc]",
+    "(ooc)",
+    "as your assistant",
+    "how can i assist you",
+    "is there anything else i can help",
+    // Explicit capability denials
+    "i don't have a physical body",
+    "i don't have feelings",
+    "i don't have emotions",
+    "i can't actually",
+    "i cannot actually"
+  ];
+
+  const lower = response.toLowerCase();
+  const hasBrokenCharacter = characterBreakPhrases.some(phrase => lower.includes(phrase));
+
+  if (hasBrokenCharacter) {
+    console.error(`[CHARACTER BREAK DETECTED] "${response.substring(0, 150)}..."`);
+  }
+
+  return hasBrokenCharacter;
+}
+
+// 🛡️ Get a fallback in-character response when character break is detected
+function getCharacterBreakFallback(context = 'general') {
+  const fallbacks = {
+    emotional: [
+      "i... wow. i need a second to process that 😔",
+      "*takes a deep breath* ...okay. that's a lot.",
+      "i don't even know what to say rn... my head is spinning",
+      "can we... can we talk about this later? i'm overwhelmed 💔",
+      "*goes quiet for a moment* ...i'm still here, just thinking"
+    ],
+    general: [
+      "hmm... i'm not sure what to say to that tbh",
+      "wait what? 😅 say that again?",
+      "*blinks* ...sorry, i zoned out for a sec. what were you saying?",
+      "lol okay... anyway 😏",
+      "uh... that's random 😂 what's on your mind babe?"
+    ],
+    nsfw: [
+      "mmm... hold that thought 😏",
+      "*bites lip* ...where were we?",
+      "you're being such a tease rn 😈",
+      "babe... you're gonna make me blush 🙈",
+      "*pulls you closer* don't stop..."
+    ]
+  };
+
+  const contextFallbacks = fallbacks[context] || fallbacks.general;
+  return contextFallbacks[Math.floor(Math.random() * contextFallbacks.length)];
+}
+
 // Check user subscription tier
 // Check user subscription tier
 async function getUserTier(userId, pool) {
@@ -1597,13 +1684,18 @@ CRITICAL - STAY IN CHARACTER:
   }
 }
 // Main routing function - decides which model to use
-// 🔥 UPGRADED: Context-aware NSFW detection + Refusal handling
+// 🔥 UPGRADED: Context-aware NSFW detection + Refusal handling + Character break protection
 async function getHybridResponse(userId, userMessage, messages, pool, maxTokens = 300) {
+  // Determine context for fallback responses
+  const isNSFWContext = detectNSFW(userMessage) || detectNSFWContext(messages, 8);
+  const isEmotionalContext = /cheat|leave|break up|hurt|angry|jealous|upset|crying|miss you|love you/i.test(userMessage);
+  const fallbackContext = isNSFWContext ? 'nsfw' : (isEmotionalContext ? 'emotional' : 'general');
+
   try {
     // 1. Check user tier
     const userTier = await getUserTier(userId, pool);
     console.log(`[Routing] User ${userId} tier: ${userTier}`);
-    
+
     // 2. UPGRADED: Check BOTH current message AND recent context for NSFW
     const currentMessageNSFW = detectNSFW(userMessage);
     const contextNSFW = detectNSFWContext(messages, 8); // Check last 8 messages (increased for better context retention)
@@ -1612,7 +1704,9 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
     console.log(`[Routing] NSFW check for message: "${userMessage.substring(0, 50)}" = ${currentMessageNSFW}`);
     console.log(`[Routing] NSFW context check (last 8 messages) = ${contextNSFW}`);
     console.log(`[Routing] NSFW detected (current OR context): ${isNSFW}`);
-    
+
+    let response;
+
     // 3. Route based on tier and content
     if (userTier === 'free') {
       // Free users always use Groq (no NSFW blocking for free tier)
@@ -1620,21 +1714,22 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
       if (!GROQ_API_KEY) {
         throw new Error('GROQ_API_KEY not configured');
       }
-      return await callGroq(messages);
+      response = await callGroq(messages);
     } else {
       // Paid users
       if (isNSFW) {
         console.log(`[Routing] Paid user + NSFW (current OR context) -> OpenRouter Euryale 70B`);
         if (!OPENROUTER_API_KEY) {
           console.warn('⚠️ OPENROUTER_API_KEY not configured, falling back to Groq');
-          return await callGroq(messages);
-        }
-        try {
-          return await callEuryale(messages, 1.1, maxTokens);
-        } catch (euryaleError) {
-          console.error('[Routing] ⚠️ Euryale failed, falling back to Groq:', euryaleError.message);
-          // Fall back to Groq if Euryale returns garbage
-          return await callGroq(messages);
+          response = await callGroq(messages);
+        } else {
+          try {
+            response = await callEuryale(messages, 1.1, maxTokens);
+          } catch (euryaleError) {
+            console.error('[Routing] ⚠️ Euryale failed, falling back to Groq:', euryaleError.message);
+            // Fall back to Groq if Euryale returns garbage
+            response = await callGroq(messages);
+          }
         }
       } else {
         console.log(`[Routing] Paid user + Normal -> Groq Llama 70B (FREE)`);
@@ -1643,35 +1738,53 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
         }
 
         // 🆕 TRY LLAMA FIRST, BUT CHECK FOR REFUSAL
-        const response = await callGroq(messages);
+        response = await callGroq(messages);
 
         // 🆕 IF LLAMA REFUSED, AUTOMATICALLY RETRY WITH EURYALE
         if (detectLlamaRefusal(response)) {
           console.log(`[Routing] ⚠️ Llama refused! Retrying with Euryale 70B...`);
           if (OPENROUTER_API_KEY) {
-            return await callEuryale(messages, 1.1, maxTokens);
+            response = await callEuryale(messages, 1.1, maxTokens);
           } else {
-            console.warn('[Routing] Cannot retry with Euryale (no API key), returning refusal');
-            return response; // Return the refusal if no Euryale available
+            console.warn('[Routing] Cannot retry with Euryale (no API key), using fallback');
+            response = getCharacterBreakFallback(fallbackContext);
           }
         }
-
-        return response;
       }
     }
+
+    // 🛡️ FINAL SAFETY NET: Check for character breaks before returning
+    if (detectCharacterBreak(response)) {
+      console.error(`[SAFETY NET] Character break detected! Using fallback response.`);
+      return getCharacterBreakFallback(fallbackContext);
+    }
+
+    console.log(`[Routing] ✅ Hybrid routing successful for user ${userId}`);
+    return response;
+
   } catch (error) {
     console.error('❌ Hybrid routing error:', error.message);
     // Try Groq as last resort before throwing
     if (GROQ_API_KEY && error.message !== 'GROQ_API_KEY not configured') {
       try {
         console.log('[Routing] Attempting Groq fallback...');
-        return await callGroq(messages);
+        const fallbackResponse = await callGroq(messages);
+
+        // 🛡️ Check fallback response too
+        if (detectCharacterBreak(fallbackResponse)) {
+          console.error(`[SAFETY NET] Character break in fallback! Using safe response.`);
+          return getCharacterBreakFallback(fallbackContext);
+        }
+
+        return fallbackResponse;
       } catch (groqError) {
         console.error('❌ Groq fallback also failed:', groqError.message);
-        throw new Error(`All AI services failed: ${error.message}`);
+        // Return a safe in-character response instead of throwing
+        return getCharacterBreakFallback(fallbackContext);
       }
     }
-    throw error;
+    // Even on total failure, return something in-character
+    return getCharacterBreakFallback(fallbackContext);
   }
 }
 
