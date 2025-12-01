@@ -415,49 +415,69 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
 function buildPhotoContext(photo) {
   if (!photo) return null;
 
+  // Debug: Log available photo columns
+  console.log('📸 Photo metadata available:', Object.keys(photo).filter(k => photo[k] != null));
+
   const parts = [];
 
-  // Core description
-  if (photo.description) {
-    parts.push(`Photo description: ${photo.description}`);
+  // Core description - try multiple possible column names
+  const description = photo.description || photo.photo_description || photo.gpt_description;
+  if (description) {
+    parts.push(`Photo description: ${description}`);
   }
 
   // What she's wearing
-  if (photo.outfit) {
-    parts.push(`Outfit: ${photo.outfit}`);
+  const outfit = photo.outfit || photo.clothing || photo.attire;
+  if (outfit) {
+    parts.push(`Outfit: ${outfit}`);
   }
 
   // Where she is
-  if (photo.setting) {
-    parts.push(`Setting: ${photo.setting}`);
+  const setting = photo.setting || photo.location || photo.environment || photo.background;
+  if (setting) {
+    parts.push(`Setting: ${setting}`);
   }
 
   // Her pose/expression
-  if (photo.pose) {
-    parts.push(`Pose: ${photo.pose}`);
+  const pose = photo.pose || photo.body_pose;
+  if (pose) {
+    parts.push(`Pose: ${pose}`);
   }
-  if (photo.expression) {
-    parts.push(`Expression: ${photo.expression}`);
+
+  const expression = photo.expression || photo.facial_expression || photo.face;
+  if (expression) {
+    parts.push(`Expression: ${expression}`);
   }
 
   // Mood/vibe
-  if (photo.mood) {
-    parts.push(`Mood: ${photo.mood}`);
+  const mood = photo.mood || photo.vibe || photo.tone;
+  if (mood) {
+    parts.push(`Mood: ${mood}`);
   }
 
   // Activity
-  if (photo.activity) {
-    parts.push(`Activity: ${photo.activity}`);
+  const activity = photo.activity || photo.action || photo.doing;
+  if (activity) {
+    parts.push(`Activity: ${activity}`);
   }
 
   // Body details if relevant
-  if (photo.visible_body_parts) {
-    parts.push(`Visible: ${photo.visible_body_parts}`);
+  const bodyParts = photo.visible_body_parts || photo.body_parts || photo.visible;
+  if (bodyParts) {
+    parts.push(`Visible: ${bodyParts}`);
   }
 
   // Suggested caption from GPT tagging
-  if (photo.suggested_caption) {
-    parts.push(`Suggested caption style: ${photo.suggested_caption}`);
+  const caption = photo.suggested_caption || photo.caption || photo.suggested_message;
+  if (caption) {
+    parts.push(`Suggested caption style: ${caption}`);
+  }
+
+  // If we have almost no context, log a warning
+  if (parts.length === 0) {
+    console.warn('⚠️ No photo context found! Photo columns:', JSON.stringify(photo, null, 2));
+  } else {
+    console.log('📸 Photo context built:', parts.join('. '));
   }
 
   return parts.join('. ');
