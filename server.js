@@ -3546,11 +3546,17 @@ async function initDB() {
       user_id VARCHAR(100) NOT NULL,
       role VARCHAR(20) NOT NULL,
       content TEXT NOT NULL,
+      photo_url TEXT,
+      photo_id INTEGER,
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
-  
+
   await pool.query(`CREATE INDEX IF NOT EXISTS conv_history_user_idx ON conversation_history(user_id, created_at DESC);`).catch(() => {});
+
+  // Add photo columns if they don't exist
+  await pool.query(`ALTER TABLE conversation_history ADD COLUMN IF NOT EXISTS photo_url TEXT;`).catch(() => {});
+  await pool.query(`ALTER TABLE conversation_history ADD COLUMN IF NOT EXISTS photo_id INTEGER;`).catch(() => {});
   
 
   // 📞 Create missed_calls table
@@ -6398,13 +6404,15 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     
     history.push({ role: "assistant", content: enhancedReply });
 
-    // 💾 Store assistant reply in background (non-blocking)
+    // 💾 Store assistant reply in background (non-blocking) - include photo if sent
+    const photoUrl = photoPrep?.photo?.url || null;
+    const photoId = photoPrep?.photo?.id || null;
     setImmediate(async () => {
       try {
         await pool.query(
-          `INSERT INTO conversation_history (user_id, role, content, created_at)
-           VALUES ($1, 'assistant', $2, NOW())`,
-          [userId, enhancedReply]
+          `INSERT INTO conversation_history (user_id, role, content, photo_url, photo_id, created_at)
+           VALUES ($1, 'assistant', $2, $3, $4, NOW())`,
+          [userId, enhancedReply, photoUrl, photoId]
         );
         await cleanupOldMessages(userId);
       } catch (historyErr) {
@@ -6430,24 +6438,9 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     // Get updated relationship status
     const updatedRelationship = await getUserRelationship(userId);
 
-    // 📸 PHOTO CONTEXT STORAGE (photo was prepared BEFORE AI response)
-    // The AI already knows about the photo and referenced it in the response
+    // 📸 PHOTO LOGGING (photo data is stored with the assistant message above)
     if (photoPrep) {
-      console.log(`📸 Photo sent to ${userId}: ${photoPrep.isMilestone ? 'MILESTONE!' : photoPrep.photo.category}`);
-
-      // Store photo context in conversation history for future reference
-      const photoContext = `[SYSTEM NOTE: You sent a photo (${photoPrep.photo.category}). Photo details: ${photoPrep.photoContext}. ${photoPrep.isMilestone ? 'This was the first photo milestone!' : ''} If the user comments on it, respond naturally as if you remember what you sent.]`;
-
-      setImmediate(() => {
-        pool.query(
-          `INSERT INTO conversation_history (user_id, role, content, created_at)
-           VALUES ($1, 'system', $2, NOW())`,
-          [userId, photoContext]
-        ).catch(err => console.warn(`⚠️ Could not store photo context:`, err.message));
-      });
-
-      // Also add to in-memory history for immediate next message
-      history.push({ role: "system", content: photoContext });
+      console.log(`📸 Photo sent to ${userId}: ${photoPrep.isMilestone ? 'MILESTONE!' : photoPrep.photo.category} (${photoPrep.photo.url})`);
     }
 
     // ⚡ PERFORMANCE MONITORING
@@ -8092,12 +8085,14 @@ app.get("/api/chat-view/messages/:userId", async (req, res) => {
     const { userId } = req.params;
     const limit = parseInt(req.query.limit) || 40;
 
-    // Fetch recent conversation history
+    // Fetch recent conversation history (including photo data)
     const query = `
-      SELECT 
+      SELECT
         id::text as id,
         role,
         content,
+        photo_url,
+        photo_id,
         created_at
       FROM conversation_history
       WHERE user_id = $1
