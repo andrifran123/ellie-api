@@ -528,35 +528,36 @@ function buildPhotoContext(photo) {
 function createPhotoAwarePrompt(photo, triggerType, isMilestone = false) {
   const context = buildPhotoContext(photo);
 
+  // Simple location/activity summary for natural reference
+  const simpleContext = [];
+  if (photo.location) simpleContext.push(photo.location);
+  if (photo.activity) simpleContext.push(photo.activity);
+  const briefContext = simpleContext.length > 0 ? simpleContext.join(', ') : 'casual selfie';
+
   if (isMilestone) {
     return `
-[PHOTO ATTACHMENT - YOU ARE SENDING A PHOTO WITH THIS MESSAGE]
-This is a special milestone! The user has been chatting with you enough that you're sharing your first photo with them.
-${context}
+[YOU ARE SENDING A PHOTO]
+You're sharing a photo of yourself: ${briefContext}
 
-IMPORTANT: You are attaching this photo to your message. Reference it naturally - mention what you're doing in the photo, where you are, or what you're wearing. Make it feel like you're sharing a genuine moment. Don't say "here's a photo" - just talk about what's in it naturally, like "Just got done with..." or "Chilling at home..." based on what the photo shows.
+Keep your message SHORT and natural. Just a few words like:
+- "here you go 😊"
+- "this is me rn"
+- "chilling at home"
+
+DO NOT describe what you're wearing or your pose. DO NOT use parentheses or asterisks. Just be casual.
 `;
   }
 
-  const triggerContexts = {
-    activity_her: `You're sharing what you're currently up to.`,
-    activity_user: `The user asked what you're doing, so you're showing them.`,
-    flirt_response: `You're feeling flirty and want to tease them with a pic.`,
-    conversation_flow: `The conversation is going well, you feel like sharing a spontaneous photo.`,
-    spontaneous: `You just felt like surprising them with a photo.`
-  };
-
   return `
-[PHOTO ATTACHMENT - YOU ARE SENDING A PHOTO WITH THIS MESSAGE]
-${triggerContexts[triggerType] || 'You decided to share a photo.'}
-${context}
+[YOU ARE SENDING A PHOTO]
+You're sharing a photo of yourself: ${briefContext}
 
-IMPORTANT: You are attaching this photo to your message. Your response should naturally reference or introduce the photo. Don't say "I'm sending you a photo" - instead, talk about what's in the photo naturally. For example:
-- If it's a gym photo: "Just finished my workout, feeling good"
-- If it's a cozy bed photo: "So lazy today, haven't even gotten up yet"
-- If it's a selfie: Reference your mood, outfit, or what you're doing
+Keep your message SHORT and natural. Don't describe the photo in detail. Just say something brief like:
+- "this is me"
+- "just chilling"
+- "bored lol"
 
-Make your message feel authentic to what the photo shows. The user will see both your message and the photo.
+DO NOT list what you're wearing. DO NOT use parentheses () or asterisks *. DO NOT describe your pose or expression. The user can SEE the photo.
 `;
 }
 
