@@ -6426,6 +6426,7 @@ Before responding, check what you said earlier in this conversation. NEVER contr
 
       if (photoPrep) {
         console.log(`📸 Photo prepared for ${userId}: ${photoPrep.photo.category} (${photoPrep.triggerType})`);
+        console.log(`📸 Photo injection length: ${photoPrep.aiPromptInjection.length} chars`);
         // Inject photo context into system message so AI knows about the photo
         finalSystemMsg += photoPrep.aiPromptInjection;
       }
@@ -6439,6 +6440,17 @@ Before responding, check what you said earlier in this conversation. NEVER contr
       { role: "system", content: finalSystemMsg },  // Personality ALWAYS included (+ photo context if applicable)
       ...history.slice(-20)  // Last 20 messages (don't skip any!)
     ];
+
+    // 🎯 CRITICAL: Add photo reminder as the LAST system message (right before AI generates)
+    // This is more effective than appending to the main system message
+    if (photoPrep) {
+      const photoLocation = photoPrep.photoContext?.match(/Location: ([^(.\n]+)/)?.[1]?.trim() || 'somewhere';
+      messagesToSend.push({
+        role: "system",
+        content: `🚨 CRITICAL REMINDER: You are SENDING A PHOTO RIGHT NOW with this message! You are currently at: ${photoLocation}. Acknowledge you're sending/just sent a pic naturally. DO NOT say "there's no picture" or "what picture" - you ARE sending one! Keep response short (1-2 sentences).`
+      });
+      console.log(`📸 Added photo reminder as last system message (location: ${photoLocation})`);
+    }
 
     // 🔀 HYBRID MODEL ROUTING
     // Route to Groq (free) or Hermes 3 (NSFW) based on user tier and content
