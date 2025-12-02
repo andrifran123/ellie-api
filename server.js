@@ -154,7 +154,7 @@ const ELLIE_CARTESIA_VOICE = CARTESIA_VOICES.ariana;
 // ElevenLabs API (for expressive voice synthesis)
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_ENDPOINT = "https://api.elevenlabs.io/v1/text-to-speech";
-const ELEVENLABS_VOICE_ID = "uxKr2vlA4hYgXZR1oPRT"; // Natasha Valley Girl - young, energetic, flirty
+const ELEVENLABS_VOICE_ID = "kdmDKE6EkgrWrrykO9Qt"; // Alexandra - super realistic young female, conversational
 
 // Hume AI API (for emotional voice synthesis)
 const HUME_API_KEY = process.env.HUME_API_KEY;
