@@ -7682,38 +7682,38 @@ You are on an INTIMATE PHONE CALL. Sound aroused, breathy, and connected.
       const voiceEmotions = detectVoiceEmotion(reply);
       console.log(`[phone] 🎭 Voice emotions: ${voiceEmotions.join(', ')}`);
 
-      // 3️⃣ TTS - Voice synthesis (Hume > ElevenLabs > Cartesia > OpenAI)
+      // 3️⃣ TTS - Voice synthesis (ElevenLabs > Hume > Cartesia > OpenAI)
       try {
         let pcm16Audio;
         let ttsProvider = 'unknown';
 
-        // Try Hume first (TikTok Fashion Influencer voice)
-        if (HUME_API_KEY) {
+        // Try ElevenLabs first (primary TTS)
+        if (ELEVENLABS_API_KEY) {
           try {
-            const humeDescription = "Young woman, flirty girlfriend on an intimate phone call. Express emotions naturally based on what you're saying.";
-            console.log(`[phone] 🔊 Hume TTS - synthesizing: "${reply.substring(0, 40)}..."`);
-            pcm16Audio = await callHumeTTS_PCM16(reply, HUME_VOICE_NAME, humeDescription, 1.0);
-            ttsProvider = 'Hume';
-            console.log(`[phone] 🎵 Hume audio: ${pcm16Audio.length} bytes`);
-          } catch (humeError) {
-            console.warn('[phone] ⚠️ Hume failed:', humeError.message);
-            // Fall through to ElevenLabs
-          }
-        }
-
-        // Fallback to ElevenLabs if Hume failed
-        if (!pcm16Audio && ELEVENLABS_API_KEY) {
-          try {
-            console.log(`[phone] 🔊 ElevenLabs TTS (fallback) - synthesizing...`);
+            console.log(`[phone] 🔊 ElevenLabs TTS - synthesizing: "${reply.substring(0, 40)}..."`);
             pcm16Audio = await callElevenLabsTTS_PCM16(reply);
             ttsProvider = 'ElevenLabs';
             console.log(`[phone] 🎵 ElevenLabs audio: ${pcm16Audio.length} bytes`);
           } catch (elevenLabsError) {
             console.warn('[phone] ⚠️ ElevenLabs failed:', elevenLabsError.message);
+            // Fall through to Hume
           }
         }
 
-        // Fallback to Cartesia if Hume failed
+        // Fallback to Hume if ElevenLabs failed
+        if (!pcm16Audio && HUME_API_KEY) {
+          try {
+            const humeDescription = "Young woman, flirty girlfriend on an intimate phone call. Express emotions naturally based on what you're saying.";
+            console.log(`[phone] 🔊 Hume TTS (fallback) - synthesizing...`);
+            pcm16Audio = await callHumeTTS_PCM16(reply, HUME_VOICE_NAME, humeDescription, 1.0);
+            ttsProvider = 'Hume';
+            console.log(`[phone] 🎵 Hume audio: ${pcm16Audio.length} bytes`);
+          } catch (humeError) {
+            console.warn('[phone] ⚠️ Hume failed:', humeError.message);
+          }
+        }
+
+        // Fallback to Cartesia if both failed
         if (!pcm16Audio && CARTESIA_API_KEY) {
           try {
             console.log(`[phone] 🔊 Cartesia TTS (fallback) - synthesizing...`);
