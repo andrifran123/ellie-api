@@ -321,19 +321,35 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
  * Select a photo that matches conversation context
  * Uses GPT-tagged metadata for intelligent matching
  * Column names match actual ellie_photos Supabase table
+ * @param recentLocation - Ellie's recently stated location (for consistency)
  */
-async function selectContextualPhoto(pool, userId, criteria, relationshipLevel = 0) {
+async function selectContextualPhoto(pool, userId, criteria, relationshipLevel = 0, recentLocation = null) {
   try {
     const { categories, topics, nsfwAllowed } = criteria;
 
     const maxNsfwLevel = nsfwAllowed ?
       (categories.includes('intimate') || categories.includes('suggestive') ? 2 : 1) : 0;
 
+    // 🎯 LOCATION FILTER - If Ellie recently said she's somewhere, only get photos from compatible locations
+    let locationFilter = '';
+    let locationValues = [];
+    let locationParamStart = 5;
+
+    if (recentLocation) {
+      // Map stated location to compatible photo locations
+      const compatibleLocations = getCompatiblePhotoLocations(recentLocation);
+      if (compatibleLocations.length > 0) {
+        locationFilter = `AND (${compatibleLocations.map((_, i) => `LOWER(p.location) LIKE $${locationParamStart + i}`).join(' OR ')})`;
+        locationValues = compatibleLocations.map(loc => `%${loc}%`);
+        console.log(`📍 Filtering photos to locations compatible with "${recentLocation}": ${compatibleLocations.join(', ')}`);
+      }
+    }
+
     // Build dynamic matching conditions based on topics
     // Using actual column names: location, activity, mood, category
     let topicConditions = [];
     let topicValues = [];
-    let paramIndex = 6; // Start after base params
+    let paramIndex = 5 + locationValues.length; // Start after base params + location params
 
     if (topics && topics.length > 0) {
       for (const topic of topics) {
@@ -355,7 +371,7 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
       }
     }
 
-    // First try: Match topic-relevant photos
+    // First try: Match topic-relevant photos with location filter
     if (topicConditions.length > 0) {
       const topicQuery = `
         SELECT p.* FROM ellie_photos p
@@ -364,6 +380,7 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
         AND p.nsfw_level <= $2
         AND (p.min_relationship_level IS NULL OR p.min_relationship_level <= $3)
         AND p.id NOT IN (SELECT photo_id FROM user_photo_history WHERE user_id = $4)
+        ${locationFilter}
         AND (${topicConditions.join(' OR ')})
         ORDER BY RANDOM()
         LIMIT 1
@@ -371,7 +388,7 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
 
       const topicResult = await pool.query(
         topicQuery,
-        [categories, maxNsfwLevel, relationshipLevel, userId, ...topicValues]
+        [categories, maxNsfwLevel, relationshipLevel, userId, ...locationValues, ...topicValues]
       );
 
       if (topicResult.rows.length > 0) {
@@ -380,7 +397,7 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
       }
     }
 
-    // Second try: Any matching category (no topic filter)
+    // Second try: Any matching category with location filter
     const categoryQuery = await pool.query(
       `SELECT p.* FROM ellie_photos p
        WHERE p.is_active = true
@@ -388,16 +405,24 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
        AND p.nsfw_level <= $2
        AND (p.min_relationship_level IS NULL OR p.min_relationship_level <= $3)
        AND p.id NOT IN (SELECT photo_id FROM user_photo_history WHERE user_id = $4)
+       ${locationFilter}
        ORDER BY RANDOM()
        LIMIT 1`,
-      [categories, maxNsfwLevel, relationshipLevel, userId]
+      [categories, maxNsfwLevel, relationshipLevel, userId, ...locationValues]
     );
 
     if (categoryQuery.rows.length > 0) {
       return categoryQuery.rows[0];
     }
 
-    // Third try: Allow repeats
+    // If we have a location filter and found nothing, DON'T send a photo at all
+    // Better to not send than to break immersion with wrong location
+    if (recentLocation && locationValues.length > 0) {
+      console.log(`📍 No photos found matching location "${recentLocation}" - skipping photo to maintain consistency`);
+      return null;
+    }
+
+    // Third try: Allow repeats (only if no location constraint)
     const repeatQuery = await pool.query(
       `SELECT p.* FROM ellie_photos p
        WHERE p.is_active = true
@@ -413,7 +438,7 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
       return repeatQuery.rows[0];
     }
 
-    // Last resort: Any active photo
+    // Last resort: Any active photo (only if no location constraint)
     console.log(`⚠️ No photos found for categories ${categories}, trying any active photo`);
     const anyQuery = await pool.query(
       `SELECT p.* FROM ellie_photos p
@@ -428,6 +453,30 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
     console.error('❌ Error selecting contextual photo:', error);
     return null;
   }
+}
+
+/**
+ * Get photo location keywords compatible with a stated location
+ */
+function getCompatiblePhotoLocations(statedLocation) {
+  const loc = statedLocation.toLowerCase();
+
+  // Map stated locations to compatible photo location keywords
+  const locationMap = {
+    'home': ['bedroom', 'bathroom', 'kitchen', 'living', 'couch', 'bed', 'home', 'apartment', 'house', 'room'],
+    'bedroom': ['bedroom', 'bed', 'room'],
+    'bathroom': ['bathroom', 'shower', 'mirror'],
+    'kitchen': ['kitchen'],
+    'living room': ['living', 'couch', 'sofa'],
+    'gym': ['gym', 'fitness', 'workout'],
+    'work': ['office', 'work', 'desk'],
+    'outside': ['outside', 'park', 'street', 'outdoor', 'nature'],
+    'beach': ['beach', 'pool', 'swimsuit'],
+    'bar': ['bar', 'club', 'party'],
+    'cafe': ['cafe', 'coffee', 'restaurant'],
+  };
+
+  return locationMap[loc] || [loc];
 }
 
 /**
@@ -589,6 +638,108 @@ async function recordPhotoSent(pool, userId, photoId, context) {
 }
 
 // ============================================================
+// LOCATION CONSISTENCY CHECK
+// ============================================================
+
+/**
+ * Extract Ellie's recently stated location from conversation history
+ * Returns null if no recent location mentioned, or the location string
+ */
+async function getRecentStatedLocation(pool, userId) {
+  try {
+    // Get Ellie's messages from the last 30 minutes
+    const { rows } = await pool.query(
+      `SELECT content FROM conversation_history
+       WHERE user_id = $1
+       AND role = 'assistant'
+       AND created_at > NOW() - INTERVAL '30 minutes'
+       ORDER BY created_at DESC
+       LIMIT 10`,
+      [userId]
+    );
+
+    if (!rows.length) return null;
+
+    // Location keywords to search for
+    const locationPatterns = [
+      { pattern: /\b(at home|at my place|in my apartment|in my room|my place)\b/i, location: 'home' },
+      { pattern: /\b(at the gym|at gym|working out|at the fitness)\b/i, location: 'gym' },
+      { pattern: /\b(at work|at the office|in the office)\b/i, location: 'work' },
+      { pattern: /\b(in bed|in my bed|lying in bed)\b/i, location: 'bedroom' },
+      { pattern: /\b(in the bathroom|in my bathroom|taking a shower|in the shower)\b/i, location: 'bathroom' },
+      { pattern: /\b(at a cafe|at the cafe|coffee shop|at starbucks)\b/i, location: 'cafe' },
+      { pattern: /\b(outside|at the park|walking|on a walk)\b/i, location: 'outside' },
+      { pattern: /\b(at a bar|at the bar|at a club|clubbing)\b/i, location: 'bar' },
+      { pattern: /\b(at the beach|on the beach)\b/i, location: 'beach' },
+      { pattern: /\b(in the kitchen|cooking|making food)\b/i, location: 'kitchen' },
+      { pattern: /\b(in the living room|on the couch|watching tv)\b/i, location: 'living room' },
+      { pattern: /\b(just woke up|waking up|still in bed)\b/i, location: 'bedroom' },
+    ];
+
+    // Check recent messages for location mentions
+    for (const row of rows) {
+      const content = row.content.toLowerCase();
+      for (const { pattern, location } of locationPatterns) {
+        if (pattern.test(content)) {
+          console.log(`📍 Found recent stated location: "${location}" in message: "${content.substring(0, 50)}..."`);
+          return location;
+        }
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error('❌ Error checking recent location:', error);
+    return null;
+  }
+}
+
+/**
+ * Map photo locations to standardized location names
+ */
+function normalizePhotoLocation(photoLocation) {
+  if (!photoLocation) return null;
+  const loc = photoLocation.toLowerCase();
+
+  if (loc.includes('gym') || loc.includes('fitness')) return 'gym';
+  if (loc.includes('bedroom') || loc.includes('bed')) return 'bedroom';
+  if (loc.includes('bathroom') || loc.includes('shower')) return 'bathroom';
+  if (loc.includes('kitchen')) return 'kitchen';
+  if (loc.includes('living') || loc.includes('couch')) return 'living room';
+  if (loc.includes('office') || loc.includes('work')) return 'work';
+  if (loc.includes('outside') || loc.includes('park') || loc.includes('street')) return 'outside';
+  if (loc.includes('beach')) return 'beach';
+  if (loc.includes('bar') || loc.includes('club')) return 'bar';
+  if (loc.includes('cafe') || loc.includes('coffee')) return 'cafe';
+  if (loc.includes('home') || loc.includes('apartment') || loc.includes('house')) return 'home';
+
+  return loc; // Return as-is if no match
+}
+
+/**
+ * Check if photo location is compatible with stated location
+ */
+function isLocationCompatible(photoLocation, statedLocation) {
+  if (!statedLocation || !photoLocation) return true; // No constraint
+
+  const normalizedPhoto = normalizePhotoLocation(photoLocation);
+  const normalizedStated = statedLocation.toLowerCase();
+
+  // Direct match
+  if (normalizedPhoto === normalizedStated) return true;
+
+  // Home includes bedroom, living room, kitchen, bathroom
+  if (normalizedStated === 'home' && ['bedroom', 'living room', 'kitchen', 'bathroom'].includes(normalizedPhoto)) {
+    return true;
+  }
+
+  // Bedroom is compatible with "just woke up" / home context
+  if (normalizedStated === 'bedroom' && normalizedPhoto === 'home') return true;
+
+  return false;
+}
+
+// ============================================================
 // MAIN ENTRY POINT - Called BEFORE AI generates response
 // ============================================================
 
@@ -606,11 +757,17 @@ async function preparePhotoForMessage(pool, userId, conversationContext) {
 
     console.log(`📸 Photo trigger for user ${userId}: ${decision.triggerType || decision.reason}`);
 
+    // 🎯 CHECK LOCATION CONSISTENCY - Don't send gym photo if she just said she's at home
+    const recentLocation = await getRecentStatedLocation(pool, userId);
+    if (recentLocation) {
+      console.log(`📍 Ellie recently stated she's at: ${recentLocation}`);
+    }
+
     const relationshipLevel = conversationContext.relationship?.relationship_level || 0;
     const relationshipStage = conversationContext.relationship?.current_stage || 'STRANGER';
 
-    // Select contextually appropriate photo
-    const photo = await selectContextualPhoto(pool, userId, decision, relationshipLevel);
+    // Select contextually appropriate photo (with location filter if needed)
+    let photo = await selectContextualPhoto(pool, userId, decision, relationshipLevel, recentLocation);
 
     if (!photo) {
       console.log(`⚠️ No suitable photo found for user ${userId}`);
