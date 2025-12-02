@@ -5259,7 +5259,8 @@ app.get("/api/auth/terms", (req, res) => {
 
 app.post("/api/auth/signup", async (req, res) => {
   try {
-    const name = String(req.body?.name || "").trim();
+    // Name is now optional - collected after language selection in chat
+    const name = req.body?.name ? String(req.body.name).trim() : null;
     const email = String(req.body?.email || "").toLowerCase().trim();
     const password = String(req.body?.password || "").trim();
     const acceptedTerms = Boolean(req.body?.acceptedTerms);
@@ -5267,7 +5268,6 @@ app.post("/api/auth/signup", async (req, res) => {
     if (!acceptedTerms) {
       return res.status(400).json({ ok: false, message: "You must accept the terms and disclaimer to create an account." });
     }
-    if (!name)  return res.status(400).json({ ok: false, message: "Missing name." });
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
       return res.status(400).json({ ok: false, message: "Enter a valid email." });
     }
