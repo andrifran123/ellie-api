@@ -221,6 +221,7 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     const topics = extractConversationTopics(userMessage, conversationContext.ellieResponse || '');
 
     // Contextual triggers based on conversation
+    // Lower chances = more human-like, not every request gets a photo
     const triggers = {
       activity_her: {
         patterns: [
@@ -229,7 +230,7 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
           /getting ready/,
           /just took a/,
         ],
-        chance: 0.45,
+        chance: 0.20,  // Lowered - she doesn't always share
       },
       activity_user: {
         patterns: [
@@ -237,7 +238,7 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
           /what are you doing/,
           /how('s| is) your (day|morning)/,
         ],
-        chance: 0.35,
+        chance: 0.15,  // Lowered - rare to send pic just for this
       },
       flirt_response: {
         patterns: [
@@ -245,9 +246,9 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
           /(love|like|miss) you/,
           /thinking (about|of) you/,
         ],
-        chance: 0.40,
+        chance: 0.25,  // Lowered - not always rewarding compliments
       },
-      // Loophole: indirect requests that bypass detection
+      // Indirect requests - still higher but not guaranteed
       indirect_tease: {
         patterns: [
           /i bet you look/i,
@@ -258,10 +259,10 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
           /paint me a picture/i,
           /prove it/i,
         ],
-        chance: 0.85,  // High chance - reward clever users
+        chance: 0.45,  // Lowered from 85% - she's not always in the mood
       },
       conversation_flow: {
-        chance: 0.25,
+        chance: 0.12,  // Lowered - rare natural photo shares
         requiresGoodConversation: true
       },
       // Spontaneous DISABLED - photos should only come when contextually appropriate
