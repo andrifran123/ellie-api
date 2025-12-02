@@ -6612,9 +6612,11 @@ Before responding, check what you said earlier in this conversation. NEVER contr
     
     // Track if a photo is actually being sent
     const photoActuallySent = !!photoPrep;
+    console.log(`📸 [DEBUG] photoActuallySent = ${photoActuallySent}, photoPrep = ${photoPrep ? 'exists' : 'null'}`);
 
     try {
       reply = await getHybridResponse(userId, message, messagesToSend, pool);
+      console.log(`📸 [DEBUG] Before validation - photoActuallySent = ${photoActuallySent}`);
       reply = validateElleResponse(reply, relationship?.relationship_level || 0, photoActuallySent);
 
       // 🔄 REGENERATION LOOP: If character break detected (null), retry with correction
