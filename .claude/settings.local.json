@@ -16,7 +16,9 @@
       "Bash(node scripts/create-new-user.js:*)",
       "Bash(git checkout:*)",
       "Bash(git pull:*)",
-      "Bash(node scripts/check-photo-categories.js:*)"
+      "Bash(node scripts/check-photo-categories.js:*)",
+      "Bash(node scripts/check-user.js:*)",
+      "Bash(node scripts/find-user.js:*)"
     ],
     "deny": [],
     "ask": []

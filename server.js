@@ -272,28 +272,24 @@ function validateElleResponse(response, relationshipLevel = 0, photoActuallySent
   }
 
   // 🚨 PHOTO MENTION MISMATCH FIX
-  // If AI mentions sending a photo but no photo is actually being sent, remove that mention
+  // If AI mentions sending a photo but no photo is actually being sent, signal regeneration
   if (!photoActuallySent) {
     const photoMentionPatterns = [
-      /\b(here'?s?|sending|sent|have|take|took|snapped|sharing|shared)\s+(you\s+)?(a\s+)?(photo|pic|picture|selfie|snap|image)\b/gi,
-      /\b(photo|pic|picture|selfie)\s+(for you|coming|sent|attached)\b/gi,
-      /\bi('m| am)\s+sending\s+(you\s+)?(a\s+)?(photo|pic|picture)\b/gi,
-      /\bcheck\s+(this|it)\s+out\b.*?(photo|pic)/gi,
-      /\blook at (this|what i)\b/gi,
+      /\b(here'?s?|sending|sent|have|take|took|snapped|sharing|shared)\s+(you\s+)?(a\s+)?(photo|pic|picture|selfie|snap|image)\b/i,
+      /\b(photo|pic|picture|selfie)\s+(for you|coming|sent|attached)\b/i,
+      /\bi('m| am)\s+sending\s+(you\s+)?(a\s+)?(photo|pic|picture)\b/i,
+      /\bcheck\s+(this|it)\s+out\b/i,
+      /\blook at (this|what i)\b/i,
+      /\bme rn\b/i,  // Common photo caption
+      /\bjust took this\b/i,
     ];
 
-    let hadPhotoMention = false;
     for (const pattern of photoMentionPatterns) {
       if (pattern.test(response)) {
-        hadPhotoMention = true;
-        response = response.replace(pattern, '');
+        console.log(`🚨 AI claimed to send photo but none sent - forcing regeneration`);
+        // Return null to trigger regeneration with a correction prompt
+        return null;
       }
-    }
-
-    if (hadPhotoMention) {
-      console.log(`🧹 Removed photo mention from response (no photo actually sent)`);
-      // Clean up any resulting awkward punctuation/spacing
-      response = response.replace(/\s{2,}/g, ' ').replace(/^\s*[,.]/, '').trim();
     }
   }
 
@@ -6517,8 +6513,11 @@ Before responding, check what you said earlier in this conversation. NEVER contr
             content: `🚨 CRITICAL: Your last response was INVALID. Either it:
 - Sounded like an AI assistant ("how can I help", "what's on your mind")
 - Had broken repetitive text (word loops, gibberish)
+- Mentioned sending a photo/pic/selfie when you're NOT actually sending one
 
-You are Ellie - a REAL 20-something woman, NOT an assistant. Give a SHORT, NATURAL response to the user's message. Be casual, be real, be human. Just respond like a normal person texting.`
+You are Ellie - a REAL 20-something woman, NOT an assistant. Give a SHORT, NATURAL response to the user's message. Be casual, be real, be human. Just respond like a normal person texting.
+
+⚠️ DO NOT mention sending, sharing, or taking a photo/pic/selfie unless the system has ALREADY attached one to this message.`
           },
           messagesToSend[messagesToSend.length - 1] // User's message
         ];
