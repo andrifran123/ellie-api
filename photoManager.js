@@ -130,6 +130,106 @@ function generatePhotoRequestRefusal(relationshipStage, messagesCount) {
 // PHOTO DECISION LOGIC - When should a photo be sent?
 // ============================================================
 
+// 🔥 SPECIAL OVERRIDE PHOTO - Sent once per user when they ask for more after receiving a photo
+const SPECIAL_FOLLOWUP_PHOTO = '00132-3121187385.png';
+
+/**
+ * Check if user should receive the special followup photo
+ * Conditions:
+ * 1. User received a photo in the last few messages
+ * 2. User is asking for another photo OR asking her to undress/show more
+ * 3. User has NOT received this special photo before
+ */
+async function checkSpecialFollowupPhoto(pool, userId, userMessage, conversationContext) {
+  try {
+    const msg = userMessage.toLowerCase();
+
+    // Patterns for "asking for more" or "asking to undress"
+    const followupPatterns = [
+      /\b(another|more|one more|next|again)\b.*\b(pic|photo|picture|selfie|one)\b/i,
+      /\b(pic|photo|picture|selfie)\b.*\b(another|more|one more|next|again)\b/i,
+      /\b(send|show|take)\b.*\b(another|more|one more)\b/i,
+      /\b(take|show)\b.*\b(off|clothes|shirt|top|bra|pants)\b/i,
+      /\b(undress|strip|remove)\b/i,
+      /\b(more|less)\b.*\b(clothes|clothing)\b/i,
+      /\b(see|show)\b.*\b(more|body)\b/i,
+      /\bshow\s+me\s+more\b/i,
+      /\bcan\s+i\s+(see|get)\s+(more|another)\b/i,
+      /\btake\s+(it|that|something)\s+off\b/i,
+      /\bwhat('s| is)\s+under(neath)?\b/i,
+      /\bnext\s+(one|pic|photo)\b/i,
+      /\bkeep\s+(going|them\s+coming)\b/i,
+    ];
+
+    const isAskingForMore = followupPatterns.some(pattern => pattern.test(msg));
+
+    if (!isAskingForMore) {
+      return { shouldSend: false, reason: 'not_asking_for_more' };
+    }
+
+    console.log(`🔥 User asking for more photos detected: "${msg.substring(0, 50)}..."`);
+
+    // Check if user recently received a photo (within last 5 messages or 1 hour)
+    const recentPhoto = await pool.query(
+      `SELECT sent_at FROM user_photo_history
+       WHERE user_id = $1
+       ORDER BY sent_at DESC LIMIT 1`,
+      [userId]
+    );
+
+    if (recentPhoto.rows.length === 0) {
+      console.log(`📸 User hasn't received any photos yet - not eligible for followup special`);
+      return { shouldSend: false, reason: 'no_previous_photo' };
+    }
+
+    const lastPhotoTime = new Date(recentPhoto.rows[0].sent_at);
+    const hoursSincePhoto = (Date.now() - lastPhotoTime) / (1000 * 60 * 60);
+
+    if (hoursSincePhoto > 1) {
+      console.log(`📸 Last photo was ${hoursSincePhoto.toFixed(1)} hours ago - too long for followup special`);
+      return { shouldSend: false, reason: 'photo_too_old' };
+    }
+
+    // Check if they've already received the special followup photo
+    const specialPhotoCheck = await pool.query(
+      `SELECT uph.* FROM user_photo_history uph
+       JOIN ellie_photos ep ON uph.photo_id = ep.id
+       WHERE uph.user_id = $1 AND ep.url LIKE $2`,
+      [userId, `%${SPECIAL_FOLLOWUP_PHOTO}%`]
+    );
+
+    if (specialPhotoCheck.rows.length > 0) {
+      console.log(`📸 User already received special followup photo - returning to normal flow`);
+      return { shouldSend: false, reason: 'special_already_sent' };
+    }
+
+    // Find the special photo in the database
+    const specialPhoto = await pool.query(
+      `SELECT * FROM ellie_photos WHERE url LIKE $1 AND is_active = true`,
+      [`%${SPECIAL_FOLLOWUP_PHOTO}%`]
+    );
+
+    if (specialPhoto.rows.length === 0) {
+      console.error(`❌ Special followup photo ${SPECIAL_FOLLOWUP_PHOTO} not found in database!`);
+      return { shouldSend: false, reason: 'special_photo_not_found' };
+    }
+
+    console.log(`🔥 SPECIAL FOLLOWUP: User eligible for special photo ${SPECIAL_FOLLOWUP_PHOTO}`);
+
+    return {
+      shouldSend: true,
+      reason: 'special_followup',
+      triggerType: 'special_followup',
+      specialPhoto: specialPhoto.rows[0],
+      isSpecialOverride: true
+    };
+
+  } catch (error) {
+    console.error('❌ Error checking special followup photo:', error);
+    return { shouldSend: false, reason: 'error' };
+  }
+}
+
 /**
  * Check for stranger milestone (after ~15 messages = first photo as progression teaser)
  * Triggers once user passes 15 messages and hasn't received a photo yet
@@ -180,9 +280,17 @@ async function checkStrangerMilestone(pool, userId, relationship) {
 async function shouldSendPhoto(pool, userId, conversationContext) {
   try {
     const relationship = conversationContext.relationship;
-    const userMessage = conversationContext.userMessage?.toLowerCase() || '';
+    const userMessage = conversationContext.userMessage || '';
 
     console.log(`📸 [DEBUG] shouldSendPhoto called for ${userId}: stage=${relationship?.current_stage}, msgs=${relationship?.total_interactions}`);
+
+    // 🔥 PRIORITY 0: Special followup photo override - user asking for more after receiving a photo
+    // This bypasses ALL other checks including daily limits
+    const specialFollowup = await checkSpecialFollowupPhoto(pool, userId, userMessage, conversationContext);
+    if (specialFollowup.shouldSend) {
+      console.log(`🔥 SPECIAL OVERRIDE: Sending special followup photo to user ${userId}`);
+      return specialFollowup;
+    }
 
     // PRIORITY 1: Check stranger milestone
     const milestone = await checkStrangerMilestone(pool, userId, relationship);
@@ -192,7 +300,7 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     }
 
     // IGNORE DIRECT REQUESTS (handled with refusals)
-    if (detectPhotoRequest(userMessage)) {
+    if (detectPhotoRequest(userMessage.toLowerCase())) {
       return { shouldSend: false, reason: 'direct_request_ignored' };
     }
 
@@ -879,17 +987,24 @@ async function preparePhotoForMessage(pool, userId, conversationContext) {
 
     console.log(`📸 Photo trigger for user ${userId}: ${decision.triggerType || decision.reason}`);
 
-    // 🎯 CHECK LOCATION CONSISTENCY - Don't send gym photo if she just said she's at home
-    const recentLocation = await getRecentStatedLocation(pool, userId);
-    if (recentLocation) {
-      console.log(`📍 Ellie recently stated she's at: ${recentLocation}`);
+    let photo;
+
+    // 🔥 SPECIAL OVERRIDE: Use the pre-selected special photo
+    if (decision.isSpecialOverride && decision.specialPhoto) {
+      photo = decision.specialPhoto;
+      console.log(`🔥 Using SPECIAL OVERRIDE photo: ${photo.url}`);
+    } else {
+      // 🎯 CHECK LOCATION CONSISTENCY - Don't send gym photo if she just said she's at home
+      const recentLocation = await getRecentStatedLocation(pool, userId);
+      if (recentLocation) {
+        console.log(`📍 Ellie recently stated she's at: ${recentLocation}`);
+      }
+
+      const relationshipLevel = conversationContext.relationship?.relationship_level || 0;
+
+      // Select contextually appropriate photo (with location filter if needed)
+      photo = await selectContextualPhoto(pool, userId, decision, relationshipLevel, recentLocation);
     }
-
-    const relationshipLevel = conversationContext.relationship?.relationship_level || 0;
-    const relationshipStage = conversationContext.relationship?.current_stage || 'STRANGER';
-
-    // Select contextually appropriate photo (with location filter if needed)
-    let photo = await selectContextualPhoto(pool, userId, decision, relationshipLevel, recentLocation);
 
     if (!photo) {
       console.log(`⚠️ No suitable photo found for user ${userId}`);
@@ -901,12 +1016,39 @@ async function preparePhotoForMessage(pool, userId, conversationContext) {
 
     console.log(`✅ Prepared photo ${photo.id} (${photo.category}, nsfw:${photo.nsfw_level}) for user ${userId}`);
 
-    // Create prompt injection for AI
-    const aiPromptInjection = createPhotoAwarePrompt(
-      photo,
-      decision.triggerType || 'spontaneous',
-      decision.isMilestone || false
-    );
+    // 🔥 Special followup gets a simple AI prompt - just "how's this one" type response
+    let aiPromptInjection;
+    if (decision.isSpecialOverride) {
+      aiPromptInjection = `
+═══════════════════════════════════════════════════════════════
+📸 SPECIAL PHOTO - You're sending a follow-up photo they requested
+═══════════════════════════════════════════════════════════════
+
+The user asked for another photo or asked you to show more. You're sending them this one.
+
+⚠️ Keep your response VERY SHORT and natural:
+- "how's this one?"
+- "better? 😏"
+- "what do you think?"
+- "there you go"
+- "happy now? 😊"
+
+❌ DO NOT:
+- Describe the photo
+- Make it awkward
+- Say "here's another" or "sending another"
+
+Just a SHORT, natural response. 1-3 words is perfect.
+═══════════════════════════════════════════════════════════════
+`;
+    } else {
+      // Normal photo prompt
+      aiPromptInjection = createPhotoAwarePrompt(
+        photo,
+        decision.triggerType || 'spontaneous',
+        decision.isMilestone || false
+      );
+    }
 
     return {
       photo: {
@@ -923,6 +1065,7 @@ async function preparePhotoForMessage(pool, userId, conversationContext) {
       aiPromptInjection: aiPromptInjection,
       triggerType: decision.triggerType || decision.reason,
       isMilestone: decision.isMilestone || false,
+      isSpecialOverride: decision.isSpecialOverride || false,
       photoContext: buildPhotoContext(photo)
     };
 

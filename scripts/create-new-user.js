@@ -22,9 +22,9 @@ const pgConfig = {
 const pool = new Pool(pgConfig);
 
 async function createUser() {
-  // Generate unique email with timestamp
-  const timestamp = Date.now();
-  const testEmail = `testuser_${timestamp}@tension.test`;
+  // Generate simple email with short random suffix
+  const suffix = Math.floor(Math.random() * 1000);
+  const testEmail = `test${suffix}@t.co`;
   const testPassword = 'TestPassword123!';
   const userId = crypto.randomUUID();
   const passwordHash = await bcrypt.hash(testPassword, 10);
