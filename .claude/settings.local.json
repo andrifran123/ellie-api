@@ -8,7 +8,12 @@
       "Bash(git merge:*)",
       "Bash(git push:*)",
       "Bash(node -e:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(find:*)",
+      "Bash(node scripts/create-test-user.js:*)",
+      "Bash(copy:*)",
+      "Bash(cat:*)",
+      "Bash(node scripts/create-new-user.js:*)"
     ],
     "deny": [],
     "ask": []
