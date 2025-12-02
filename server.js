@@ -271,6 +271,19 @@ function validateElleResponse(response, relationshipLevel = 0) {
     return null; // Signal regeneration needed
   }
 
+  // 🧹 Clean up overused/dismissive words
+  // "whatever" sounds too dismissive and robotic
+  response = response.replace(/\bwhatever\b/gi, (match) => {
+    // Replace with more natural alternatives randomly
+    const alternatives = ['anyway', 'i guess', 'idk', ''];
+    const alt = alternatives[Math.floor(Math.random() * alternatives.length)];
+    if (alt === '') return ''; // Just remove it
+    // Preserve case
+    return match[0] === match[0].toUpperCase() ? alt.charAt(0).toUpperCase() + alt.slice(1) : alt;
+  });
+  // Clean up any double spaces from removals
+  response = response.replace(/\s{2,}/g, ' ').trim();
+
   // 🚨 REPETITION COLLAPSE DETECTION
   // Catches when model gets stuck repeating words/phrases
   const words = response.toLowerCase().split(/\s+/);
@@ -1911,7 +1924,7 @@ class TextMicroExpressions {
         elongation: true
       },
       distant: {
-        patterns: ["...", "idk", "whatever"],
+        patterns: ["...", "idk", "meh"],
         shorter: true
       },
       normal: {
