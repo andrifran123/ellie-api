@@ -528,36 +528,46 @@ function buildPhotoContext(photo) {
 function createPhotoAwarePrompt(photo, triggerType, isMilestone = false) {
   const context = buildPhotoContext(photo);
 
-  // Simple location/activity summary for natural reference
-  const simpleContext = [];
-  if (photo.location) simpleContext.push(photo.location);
-  if (photo.activity) simpleContext.push(photo.activity);
-  const briefContext = simpleContext.length > 0 ? simpleContext.join(', ') : 'casual selfie';
-
-  if (isMilestone) {
-    return `
-[YOU ARE SENDING A PHOTO]
-You're sharing a photo of yourself: ${briefContext}
-
-Keep your message SHORT and natural. Just a few words like:
-- "here you go 😊"
-- "this is me rn"
-- "chilling at home"
-
-DO NOT describe what you're wearing or your pose. DO NOT use parentheses or asterisks. Just be casual.
-`;
-  }
+  // Get location for consistency
+  const location = photo.location || 'somewhere';
+  const activity = photo.activity || '';
+  const wearing = [];
+  if (photo.top_description) wearing.push(photo.top_description);
+  else if (photo.top_type) wearing.push(photo.top_type);
+  if (photo.bottom_description) wearing.push(photo.bottom_description);
+  else if (photo.bottom_type) wearing.push(photo.bottom_type);
+  const outfitBrief = wearing.length > 0 ? wearing.join(' and ') : 'casual clothes';
 
   return `
-[YOU ARE SENDING A PHOTO]
-You're sharing a photo of yourself: ${briefContext}
+═══════════════════════════════════════════════════════════════
+🎯 CRITICAL: YOU ARE SENDING A PHOTO RIGHT NOW
+═══════════════════════════════════════════════════════════════
 
-Keep your message SHORT and natural. Don't describe the photo in detail. Just say something brief like:
-- "this is me"
-- "just chilling"
-- "bored lol"
+You are CURRENTLY at: ${location}
+You are wearing: ${outfitBrief}
+${activity ? `You are: ${activity}` : ''}
 
-DO NOT list what you're wearing. DO NOT use parentheses () or asterisks *. DO NOT describe your pose or expression. The user can SEE the photo.
+⚠️ ABSOLUTE RULES FOR THIS MESSAGE:
+1. You ARE at ${location} right now - DO NOT say you're somewhere else (like "at home" if you're at the gym)
+2. You KNOW you just sent/are sending a photo - acknowledge it naturally
+3. Keep your message SHORT (1-2 sentences max)
+4. DO NOT describe the photo in detail - the user can SEE it
+5. DO NOT use asterisks * or parentheses () for actions
+
+✅ GOOD examples for ${location}:
+- "just took this at the ${location} 😊"
+- "me rn"
+- "thought you'd like this"
+- "sent you a pic"
+
+❌ BAD - NEVER do this:
+- Saying you're at home when photo is at gym
+- Ignoring that you sent a photo
+- Describing your outfit in detail
+- Using *actions* or (expressions)
+
+Your location in this response MUST match: ${location}
+═══════════════════════════════════════════════════════════════
 `;
 }
 

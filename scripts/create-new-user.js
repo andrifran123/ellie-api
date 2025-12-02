@@ -31,24 +31,22 @@ async function createUser() {
 
   console.log('🔧 Creating NEW user...');
 
+  // Create user with NO name, NO onboarding data - fresh start
   await pool.query(`
     INSERT INTO users (email, password_hash, paid, user_id, terms_accepted_at, updated_at)
     VALUES ($1, $2, TRUE, $3, NOW(), NOW())
   `, [testEmail, passwordHash, userId]);
 
+  // Set relationship level to FRIEND_TENSION (22) but no onboarding facts
   await pool.query(`
     INSERT INTO user_relationships (user_id, relationship_level, current_stage, last_interaction, total_interactions, streak_days, longest_streak, last_mood, emotional_investment, created_at, updated_at)
-    VALUES ($1, 22, 'FRIEND_TENSION', NOW(), 50, 5, 5, 'normal', 0.3, NOW(), NOW())
+    VALUES ($1, 22, 'FRIEND_TENSION', NOW(), 0, 0, 0, 'normal', 0, NOW(), NOW())
   `, [userId]);
 
-  // Pre-populate onboarding facts so user skips onboarding flow
-  await pool.query(`
-    INSERT INTO facts (user_id, category, fact, confidence, created_at, updated_at)
-    VALUES
-      ($1, 'language', 'en', 1.0, NOW(), NOW()),
-      ($1, 'user_name', 'Test User', 1.0, NOW(), NOW()),
-      ($1, 'seen_chat_disclaimer', 'true', 1.0, NOW(), NOW())
-  `, [userId]);
+  // NO facts pre-populated - user will go through full onboarding:
+  // 1. Select language
+  // 2. Enter name
+  // 3. See disclaimer
 
   console.log('');
   console.log('========================================');
