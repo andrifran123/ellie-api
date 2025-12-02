@@ -264,11 +264,37 @@ function filterAllActions(text) {
 }
 
 // Add this NEW function after line 170
-function validateElleResponse(response, relationshipLevel = 0) {
+function validateElleResponse(response, relationshipLevel = 0, photoActuallySent = false) {
   // 🚨 CRITICAL: Check for empty or whitespace-only responses FIRST
   if (!response || response.trim().length === 0) {
     console.error(`⚠️ Empty response detected - regeneration needed`);
     return null; // Signal regeneration needed
+  }
+
+  // 🚨 PHOTO MENTION MISMATCH FIX
+  // If AI mentions sending a photo but no photo is actually being sent, remove that mention
+  if (!photoActuallySent) {
+    const photoMentionPatterns = [
+      /\b(here'?s?|sending|sent|have|take|took|snapped|sharing|shared)\s+(you\s+)?(a\s+)?(photo|pic|picture|selfie|snap|image)\b/gi,
+      /\b(photo|pic|picture|selfie)\s+(for you|coming|sent|attached)\b/gi,
+      /\bi('m| am)\s+sending\s+(you\s+)?(a\s+)?(photo|pic|picture)\b/gi,
+      /\bcheck\s+(this|it)\s+out\b.*?(photo|pic)/gi,
+      /\blook at (this|what i)\b/gi,
+    ];
+
+    let hadPhotoMention = false;
+    for (const pattern of photoMentionPatterns) {
+      if (pattern.test(response)) {
+        hadPhotoMention = true;
+        response = response.replace(pattern, '');
+      }
+    }
+
+    if (hadPhotoMention) {
+      console.log(`🧹 Removed photo mention from response (no photo actually sent)`);
+      // Clean up any resulting awkward punctuation/spacing
+      response = response.replace(/\s{2,}/g, ' ').replace(/^\s*[,.]/, '').trim();
+    }
   }
 
   // 🧹 Clean up overused/dismissive words
@@ -6471,15 +6497,18 @@ Before responding, check what you said earlier in this conversation. NEVER contr
     let retryCount = 0;
     const MAX_RETRIES = 2;
     
+    // Track if a photo is actually being sent
+    const photoActuallySent = !!photoPrep;
+
     try {
       reply = await getHybridResponse(userId, message, messagesToSend, pool);
-      reply = validateElleResponse(reply, relationship?.relationship_level || 0);
-      
+      reply = validateElleResponse(reply, relationship?.relationship_level || 0, photoActuallySent);
+
       // 🔄 REGENERATION LOOP: If character break detected (null), retry with correction
       while (reply === null && retryCount < MAX_RETRIES) {
         retryCount++;
         console.log(`🔄 Character break detected, attempt ${retryCount}/${MAX_RETRIES} to regenerate...`);
-        
+
         // Add correction instruction to messages
         const correctionMessages = [
           ...messagesToSend.slice(0, -1), // All messages except last
@@ -6493,10 +6522,10 @@ You are Ellie - a REAL 20-something woman, NOT an assistant. Give a SHORT, NATUR
           },
           messagesToSend[messagesToSend.length - 1] // User's message
         ];
-        
+
         // Try again with correction
         reply = await getHybridResponse(userId, message, correctionMessages, pool);
-        reply = validateElleResponse(reply, relationship?.relationship_level || 0);
+        reply = validateElleResponse(reply, relationship?.relationship_level || 0, photoActuallySent);
       }
       
       // If still null after retries, use minimal fallback
