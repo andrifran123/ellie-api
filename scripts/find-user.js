@@ -20,7 +20,7 @@ const pgConfig = {
 const pool = new Pool(pgConfig);
 
 async function findUser() {
-  const email = 'agustomontana@gmail.com';
+  const email = process.argv[2] || 'agustomontana@gmail.com';
 
   console.log('Searching for:', email);
   console.log('');

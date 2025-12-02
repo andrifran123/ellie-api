@@ -1492,6 +1492,8 @@ function detectNSFWContext(messages, lookbackCount = 4) {
 // 🆕 DETECT LLAMA REFUSAL - Catches when Llama refuses to engage
 // If Llama outputs a refusal, we automatically retry with Euryale 70B
 function detectLlamaRefusal(response) {
+  if (!response || typeof response !== 'string') return true; // Treat null/undefined as a refusal
+
   const refusalPhrases = [
     "i can't engage in explicit conversations",
     "i cannot engage in explicit",
@@ -1523,6 +1525,8 @@ function detectLlamaRefusal(response) {
 
 // 🆕 DETECT EURYALE REFUSAL - Catches when Euryale breaks character
 function detectEuryaleRefusal(response) {
+  if (!response || typeof response !== 'string') return true; // Treat null/undefined as a refusal
+
   const refusalPhrases = [
     "i can't help",
     "i cant help",
@@ -1553,6 +1557,8 @@ function detectEuryaleRefusal(response) {
 // 🛡️ MASTER CHARACTER BREAK DETECTION - Final safety net before ANY response goes to user
 // This catches ALL character breaks from ANY model
 function detectCharacterBreak(response) {
+  if (!response || typeof response !== 'string') return true; // Treat null/undefined as a break
+
   const characterBreakPhrases = [
     // AI identity reveals
     "i'm an ai",
