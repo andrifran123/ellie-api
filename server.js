@@ -373,6 +373,7 @@ function validateElleResponse(response, relationshipLevel = 0, photoActuallySent
 
   // 🚨 PHOTO MENTION MISMATCH FIX
   // If AI mentions sending a photo but no photo is actually being sent, signal regeneration
+  console.log(`📸 [VALIDATE] photoActuallySent = ${photoActuallySent}`);
   if (!photoActuallySent) {
     const photoMentionPatterns = [
       /\b(here'?s?|sending|sent|have|take|took|snapped|sharing|shared)\s+(you\s+)?(a\s+)?(photo|pic|picture|selfie|snap|image)\b/i,
