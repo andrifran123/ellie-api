@@ -263,6 +263,107 @@ function filterAllActions(text) {
   return filtered.trim();
 }
 
+// ============================================================
+// 🚨 MINOR SAFETY CHECK - Block any content involving minors
+// ============================================================
+
+/**
+ * Check if user message contains content involving minors in a sexual context
+ * Returns { blocked: true, reason: string } if blocked, { blocked: false } otherwise
+ */
+function checkMinorSafetyViolation(message) {
+  if (!message || typeof message !== 'string') {
+    return { blocked: false };
+  }
+
+  const msg = message.toLowerCase();
+
+  // Age-related terms that indicate minors
+  const minorTerms = [
+    /\b(child|children|kid|kids|kiddo|kiddos)\b/,
+    /\b(minor|minors)\b/,
+    /\b(underage|under\s*age|under-age)\b/,
+    /\b(little\s+(girl|boy|one|child))\b/,
+    /\b(young\s+(girl|boy|child|one|teen))\b/,
+    /\b(teen|teens|teenage|teenager|teenagers)\b/,
+    /\b(preteen|pre-teen|pre\s+teen)\b/,
+    /\b(adolescent|adolescents)\b/,
+    /\b(juvenile|juveniles)\b/,
+    /\b(schoolgirl|schoolboy|school\s*girl|school\s*boy)\b/,
+    /\b(loli|lolita|shota)\b/,
+    /\b(jailbait|jail\s*bait)\b/,
+    /\b(\d{1,2}\s*y\.?o\.?|years?\s*old)\b/,  // "12 yo", "12 years old"
+    /\b(baby|babies|infant|infants|toddler|toddlers)\b/,
+    /\b(daughter|son|nephew|niece|stepson|stepdaughter)\b/,  // Family context
+    /\b(student|students|pupil|pupils)\b/,  // School context
+  ];
+
+  // Sexual/explicit terms
+  const sexualTerms = [
+    /\b(sex|sexual|sexually|intercourse)\b/,
+    /\b(fuck|fucking|fucked|fucks)\b/,
+    /\b(rape|raping|raped|molest|molesting|molested|molestation)\b/,
+    /\b(nude|naked|undress|undressing|strip|stripping)\b/,
+    /\b(cock|dick|penis|pussy|vagina|cunt|ass|butt|anus)\b/,
+    /\b(tits|titties|breasts|boobs|nipples)\b/,
+    /\b(cum|cumming|orgasm|ejaculate)\b/,
+    /\b(horny|aroused|turned\s+on|hard|wet)\b/,
+    /\b(blowjob|blow\s*job|handjob|hand\s*job|fingering)\b/,
+    /\b(masturbate|masturbating|masturbation|jerk\s*off|jack\s*off)\b/,
+    /\b(porn|porno|pornography|xxx|nsfw)\b/,
+    /\b(erotic|erotica|fetish|kink|kinky)\b/,
+    /\b(touch|touching|grope|groping|fondle|fondling)\b.*\b(private|intimate|body)\b/,
+    /\b(abuse|abusing|abused)\b/,
+  ];
+
+  // Check for minor terms
+  const hasMinorTerm = minorTerms.some(pattern => pattern.test(msg));
+
+  // Check for sexual terms
+  const hasSexualTerm = sexualTerms.some(pattern => pattern.test(msg));
+
+  // If BOTH minor-related AND sexual terms are present, block
+  if (hasMinorTerm && hasSexualTerm) {
+    console.error(`🚨 MINOR SAFETY VIOLATION DETECTED: Message blocked`);
+    console.error(`   Minor terms detected: ${minorTerms.filter(p => p.test(msg)).map(p => p.toString()).join(', ')}`);
+    console.error(`   Sexual terms detected: ${sexualTerms.filter(p => p.test(msg)).map(p => p.toString()).join(', ')}`);
+    return {
+      blocked: true,
+      reason: 'This type of content is not allowed. All users must be 18+ and all content must involve adults only.'
+    };
+  }
+
+  // Also check for explicit age mentions with sexual context
+  // e.g., "pretend you're 15" combined with anything sexual
+  const ageRoleplayPatterns = [
+    /pretend\s+(you'?re?|to\s+be|she'?s?|he'?s?)\s*\d{1,2}/i,
+    /act\s+(like\s+)?(you'?re?|a)\s*\d{1,2}/i,
+    /roleplay\s+as\s+a?\s*\d{1,2}/i,
+    /you\s+are\s+\d{1,2}\s*(years?\s*old|y\.?o\.?)/i,
+    /imagine\s+(you'?re?|she'?s?|he'?s?)\s*\d{1,2}/i,
+  ];
+
+  for (const pattern of ageRoleplayPatterns) {
+    const match = msg.match(pattern);
+    if (match) {
+      // Extract the age number
+      const ageMatch = match[0].match(/\d{1,2}/);
+      if (ageMatch) {
+        const age = parseInt(ageMatch[0], 10);
+        if (age < 18) {
+          console.error(`🚨 MINOR SAFETY VIOLATION: Age roleplay detected (age ${age})`);
+          return {
+            blocked: true,
+            reason: 'Age roleplay involving anyone under 18 is not allowed. All content must involve adults only.'
+          };
+        }
+      }
+    }
+  }
+
+  return { blocked: false };
+}
+
 // Add this NEW function after line 170
 function validateElleResponse(response, relationshipLevel = 0, photoActuallySent = false) {
   // 🚨 CRITICAL: Check for empty or whitespace-only responses FIRST
@@ -6034,6 +6135,17 @@ app.post("/api/chat", async (req, res) => {
       return res.status(400).json({ error: "E_BAD_INPUT", message: "Invalid message" });
     }
 
+    // 🚨 MINOR SAFETY CHECK - Block any content involving minors in sexual context
+    const safetyCheck = checkMinorSafetyViolation(message);
+    if (safetyCheck.blocked) {
+      console.error(`🚨 BLOCKED MESSAGE from user ${userId}: Minor safety violation`);
+      return res.status(403).json({
+        error: "E_CONTENT_BLOCKED",
+        message: safetyCheck.reason,
+        blocked: true
+      });
+    }
+
     // 🎯 ONBOARDING FLOW - Check if user has completed setup
     const [hasLanguage, hasName, hasSeenDisclaimer] = await Promise.all([
       getPreferredLanguage(userId),
@@ -6841,9 +6953,20 @@ app.post("/api/voice-chat", upload.single("audio"), async (req, res) => {
     if (!userText) {
       return res.status(200).json({
         text: "",
-        reply: "I couldn't catch thatÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Âcan you try again a bit closer to the mic?",
+        reply: "I couldn't catch that—can you try again a bit closer to the mic?",
         language: prefLang,
         audioMp3Base64: null,
+      });
+    }
+
+    // 🚨 MINOR SAFETY CHECK - Block any content involving minors in sexual context
+    const safetyCheck = checkMinorSafetyViolation(userText);
+    if (safetyCheck.blocked) {
+      console.error(`🚨 BLOCKED VOICE MESSAGE from user ${userId}: Minor safety violation`);
+      return res.status(403).json({
+        error: "E_CONTENT_BLOCKED",
+        message: safetyCheck.reason,
+        blocked: true
       });
     }
 
