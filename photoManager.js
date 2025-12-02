@@ -313,16 +313,19 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
       }
 
       if (triggered) {
-        // 🔥 For sexual triggers, use NSFW categories and higher nsfw_level
+        // 🔥 For sexual triggers, prefer higher nsfw_level and sexy photos
         let categories = categoryMap[stage] || ['casual'];
         let nsfwAllowed = stage !== 'STRANGER';
         let preferHighNsfw = false;
+        let preferSexyContent = false;  // Use ass_visible, breasts_visible columns
 
         if (config.nsfw && stage !== 'STRANGER') {
-          // Sexual conversation - use sexy/intimate categories
-          categories = ['intimate', 'suggestive', 'sexy', 'lingerie', 'bedroom'];
+          // Sexual conversation - prefer bedroom photos with high nsfw and visible body parts
+          // Categories are location-based (bedroom_*, gym_*, etc) so we prefer bedroom
+          categories = null;  // null = any category, we'll filter by nsfw_level instead
           nsfwAllowed = true;
-          preferHighNsfw = true;  // Prefer photos with nsfw_level 2+
+          preferHighNsfw = true;     // Prefer photos with nsfw_level 2+
+          preferSexyContent = true;  // Prefer ass_visible or breasts_visible
           console.log(`🔥 Sexual trigger activated - selecting NSFW photos`);
         }
 
@@ -333,6 +336,7 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
           topics: topics,
           nsfwAllowed: nsfwAllowed,
           preferHighNsfw: preferHighNsfw,
+          preferSexyContent: preferSexyContent,
           isMilestone: false
         };
       }
@@ -358,17 +362,24 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
  */
 async function selectContextualPhoto(pool, userId, criteria, relationshipLevel = 0, recentLocation = null) {
   try {
-    const { categories, topics, nsfwAllowed, preferHighNsfw } = criteria;
+    const { categories, topics, nsfwAllowed, preferHighNsfw, preferSexyContent } = criteria;
 
     // 🔥 For sexual conversations, prefer higher NSFW level photos
-    let maxNsfwLevel = nsfwAllowed ?
-      (categories.includes('intimate') || categories.includes('suggestive') ? 2 : 1) : 0;
+    let maxNsfwLevel = nsfwAllowed ? 2 : 0;
+    if (!nsfwAllowed) maxNsfwLevel = 0;
 
     let minNsfwLevel = 0;
     if (preferHighNsfw) {
-      minNsfwLevel = 1;  // At least nsfw_level 1 for sexual convos
-      maxNsfwLevel = 3;  // Allow up to level 3
+      minNsfwLevel = 2;  // At least nsfw_level 2 for sexual convos (sexier photos)
+      maxNsfwLevel = 5;  // Allow up to level 5
       console.log(`🔥 Selecting NSFW photos (level ${minNsfwLevel}-${maxNsfwLevel})`);
+    }
+
+    // 🔥 For sexy content, prioritize photos with visible body parts
+    let sexyContentFilter = '';
+    if (preferSexyContent) {
+      sexyContentFilter = 'AND (p.ass_visible = true OR p.breasts_visible = true)';
+      console.log(`🔥 Prioritizing photos with ass_visible or breasts_visible`);
     }
 
     // 🎯 LOCATION FILTER - If Ellie recently said she's somewhere, only get photos from compatible locations
@@ -412,22 +423,51 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
       }
     }
 
-    // First try: Match topic-relevant photos with location filter
-    if (topicConditions.length > 0) {
-      const topicQuery = `
-        SELECT p.* FROM ellie_photos p
-        WHERE p.is_active = true
-        AND p.category = ANY($1)
-        AND p.nsfw_level >= $2 AND p.nsfw_level <= $3
-        AND (p.min_relationship_level IS NULL OR p.min_relationship_level <= $4)
-        AND p.id NOT IN (SELECT photo_id FROM user_photo_history WHERE user_id = $5)
-        ${locationFilter.replace(/\$5/g, '$6').replace(/\$6/g, '$6')}
-        AND (${topicConditions.join(' OR ')})
-        ORDER BY ${preferHighNsfw ? 'p.nsfw_level DESC, ' : ''}RANDOM()
-        LIMIT 1
-      `;
+    // 🔥 SEXUAL CONTENT PATH - Skip category filter, use nsfw_level and body visibility
+    if (preferSexyContent) {
+      // First try: Photos with visible body parts and high nsfw
+      const sexyQuery = await pool.query(
+        `SELECT p.* FROM ellie_photos p
+         WHERE p.is_active = true
+         AND p.nsfw_level >= $1 AND p.nsfw_level <= $2
+         AND (p.min_relationship_level IS NULL OR p.min_relationship_level <= $3)
+         AND p.id NOT IN (SELECT photo_id FROM user_photo_history WHERE user_id = $4)
+         AND (p.ass_visible = true OR p.breasts_visible = true)
+         ORDER BY p.nsfw_level DESC, RANDOM()
+         LIMIT 1`,
+        [minNsfwLevel, maxNsfwLevel, relationshipLevel, userId]
+      );
 
-      // Adjust param indices for location filter
+      if (sexyQuery.rows.length > 0) {
+        console.log(`🔥 Found sexy photo with visible body parts (nsfw:${sexyQuery.rows[0].nsfw_level})`);
+        return sexyQuery.rows[0];
+      }
+
+      // Fallback: Any high nsfw photo (even without body visibility flags)
+      const nsfwQuery = await pool.query(
+        `SELECT p.* FROM ellie_photos p
+         WHERE p.is_active = true
+         AND p.nsfw_level >= $1 AND p.nsfw_level <= $2
+         AND (p.min_relationship_level IS NULL OR p.min_relationship_level <= $3)
+         AND p.id NOT IN (SELECT photo_id FROM user_photo_history WHERE user_id = $4)
+         ORDER BY p.nsfw_level DESC, RANDOM()
+         LIMIT 1`,
+        [minNsfwLevel, maxNsfwLevel, relationshipLevel, userId]
+      );
+
+      if (nsfwQuery.rows.length > 0) {
+        console.log(`🔥 Found NSFW photo (nsfw:${nsfwQuery.rows[0].nsfw_level})`);
+        return nsfwQuery.rows[0];
+      }
+
+      console.log(`⚠️ No NSFW photos found for sexual conversation`);
+      return null;  // Don't send a tame photo during sexual convo
+    }
+
+    // NORMAL PATH - Category-based selection
+
+    // First try: Match topic-relevant photos with location filter
+    if (topicConditions.length > 0 && categories) {
       const adjustedLocationFilter = locationFilter ?
         locationFilter.replace(/\$(\d+)/g, (_, n) => `$${parseInt(n) + 1}`) : '';
 
@@ -440,7 +480,7 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
         AND p.id NOT IN (SELECT photo_id FROM user_photo_history WHERE user_id = $5)
         ${adjustedLocationFilter}
         AND (${topicConditions.join(' OR ').replace(/\$(\d+)/g, (_, n) => `$${parseInt(n) + 1}`)})
-        ORDER BY ${preferHighNsfw ? 'p.nsfw_level DESC, ' : ''}RANDOM()
+        ORDER BY RANDOM()
         LIMIT 1
       `;
 
@@ -455,25 +495,27 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
       }
     }
 
-    // Second try: Any matching category with location filter (or NSFW for sexual convos)
-    const adjustedLocationFilter2 = locationFilter ?
-      locationFilter.replace(/\$(\d+)/g, (_, n) => `$${parseInt(n) + 1}`) : '';
+    // Second try: Any matching category with location filter
+    if (categories) {
+      const adjustedLocationFilter2 = locationFilter ?
+        locationFilter.replace(/\$(\d+)/g, (_, n) => `$${parseInt(n) + 1}`) : '';
 
-    const categoryQuery = await pool.query(
-      `SELECT p.* FROM ellie_photos p
-       WHERE p.is_active = true
-       AND p.category = ANY($1)
-       AND p.nsfw_level >= $2 AND p.nsfw_level <= $3
-       AND (p.min_relationship_level IS NULL OR p.min_relationship_level <= $4)
-       AND p.id NOT IN (SELECT photo_id FROM user_photo_history WHERE user_id = $5)
-       ${adjustedLocationFilter2}
-       ORDER BY ${preferHighNsfw ? 'p.nsfw_level DESC, ' : ''}RANDOM()
-       LIMIT 1`,
-      [categories, minNsfwLevel, maxNsfwLevel, relationshipLevel, userId, ...locationValues]
-    );
+      const categoryQuery = await pool.query(
+        `SELECT p.* FROM ellie_photos p
+         WHERE p.is_active = true
+         AND p.category = ANY($1)
+         AND p.nsfw_level >= $2 AND p.nsfw_level <= $3
+         AND (p.min_relationship_level IS NULL OR p.min_relationship_level <= $4)
+         AND p.id NOT IN (SELECT photo_id FROM user_photo_history WHERE user_id = $5)
+         ${adjustedLocationFilter2}
+         ORDER BY RANDOM()
+         LIMIT 1`,
+        [categories, minNsfwLevel, maxNsfwLevel, relationshipLevel, userId, ...locationValues]
+      );
 
-    if (categoryQuery.rows.length > 0) {
-      return categoryQuery.rows[0];
+      if (categoryQuery.rows.length > 0) {
+        return categoryQuery.rows[0];
+      }
     }
 
     // If we have a location filter and found nothing, DON'T send a photo at all
@@ -483,20 +525,22 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
       return null;
     }
 
-    // Third try: Allow repeats (only if no location constraint)
-    const repeatQuery = await pool.query(
-      `SELECT p.* FROM ellie_photos p
-       WHERE p.is_active = true
-       AND p.category = ANY($1)
-       AND p.nsfw_level >= $2 AND p.nsfw_level <= $3
-       AND (p.min_relationship_level IS NULL OR p.min_relationship_level <= $4)
-       ORDER BY ${preferHighNsfw ? 'p.nsfw_level DESC, ' : ''}RANDOM()
-       LIMIT 1`,
-      [categories, minNsfwLevel, maxNsfwLevel, relationshipLevel]
-    );
+    // Third try: Allow repeats (only if no location constraint and categories exist)
+    if (categories) {
+      const repeatQuery = await pool.query(
+        `SELECT p.* FROM ellie_photos p
+         WHERE p.is_active = true
+         AND p.category = ANY($1)
+         AND p.nsfw_level >= $2 AND p.nsfw_level <= $3
+         AND (p.min_relationship_level IS NULL OR p.min_relationship_level <= $4)
+         ORDER BY RANDOM()
+         LIMIT 1`,
+        [categories, minNsfwLevel, maxNsfwLevel, relationshipLevel]
+      );
 
-    if (repeatQuery.rows.length > 0) {
-      return repeatQuery.rows[0];
+      if (repeatQuery.rows.length > 0) {
+        return repeatQuery.rows[0];
+      }
     }
 
     // Last resort: Any active photo matching nsfw requirements
@@ -505,7 +549,7 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
       `SELECT p.* FROM ellie_photos p
        WHERE p.is_active = true
        AND p.nsfw_level >= $1 AND p.nsfw_level <= $2
-       ORDER BY ${preferHighNsfw ? 'p.nsfw_level DESC, ' : ''}RANDOM()
+       ORDER BY RANDOM()
        LIMIT 1`,
       [minNsfwLevel, maxNsfwLevel]
     );

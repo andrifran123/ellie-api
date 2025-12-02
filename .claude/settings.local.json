@@ -13,7 +13,10 @@
       "Bash(node scripts/create-test-user.js:*)",
       "Bash(copy:*)",
       "Bash(cat:*)",
-      "Bash(node scripts/create-new-user.js:*)"
+      "Bash(node scripts/create-new-user.js:*)",
+      "Bash(git checkout:*)",
+      "Bash(git pull:*)",
+      "Bash(node scripts/check-photo-categories.js:*)"
     ],
     "deny": [],
     "ask": []
