@@ -6447,7 +6447,7 @@ Before responding, check what you said earlier in this conversation. NEVER contr
       const photoLocation = photoPrep.photoContext?.match(/Location: ([^(.\n]+)/)?.[1]?.trim() || 'somewhere';
       messagesToSend.push({
         role: "system",
-        content: `🚨 CRITICAL REMINDER: You are SENDING A PHOTO RIGHT NOW with this message! You are currently at: ${photoLocation}. Acknowledge you're sending/just sent a pic naturally. DO NOT say "there's no picture" or "what picture" - you ARE sending one! Keep response short (1-2 sentences).`
+        content: `📸 You're sharing a photo naturally. You're at: ${photoLocation}. Share it casually like "what do you think?", "me rn 😊", or "how's this look?" - NOT "hey I sent you a pic". Keep it to 1 short sentence.`
       });
       console.log(`📸 Added photo reminder as last system message (location: ${photoLocation})`);
     }

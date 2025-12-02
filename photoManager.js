@@ -264,9 +264,10 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
         chance: 0.25,
         requiresGoodConversation: true
       },
-      spontaneous: {
-        chance: 0.12,
-      }
+      // Spontaneous DISABLED - photos should only come when contextually appropriate
+      // spontaneous: {
+      //   chance: 0.12,
+      // }
     };
 
     // Determine photo categories based on relationship stage
@@ -274,20 +275,22 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     const categoryMap = {
       STRANGER: ['casual', 'friendly'],
       FRIEND: ['casual', 'playful'],
+      FRIEND_TENSION: ['casual', 'playful', 'flirty'],
       DATING: ['playful', 'flirty', 'cute'],
+      COMPLICATED: ['flirty', 'suggestive', 'intimate'],
       COMMITTED: ['flirty', 'romantic', 'intimate'],
       EXCLUSIVE: ['intimate', 'romantic', 'suggestive']
     };
 
-    // Check triggers
+    // Check triggers - ONLY send photos when there's a natural reason
     for (const [triggerType, config] of Object.entries(triggers)) {
       let triggered = false;
 
-      if (triggerType === 'spontaneous') {
-        triggered = Math.random() < config.chance;
-      } else if (triggerType === 'conversation_flow') {
+      // REMOVED: spontaneous trigger - was too random and felt unnatural
+      if (triggerType === 'conversation_flow') {
+        // Only after 6+ messages AND good conversation flow
         const recentMessageCount = conversationContext.recentMessageCount || 0;
-        triggered = recentMessageCount >= 4 && Math.random() < config.chance;
+        triggered = recentMessageCount >= 6 && Math.random() < config.chance;
       } else if (config.patterns) {
         const hasMatch = config.patterns.some(pattern => pattern.test(userMessage));
         triggered = hasMatch && Math.random() < config.chance;
@@ -573,6 +576,7 @@ function buildPhotoContext(photo) {
 
 /**
  * Create AI prompt injection to inform Ellie about the photo
+ * Makes photo sending feel NATURAL, not forced
  */
 function createPhotoAwarePrompt(photo, triggerType, isMilestone = false) {
   const context = buildPhotoContext(photo);
@@ -587,35 +591,49 @@ function createPhotoAwarePrompt(photo, triggerType, isMilestone = false) {
   else if (photo.bottom_type) wearing.push(photo.bottom_type);
   const outfitBrief = wearing.length > 0 ? wearing.join(' and ') : 'casual clothes';
 
+  // Generate natural context based on trigger type and photo content
+  let naturalContext = '';
+  if (triggerType === 'outfit_mention' || photo.category?.includes('outfit')) {
+    naturalContext = 'You want their opinion on your outfit';
+  } else if (triggerType === 'flirty' || triggerType === 'intimate') {
+    naturalContext = 'You feel flirty and want to tease them';
+  } else if (location.includes('gym')) {
+    naturalContext = 'You just finished working out and feel good';
+  } else if (location.includes('bed') || location.includes('home')) {
+    naturalContext = 'You just woke up or are relaxing at home';
+  } else if (activity) {
+    naturalContext = `You're ${activity} and wanted to share the moment`;
+  } else {
+    naturalContext = 'You thought of them and wanted to share';
+  }
+
   return `
 ═══════════════════════════════════════════════════════════════
-🎯 CRITICAL: YOU ARE SENDING A PHOTO RIGHT NOW
+📸 PHOTO CONTEXT - You're sending a photo naturally
 ═══════════════════════════════════════════════════════════════
 
-You are CURRENTLY at: ${location}
+You are at: ${location}
 You are wearing: ${outfitBrief}
-${activity ? `You are: ${activity}` : ''}
+${activity ? `Doing: ${activity}` : ''}
+Why you're sharing: ${naturalContext}
 
-⚠️ ABSOLUTE RULES FOR THIS MESSAGE:
-1. You ARE at ${location} right now - DO NOT say you're somewhere else (like "at home" if you're at the gym)
-2. You KNOW you just sent/are sending a photo - acknowledge it naturally
-3. Keep your message SHORT (1-2 sentences max)
-4. DO NOT describe the photo in detail - the user can SEE it
-5. DO NOT use asterisks * or parentheses () for actions
+⚠️ IMPORTANT - Make it feel NATURAL:
+1. You ARE at ${location} - stay consistent with this location
+2. DON'T announce "I'm sending you a pic" awkwardly
+3. Instead, share it naturally like:
+   - "what do you think of this?" (asking opinion)
+   - "me rn 😊" (sharing moment)
+   - "how's this look?" (outfit check)
+   - "just finished ${activity || 'up'}" (context)
+4. Keep it SHORT - 1 sentence max
+5. NO asterisks * or (actions)
 
-✅ GOOD examples for ${location}:
-- "just took this at the ${location} 😊"
-- "me rn"
-- "thought you'd like this"
-- "sent you a pic"
+❌ NEVER say things like:
+- "hey, just sent you a pic from..." (too forced)
+- "I'm sending you a photo" (awkward)
+- Long descriptions of the photo
 
-❌ BAD - NEVER do this:
-- Saying you're at home when photo is at gym
-- Ignoring that you sent a photo
-- Describing your outfit in detail
-- Using *actions* or (expressions)
-
-Your location in this response MUST match: ${location}
+Your current location: ${location}
 ═══════════════════════════════════════════════════════════════
 `;
 }
