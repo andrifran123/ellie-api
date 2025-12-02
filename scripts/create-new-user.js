@@ -41,6 +41,15 @@ async function createUser() {
     VALUES ($1, 22, 'FRIEND_TENSION', NOW(), 50, 5, 5, 'normal', 0.3, NOW(), NOW())
   `, [userId]);
 
+  // Pre-populate onboarding facts so user skips onboarding flow
+  await pool.query(`
+    INSERT INTO facts (user_id, category, fact, confidence, created_at, updated_at)
+    VALUES
+      ($1, 'language', 'en', 1.0, NOW(), NOW()),
+      ($1, 'user_name', 'Test User', 1.0, NOW(), NOW()),
+      ($1, 'seen_chat_disclaimer', 'true', 1.0, NOW(), NOW())
+  `, [userId]);
+
   console.log('');
   console.log('========================================');
   console.log('🎉 NEW User Created!');

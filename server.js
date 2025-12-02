@@ -6035,10 +6035,8 @@ app.post("/api/chat", async (req, res) => {
     }
 
     // Step 3: Show disclaimer after name is set (only once)
+    // NOTE: Don't mark as seen here - wait for /api/acknowledge-disclaimer to be called
     if (!hasSeenDisclaimer) {
-      // Mark disclaimer as seen
-      await upsertFact(userId, { category: "seen_chat_disclaimer", fact: "true", confidence: 1.0 }, "system:onboarding");
-
       return res.json({
         reply: "",
         onboarding: {
