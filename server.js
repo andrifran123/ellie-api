@@ -5720,15 +5720,23 @@ async function requirePaidUsingSession(req, res, next) {
   try {
     const token = req.cookies?.[SESSION_COOKIE_NAME] || null;
     const payload = token ? verifySession(token) : null;
-    const email = payload?.email || null;
-    if (!email) return res.status(401).json({ error: "UNAUTH" });
 
-    const sub = await getSubByEmail(email);
-    const user = await getUserByEmail(email);
+    // Support BOTH old email sessions and new userId sessions
+    let user = null;
+    if (payload?.userId) {
+      user = await getUserByUserId(payload.userId);
+    } else if (payload?.email) {
+      user = await getUserByEmail(payload.email);
+    }
+
+    if (!user) return res.status(401).json({ error: "UNAUTH" });
+
+    const sub = await getSubByEmail(user.email);
     const paid = isPaidStatus(sub?.status) || Boolean(user?.paid);
     if (!paid) return res.status(402).json({ error: "PAYMENT_REQUIRED" });
 
-    req.userEmail = email;
+    req.userEmail = user.email;
+    req.userId = user.user_id;
     next();
   } catch {
     return res.status(401).json({ error: "UNAUTH" });
