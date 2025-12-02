@@ -289,7 +289,6 @@ function checkMinorSafetyViolation(message) {
     /\b(preteen|pre-teen|pre\s+teen)\b/,
     /\b(adolescent|adolescents)\b/,
     /\b(juvenile|juveniles)\b/,
-    /\b(schoolgirl|schoolboy|school\s*girl|school\s*boy)\b/,
     /\b(loli|lolita|shota)\b/,
     /\b(jailbait|jail\s*bait)\b/,
     /\b(\d{1,2}\s*y\.?o\.?|years?\s*old)\b/,  // "12 yo", "12 years old"
