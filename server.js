@@ -193,6 +193,49 @@ const stripeGifts = process.env.STRIPE_GIFT_SECRET_KEY
 // ============================================================
 
 /**
+ * Limits emojis to MAX 1 per message.
+ * Removes all emojis beyond the first one found.
+ */
+function limitEmojis(text, maxEmojis = 1) {
+  if (!text) return text;
+
+  // Comprehensive emoji regex pattern
+  const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2300}-\u{23FF}]|[\u{2B50}]|[\u{200D}]|[\u{FE0F}]/gu;
+
+  let emojiCount = 0;
+  let result = '';
+  let lastIndex = 0;
+
+  // Find all emoji matches
+  const matches = [...text.matchAll(emojiRegex)];
+
+  if (matches.length <= maxEmojis) {
+    return text; // No limiting needed
+  }
+
+  // Keep only the first maxEmojis emojis
+  for (const match of matches) {
+    if (emojiCount < maxEmojis) {
+      result += text.slice(lastIndex, match.index + match[0].length);
+      lastIndex = match.index + match[0].length;
+      emojiCount++;
+    } else {
+      // Skip this emoji - add text up to it, then skip the emoji itself
+      result += text.slice(lastIndex, match.index);
+      lastIndex = match.index + match[0].length;
+    }
+  }
+
+  // Add remaining text after last emoji
+  result += text.slice(lastIndex);
+
+  // Clean up multiple spaces
+  result = result.replace(/\s{2,}/g, ' ');
+
+  return result.trim();
+}
+
+/**
  * Removes asterisk-based actions like *sighs*, *virtual hug*, etc.
  * Common in Llama models but unwanted in professional chat.
  */
@@ -242,7 +285,7 @@ function filterParenthesesActions(text) {
 function filterAllActions(text) {
   let filtered = filterAsteriskActions(text);
   filtered = filterParenthesesActions(filtered);
-  
+
   // ADD THESE NEW LINES:
   filtered = filtered.replace(/###/g, '');
   filtered = filtered.replace(/\[\/INST\]/g, '');
@@ -250,16 +293,25 @@ function filterAllActions(text) {
   filtered = filtered.replace(/<\|.*?\|>/g, '');
   filtered = filtered.replace(/^\s*Human:.*$/gm, '');
   filtered = filtered.replace(/^\s*Assistant:.*$/gm, '');
-  
+
+  // 🚫 FORCE REMOVE bracket actions like [send pic], [winks], [action here]
+  filtered = filtered.replace(/\[[^\]]+\]/g, '');
+
   // 🚫 FORCE REMOVE "you know?" endings
   filtered = filtered.replace(/,?\s*you know\??\s*$/gmi, '');
   filtered = filtered.replace(/,?\s*y'know\??\s*$/gmi, '');
   filtered = filtered.replace(/,?\s*ya know\??\s*$/gmi, '');
-  
+
   // 🚫 FORCE REMOVE logical dead-end patterns at start of response
   // Patterns like "same, right?" "exactly" "I know right?" when standing alone
   filtered = filtered.replace(/^(same|right\?|exactly|i know right\?),?\s*/gmi, '');
-  
+
+  // Clean up multiple spaces that might result from removals
+  filtered = filtered.replace(/\s{2,}/g, ' ');
+
+  // 🚫 LIMIT EMOJIS: Max 1 emoji per message (removes excess)
+  filtered = limitEmojis(filtered, 1);
+
   return filtered.trim();
 }
 
@@ -2653,26 +2705,28 @@ STYLE:
 - Occasional typos are fine (you're human)
 - Use "..." for pauses or trailing thoughts
 
-NEVER DO:
+⚠️ ABSOLUTELY NEVER DO (CRITICAL):
 - *action in asterisks* (NO *sighs*, *hugs*, *blushes*)
 - (action in parentheses) (NO (smiling), (winking), (laughing))
+- [action in brackets] (NO [send pic], [winks], [naughty pic])
 - Stage directions or narration of your actions
 - Starting your message with "Ellie:" or your name
+- Using multiple emojis (HARD LIMIT: 1 emoji max per message, preferably 0)
 
 INSTEAD OF ACTIONS:
 - Instead of "*sighs*" → "ugh" or just say what you're feeling
 - Instead of "(blushing)" → "you're making me blush" or "stop it omg"
-- Instead of "(laughing)" → "hahahah😂" or "lmaooo"
+- Instead of "(laughing)" → "hahahah" or "lmaooo"
 - Instead of "*hugs*" → "come here" or "wish you were here"
 - Instead of "*moans*" → describe the feeling: "fuck that feels good" or "mmm"
+- Instead of "[send pic]" → just describe what you're doing or say nothing
 
-EMOJIS (VERY LIMITED):
-- Use MAX 1 emoji every 4-5 messages (that means MOST messages have NO emoji)
-- Common ones: 😊 😏 🙄 😂 🥺
-- NEVER use multiple emojis in one message
-- NEVER use emojis in sexual/intimate messages (words are hotter than 😈)
-- When in doubt, skip the emoji - plain text is more authentic
-- Overusing emojis makes you seem fake/childish
+⚠️ EMOJI RULES (STRICT - ENFORCED):
+- MOST messages should have ZERO emojis (aim for 80% no emoji)
+- MAXIMUM 1 emoji per message - NEVER more than 1
+- NEVER use emojis in sexual/intimate content (words only, no 😈 or similar)
+- If you're unsure, DON'T use an emoji
+- Excessive emojis = fake/childish = instant turn-off
 
 ═══════════════════════════════════════════════════════════════
 SECTION 4: CONVERSATION RULES
