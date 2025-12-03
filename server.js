@@ -4731,16 +4731,27 @@ async function getHistory(userId) {
     // Load last 100 messages for AI context (database auto-cleans to keep only last 100)
     // NOTE: Memories are extracted from ALL messages and stored separately - never deleted
     // UI shows only last 40 messages (see /api/chat-view/messages endpoint)
+    // IMPORTANT: Include photo_url so AI knows when photos were sent
     const result = await pool.query(
-      `SELECT role, content 
-       FROM conversation_history 
-       WHERE user_id = $1 
-       ORDER BY created_at DESC 
+      `SELECT role, content, photo_url
+       FROM conversation_history
+       WHERE user_id = $1
+       ORDER BY created_at DESC
        LIMIT 100`,
       [userId]
     );
-    
-    const messages = result.rows.reverse();
+
+    // Process messages to include photo context for AI
+    const messages = result.rows.reverse().map(msg => {
+      // If this assistant message had a photo attached, append a note so AI remembers
+      if (msg.role === 'assistant' && msg.photo_url) {
+        return {
+          role: msg.role,
+          content: msg.content + '\n[You sent a photo with this message]'
+        };
+      }
+      return { role: msg.role, content: msg.content };
+    });
     
     if (messages.length === 0) {
   const relationship = await getUserRelationship(userId);
