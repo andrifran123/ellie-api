@@ -3740,6 +3740,7 @@ async function initDB() {
   // Add photo columns if they don't exist
   await pool.query(`ALTER TABLE conversation_history ADD COLUMN IF NOT EXISTS photo_url TEXT;`).catch(() => {});
   await pool.query(`ALTER TABLE conversation_history ADD COLUMN IF NOT EXISTS photo_id INTEGER;`).catch(() => {});
+  await pool.query(`ALTER TABLE conversation_history ADD COLUMN IF NOT EXISTS photo_context TEXT;`).catch(() => {});
   
 
   // 📞 Create missed_calls table
@@ -4731,12 +4732,12 @@ async function getHistory(userId) {
     // Load last 100 messages for AI context (database auto-cleans to keep only last 100)
     // NOTE: Memories are extracted from ALL messages and stored separately - never deleted
     // UI shows only last 40 messages (see /api/chat-view/messages endpoint)
-    // IMPORTANT: Include photo_url so AI knows when photos were sent
+    // IMPORTANT: Include photo_url and photo_context so AI knows when photos were sent and what they contain
     let result;
     try {
-      // Try with photo_url column first
+      // Try with photo columns first
       result = await pool.query(
-        `SELECT role, content, photo_url
+        `SELECT role, content, photo_url, photo_context
          FROM conversation_history
          WHERE user_id = $1
          ORDER BY created_at DESC
@@ -4744,10 +4745,10 @@ async function getHistory(userId) {
         [userId]
       );
     } catch (colErr) {
-      // Fallback if photo_url column doesn't exist yet
-      console.warn('⚠️ photo_url column not found, using basic query');
+      // Fallback if photo columns don't exist yet
+      console.warn('⚠️ photo columns not found, using basic query');
       result = await pool.query(
-        `SELECT role, content, NULL as photo_url
+        `SELECT role, content, NULL as photo_url, NULL as photo_context
          FROM conversation_history
          WHERE user_id = $1
          ORDER BY created_at DESC
@@ -4758,11 +4759,14 @@ async function getHistory(userId) {
 
     // Process messages to include photo context for AI
     const messages = result.rows.reverse().map(msg => {
-      // If this assistant message had a photo attached, append a note so AI remembers
+      // If this assistant message had a photo attached, append the full context so AI remembers details
       if (msg.role === 'assistant' && msg.photo_url) {
+        const photoInfo = msg.photo_context
+          ? `\n[You sent a photo: ${msg.photo_context}]`
+          : '\n[You sent a photo with this message]';
         return {
           role: msg.role,
-          content: msg.content + '\n[You sent a photo with this message]'
+          content: msg.content + photoInfo
         };
       }
       return { role: msg.role, content: msg.content };
@@ -6850,15 +6854,16 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     // 💾 Store assistant reply in background (non-blocking) - include photo if sent
     const photoUrl = photoPrep?.photo?.url || null;
     const photoId = photoPrep?.photo?.id || null;
+    const photoContext = photoPrep?.photoContext || null;
     setImmediate(async () => {
       try {
         // Try with photo columns first, fallback to basic insert
         if (photoUrl) {
           try {
             await pool.query(
-              `INSERT INTO conversation_history (user_id, role, content, photo_url, photo_id, created_at)
-               VALUES ($1, 'assistant', $2, $3, $4, NOW())`,
-              [userId, enhancedReply, photoUrl, photoId]
+              `INSERT INTO conversation_history (user_id, role, content, photo_url, photo_id, photo_context, created_at)
+               VALUES ($1, 'assistant', $2, $3, $4, $5, NOW())`,
+              [userId, enhancedReply, photoUrl, photoId, photoContext]
             );
           } catch (colErr) {
             // Photo columns don't exist yet, insert without them
