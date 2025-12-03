@@ -6793,6 +6793,61 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     await new Promise(resolve => setTimeout(resolve, typingDelay));
     console.log(`⏱️ Response sent after ${typingDelay.toFixed(0)}ms typing delay`);
 
+    // 💬 DOUBLE TEXT: ~25% chance to generate a follow-up message
+    let followUp = null;
+    const shouldDoubleText = Math.random() < 0.25;
+
+    if (shouldDoubleText && !photoPrep) { // Don't double text when sending photos
+      try {
+        const followUpPrompt = [
+          { role: "system", content: `You are Ellie. You just sent this message: "${enhancedReply}"
+
+Now send a SHORT follow-up text (3-12 words max) like you just thought of something else to add. Examples:
+- "wait actually..."
+- "also what are you doing later"
+- "anyway how was your day"
+- "oh and I forgot to ask"
+- "lol sorry random thought"
+- "but yeah"
+- "miss you btw"
+
+Keep it casual and natural. Just the follow-up text, nothing else.` },
+          { role: "user", content: "Send your follow-up message:" }
+        ];
+
+        const followUpResponse = await client.chat.completions.create({
+          model: CHAT_MODEL,
+          messages: followUpPrompt,
+          temperature: 0.9,
+          max_tokens: 50,
+        });
+
+        const followUpText = followUpResponse.choices[0]?.message?.content?.trim();
+        if (followUpText && followUpText.length > 0 && followUpText.length < 100) {
+          followUp = {
+            text: followUpText,
+            delayMs: 1500 + Math.random() * 1000 // 1.5-2.5 seconds after first message
+          };
+          console.log(`💬 Double text generated: "${followUpText}"`);
+
+          // Store follow-up in conversation history too
+          setImmediate(async () => {
+            try {
+              await pool.query(
+                `INSERT INTO conversation_history (user_id, role, content, created_at)
+                 VALUES ($1, 'assistant', $2, NOW())`,
+                [userId, followUpText]
+              );
+            } catch (err) {
+              console.warn('Failed to store follow-up:', err.message);
+            }
+          });
+        }
+      } catch (followUpErr) {
+        console.warn('Follow-up generation failed:', followUpErr.message);
+      }
+    }
+
     res.json({
       reply: enhancedReply,
       language: prefCode,
@@ -6802,6 +6857,8 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
         streak: updatedRelationship.streak_days,
         mood: updatedRelationship.last_mood
       },
+      // 💬 Include follow-up if generated
+      ...(followUp && { followUp }),
       // 📸 Add photo to response if prepared (Ellie's message already references it)
       ...(photoPrep && {
         photo: {
