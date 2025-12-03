@@ -1658,7 +1658,28 @@ function detectCharacterBreak(response) {
     "i don't have feelings",
     "i don't have emotions",
     "i can't actually",
-    "i cannot actually"
+    "i cannot actually",
+    // Content refusals (Groq/Llama style)
+    "i cannot create",
+    "i can't create",
+    "i cannot generate",
+    "i can't generate",
+    "i cannot describe",
+    "i can't describe",
+    "explicit content",
+    "inappropriate content",
+    "sexual content",
+    "adult content",
+    "nsfw content",
+    "i'm not comfortable",
+    "i am not comfortable",
+    "i cannot engage",
+    "i can't engage",
+    "i must decline",
+    "i have to decline",
+    "not appropriate",
+    "boundaries",
+    "respectful conversation"
   ];
 
   const lower = response.toLowerCase();
