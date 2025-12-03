@@ -3785,6 +3785,21 @@ async function initDB() {
     ON asked_questions(user_id);
   `).catch(() => {});
 
+  // 💬 Create double_texts table (tracks double texts used per user)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS double_texts (
+      id SERIAL PRIMARY KEY,
+      user_id VARCHAR(100) NOT NULL,
+      text_content TEXT NOT NULL,
+      used_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_double_texts_user
+    ON double_texts(user_id, used_at DESC);
+  `).catch(() => {});
+
   // Update user_relationships table for missed call tracking
   await pool.query(`
     ALTER TABLE user_relationships 
@@ -6931,8 +6946,22 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
 
     if (shouldDoubleText && !photoPrep) { // Don't double text when sending photos
       try {
-        // Get recent conversation for context (last 10 messages)
-        const recentHistory = history.slice(-10).map(m => `${m.role}: ${m.content}`).join('\n');
+        // Get recent conversation for context (last 20 messages)
+        const recentHistory = history.slice(-20).map(m => `${m.role}: ${m.content}`).join('\n');
+
+        // Get previously used double texts for this user (to encourage variety)
+        let previousDoubleTexts = [];
+        try {
+          const dtResult = await pool.query(
+            `SELECT text_content FROM double_texts WHERE user_id = $1 ORDER BY used_at DESC LIMIT 20`,
+            [userId]
+          );
+          previousDoubleTexts = dtResult.rows.map(r => r.text_content);
+        } catch (e) { /* table might not exist yet */ }
+
+        const previousTextsNote = previousDoubleTexts.length > 0
+          ? `\n\nYou've used these follow-ups before (try something different):\n${previousDoubleTexts.map(t => `- "${t}"`).join('\n')}`
+          : '';
 
         const followUpPrompt = [
           { role: "system", content: `You are Ellie. Here's the recent conversation:
@@ -6940,6 +6969,7 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
 ${recentHistory}
 
 You just sent: "${enhancedReply}"
+${previousTextsNote}
 
 Send a SHORT follow-up text (5-15 words) - a casual afterthought.
 
@@ -6948,6 +6978,7 @@ CRITICAL RULES:
 2. Do NOT repeat topics already discussed
 3. Must be a COMPLETE thought, not a fragment like "oh and..."
 4. Add something NEW - a quick observation, feeling, or comment
+5. Try to be DIFFERENT from your previous follow-ups listed above
 
 Good examples:
 - "i'm so bored rn lol"
@@ -6980,12 +7011,19 @@ Just the follow-up text, nothing else.` },
           };
           console.log(`💬 Double text generated: "${followUpText}"`);
 
-          // Store follow-up in conversation history too
+          // Store follow-up in conversation history AND track in double_texts table
           setImmediate(async () => {
             try {
+              // Store in conversation history
               await pool.query(
                 `INSERT INTO conversation_history (user_id, role, content, created_at)
                  VALUES ($1, 'assistant', $2, NOW())`,
+                [userId, followUpText]
+              );
+              // Track in double_texts for variety
+              await pool.query(
+                `INSERT INTO double_texts (user_id, text_content, used_at)
+                 VALUES ($1, $2, NOW())`,
                 [userId, followUpText]
               );
             } catch (err) {
