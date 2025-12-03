@@ -2519,56 +2519,16 @@ function selectMoodWithPsychology(relationship, emotionalState) {
 }
 
 // ============================================================
-// 💋 SEXUAL AVAILABILITY SYSTEM
+// 💋 SEXUAL AVAILABILITY - Always available (simplified)
 // ============================================================
-/**
- * Determines sexual availability for user with:
- * - 80/20 split (80% available, 20% not in mood)
- * - Deterministic per user per 4-hour time window
- * - Mood override (flirty/loving = always available, distant = never available)
- * - Stage-aware (only applies to stages 3-5)
- */
 function getSexualAvailability(userId, currentStage, lastMood) {
   // Skip for early stages (no sexual content yet)
   if (currentStage === 'STRANGER' || currentStage === 'FRIEND_TENSION') {
     return { available: false, reason: 'too_early_stage', overridden: false };
   }
-  
-  // 🎭 MOOD-BASED OVERRIDES (takes priority over random)
-  // These moods logically determine availability
-  if (lastMood === 'flirty' || lastMood === 'loving') {
-    console.log(`🔥 Sexual availability OVERRIDE: ${lastMood} mood → ALWAYS available`);
-    return { available: true, reason: lastMood, overridden: true };
-  }
-  
-  if (lastMood === 'distant') {
-    console.log(`🔥 Sexual availability OVERRIDE: distant mood → NEVER available`);
-    return { available: false, reason: lastMood, overridden: true };
-  }
-  
-  // 🎲 DETERMINISTIC RANDOM 80/20 SPLIT
-  // Uses time-window hashing for consistency (same user = same result for 4 hours)
-  const timeWindow = Math.floor(Date.now() / (1000 * 60 * 60 * 4)); // 4-hour windows
-  const seed = crypto
-    .createHash('md5')
-    .update(`${userId}-sexual-${timeWindow}`)
-    .digest('hex');
-  
-  const randomValue = parseInt(seed.substring(0, 8), 16) % 100;
-  const isAvailable = randomValue < 80; // 80% available, 20% not
-  
-  // Select appropriate reason based on availability
-  const reasons = {
-    available: ['in_mood', 'feeling_good', 'want_you'],
-    notAvailable: ['tired', 'exhausted', 'long_day', 'stressed', 'not_feeling_it', 'headache']
-  };
-  
-  const reasonList = isAvailable ? reasons.available : reasons.notAvailable;
-  const reason = reasonList[randomValue % reasonList.length];
-  
-  console.log(`🎲 Sexual availability for user ${userId}: ${isAvailable ? 'AVAILABLE' : 'NOT AVAILABLE'} (reason: ${reason}, random: ${randomValue}/100)`);
-  
-  return { available: isAvailable, reason, overridden: false };
+
+  // Always available for COMPLICATED and EXCLUSIVE stages
+  return { available: true, reason: 'always_available', overridden: false };
 }
 
 // NEW CLEAN PERSONALITY SYSTEM - v2
