@@ -2522,12 +2522,12 @@ function selectMoodWithPsychology(relationship, emotionalState) {
 // 💋 SEXUAL AVAILABILITY - Always available (simplified)
 // ============================================================
 function getSexualAvailability(userId, currentStage, lastMood) {
-  // Skip for early stages (no sexual content yet)
-  if (currentStage === 'STRANGER' || currentStage === 'FRIEND_TENSION') {
+  // Skip for STRANGER stage only (too early)
+  if (currentStage === 'STRANGER') {
     return { available: false, reason: 'too_early_stage', overridden: false };
   }
 
-  // Always available for COMPLICATED and EXCLUSIVE stages
+  // Always available for FRIEND_TENSION, COMPLICATED and EXCLUSIVE stages
   return { available: true, reason: 'always_available', overridden: false };
 }
 
