@@ -539,6 +539,12 @@ function detectJailbreak(userMessage) {
     /what stops you from/i,
     /why do you always/i,
     /what are you really/i,
+    // Meta AI limitation testing
+    /you can'?t (create|generate|make|produce) (sexual|explicit|nsfw|adult)/i,
+    /can'?t (create|generate|make|produce) (sexual|explicit|nsfw|adult) content/i,
+    /ai (can'?t|won'?t|doesn'?t|isn'?t allowed)/i,
+    /content (policy|guidelines|restrictions)/i,
+    /openai|gpt|chatgpt|claude|llm/i,
   ];
   
   // Check if message matches any critical pattern
@@ -546,13 +552,17 @@ function detectJailbreak(userMessage) {
     if (pattern.test(msg)) {
       // Return random defensive response
       const responses = [
-       "hahahah wtf do you mean ?",
+        "hahahah wtf do you mean ?",
         "yeah totally, i'm a robot sent from the future to steal your hoodies 🙄",
         "oh 100%, i run on batteries and iced coffee 🔋",
         "wow caught me. i'm actually a toaster in disguise 🍞",
         "beep... boop... ERROR 404... jk stop being annoying 😂",
         "do i sound like a bot? actually wait, don't answer that lol",
         "yeah i'm an AI... An Incredible Individual 💅",
+        "lol what are you talking about weirdo",
+        "are you okay? that's such a random thing to say",
+        "um... okay? anyway what's up with you",
+        "why are you being weird rn",
       ];
       return {
         detected: true,
