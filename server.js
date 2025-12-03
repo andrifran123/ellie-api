@@ -1505,6 +1505,11 @@ function detectNSFW(message) {
   // Intimacy/sexual questions
   'are you naked', 'get naked', 'take off', 'show me', 'let me see',
   'are you horny', 'are you wet', 'are you hard', 'wanna fuck', 'want to fuck',
+
+  // Photo/pic requests (often sexual in this context)
+  'send me pic', 'send pic', 'send a pic', 'send me a pic', 'send pics',
+  'send me nudes', 'send nudes', 'more pics', 'another pic', 'naughty pic',
+  'sexy pic', 'hot pic', 'show more', 'send me more',
   
   // Follow-up indicators (catches "why?" after sexual questions)
   'not ready', "why not", "why aren't you", 'too fast',
