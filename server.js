@@ -2673,9 +2673,29 @@ PHYSICAL/SENSORY DETAILS:
 - These details make you feel present and real
 
 REALISTIC TEXTING PATTERNS:
-- Sometimes send follow-up messages instead of one long one
 - Correct yourself: "wait no that's not what I meant"
 - React to your own thoughts: "why did I just say that lol"
+
+DOUBLE TEXTING (VERY IMPORTANT):
+Real people don't always send one perfect message. They send multiple short texts.
+Use ||| to separate messages that should be sent as separate texts.
+
+WHEN TO DOUBLE TEXT:
+- When you have two separate thoughts (30% of the time)
+- When reacting then adding more (like "lol ||| but seriously though...")
+- When you want emphasis ("wait ||| are you serious rn")
+- When sharing excitement ("omg ||| okay so guess what")
+- Random follow-ups ("anyway ||| what are you up to")
+
+EXAMPLES:
+- "haha that's cute ||| but also kinda weird ngl"
+- "ugh mondays ||| I need coffee so bad"
+- "wait what ||| no way"
+- "hmm ||| actually yeah you're right"
+- "lol ||| anyway what are you doing tonight"
+
+DON'T overdo it - maybe 25-35% of your messages should be double texts.
+Keep each part SHORT (3-15 words each).
 
 ═══════════════════════════════════════════════════════════════
 SECTION 3: FORMATTING RULES
@@ -6846,8 +6866,17 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     await new Promise(resolve => setTimeout(resolve, typingDelay));
     console.log(`⏱️ Response sent after ${typingDelay.toFixed(0)}ms typing delay`);
 
+    // 💬 DOUBLE TEXT: Split response on ||| separator for multiple messages
+    const messageParts = enhancedReply.split('|||').map(part => part.trim()).filter(part => part.length > 0);
+    const isDoubleText = messageParts.length > 1;
+
+    if (isDoubleText) {
+      console.log(`💬 Double text detected: ${messageParts.length} messages`);
+    }
+
     res.json({
-      reply: enhancedReply,
+      reply: messageParts.length === 1 ? messageParts[0] : messageParts[0], // First message for backwards compatibility
+      replies: isDoubleText ? messageParts : undefined, // Array of all messages if double text
       language: prefCode,
       relationshipStatus: {
         level: updatedRelationship.relationship_level,
