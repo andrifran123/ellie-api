@@ -435,6 +435,10 @@ function validateElleResponse(response, relationshipLevel = 0, photoActuallySent
       /\blook at (this|what i)\b/i,
       /\bme rn\b/i,  // Common photo caption
       /\bjust took this\b/i,
+      // 🚨 ROLEPLAY-STYLE PHOTO MENTIONS (asterisk actions)
+      /\*\s*(sends?|sending|sent|shows?|showing|shares?|sharing|snaps?|takes?|took)\s+(you\s+)?(a\s+)?(photo|pic|picture|selfie|snap|image|nude|nudes)/i,
+      /\*\s*ellie\s+(sends?|sending|shows?|shares?|snaps?)\s+(you\s+)?(a\s+)?(photo|pic|picture|selfie|snap|image|nude|nudes)/i,
+      /\*\s*(attaches?|attached|posts?|uploads?)\s+(a\s+)?(photo|pic|picture|selfie|image|nude)/i,
     ];
 
     for (const pattern of photoMentionPatterns) {
@@ -1905,6 +1909,22 @@ CRITICAL - STAY IN CHARACTER:
       throw new Error('Gibberish response from Euryale');
     }
 
+    // 🚨 CHECK FOR FAKE PHOTO MENTIONS ON RAW CONTENT (BEFORE asterisks are stripped!)
+    // Euryale likes to write "*sends a picture*" but we don't actually have a photo to send
+    // This must be checked BEFORE filterAllActions removes the asterisks
+    const fakePhotoPatterns = [
+      /\*\s*(sends?|sending|sent|shows?|showing|shares?|sharing|snaps?|takes?|took)\s+(you\s+)?(a\s+)?(photo|pic|picture|selfie|snap|image|nude|nudes)/i,
+      /\*\s*ellie\s+(sends?|sending|shows?|shares?|snaps?)\s+(you\s+)?(a\s+)?(photo|pic|picture|selfie|snap|image|nude|nudes)/i,
+      /\*\s*(attaches?|attached|posts?|uploads?)\s+(a\s+)?(photo|pic|picture|selfie|image|nude)/i,
+    ];
+
+    for (const pattern of fakePhotoPatterns) {
+      if (pattern.test(rawContent)) {
+        console.log(`[Euryale] 🚨 Fake photo action detected: "${rawContent.substring(0, 60)}..." - throwing to trigger retry`);
+        throw new Error('Euryale claimed to send photo without actual photo');
+      }
+    }
+
     let filtered = filterAllActions(rawContent);
     filtered = validateElleResponse(filtered, 80);
 
@@ -1957,9 +1977,31 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
           try {
             response = await callEuryale(messages, 1.1, maxTokens);
           } catch (euryaleError) {
-            console.error('[Routing] ⚠️ Euryale failed, falling back to Groq:', euryaleError.message);
-            // Fall back to Groq if Euryale returns garbage
-            response = await callGroq(messages);
+            console.error('[Routing] ⚠️ Euryale failed:', euryaleError.message);
+
+            // If Euryale tried to fake-send a photo, retry with correction instruction
+            if (euryaleError.message.includes('claimed to send photo')) {
+              console.log('[Routing] 🔄 Retrying Euryale with photo correction...');
+              try {
+                // Add correction to system message
+                const correctedMessages = messages.map((m, i) => {
+                  if (i === 0 && m.role === 'system') {
+                    return {
+                      ...m,
+                      content: m.content + '\n\n⚠️ CRITICAL: Do NOT write roleplay actions like "*sends a picture*" or "*attaches photo*". You cannot send photos. Just respond with text only.'
+                    };
+                  }
+                  return m;
+                });
+                response = await callEuryale(correctedMessages, 1.0, maxTokens, true);
+              } catch (retryError) {
+                console.error('[Routing] ⚠️ Euryale retry also failed, falling back to Groq:', retryError.message);
+                response = await callGroq(messages);
+              }
+            } else {
+              // Fall back to Groq if Euryale returns garbage
+              response = await callGroq(messages);
+            }
           }
         }
       } else {
@@ -2754,6 +2796,7 @@ STYLE:
 - Stage directions or narration of your actions
 - Starting your message with "Ellie:" or your name
 - Using multiple emojis (HARD LIMIT: 1 emoji max per message, preferably 0)
+- NEVER write "*sends a picture*" or "*attaches photo*" or similar - you CANNOT send photos through roleplay actions. Photos are handled by a separate system. Just respond with text.
 
 INSTEAD OF ACTIONS:
 - Instead of "*sighs*" → "ugh" or just say what you're feeling
