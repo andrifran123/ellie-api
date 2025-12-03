@@ -709,12 +709,23 @@ function buildPhotoContext(photo) {
     parts.push(`Photo: ${photo.description}`);
   }
 
-  // Location and setting
-  if (photo.location) {
-    let locationStr = photo.location;
-    if (photo.sub_location) locationStr += ` (${photo.sub_location})`;
-    parts.push(`Location: ${locationStr}`);
+  // Location and setting - try multiple sources
+  let locationStr = photo.location;
+  if (!locationStr) {
+    // Extract from category name as fallback
+    const category = (photo.category || '').toLowerCase();
+    if (category.includes('gym')) locationStr = 'gym';
+    else if (category.includes('bedroom') || category.includes('bed')) locationStr = 'bedroom';
+    else if (category.includes('bathroom') || category.includes('mirror')) locationStr = 'bathroom';
+    else if (category.includes('kitchen')) locationStr = 'kitchen';
+    else if (category.includes('beach') || category.includes('pool')) locationStr = 'beach/pool';
+    else if (category.includes('outdoor') || category.includes('outside')) locationStr = 'outside';
+    else if (category.includes('office') || category.includes('work')) locationStr = 'work';
+    else if (category.includes('car')) locationStr = 'car';
+    else locationStr = photo.setting || 'home';
   }
+  if (photo.sub_location) locationStr += ` (${photo.sub_location})`;
+  parts.push(`Location: ${locationStr}`);
 
   // What she's wearing - build from top and bottom
   const outfitParts = [];
@@ -793,8 +804,23 @@ function buildPhotoContext(photo) {
 function createPhotoAwarePrompt(photo, triggerType, isMilestone = false) {
   const context = buildPhotoContext(photo);
 
-  // Get location for consistency
-  const location = photo.location || 'somewhere';
+  // Get location for consistency - try multiple sources
+  let location = photo.location;
+  if (!location || location === 'somewhere') {
+    // Try to extract from category name (e.g., "gym_mirror_selfie" -> "gym")
+    const category = (photo.category || '').toLowerCase();
+    if (category.includes('gym')) location = 'gym';
+    else if (category.includes('bedroom') || category.includes('bed')) location = 'bedroom';
+    else if (category.includes('bathroom') || category.includes('mirror')) location = 'bathroom';
+    else if (category.includes('kitchen')) location = 'kitchen';
+    else if (category.includes('beach') || category.includes('pool')) location = 'beach/pool';
+    else if (category.includes('outdoor') || category.includes('outside')) location = 'outside';
+    else if (category.includes('office') || category.includes('work')) location = 'work';
+    else if (category.includes('car')) location = 'car';
+    else location = photo.setting || 'home'; // Default to home, not 'somewhere'
+  }
+  console.log(`📸 Photo location resolved: "${location}" (from: location=${photo.location}, category=${photo.category}, setting=${photo.setting})`);
+
   const activity = photo.activity || '';
   const wearing = [];
   if (photo.top_description) wearing.push(photo.top_description);
