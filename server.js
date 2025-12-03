@@ -6839,7 +6839,12 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
 
     // ⚡ PERFORMANCE MONITORING
     const totalTime = Date.now() - startTime;
-    console.log(`⚡ Response sent in ${totalTime}ms total for user ${userId}`);
+    console.log(`⚡ Response generated in ${totalTime}ms for user ${userId}`);
+
+    // ⏱️ HUMAN-LIKE DELAY: Wait 1.5-2.5 seconds before sending response (simulates typing)
+    const typingDelay = 1500 + Math.random() * 1000; // 1.5-2.5 seconds
+    await new Promise(resolve => setTimeout(resolve, typingDelay));
+    console.log(`⏱️ Response sent after ${typingDelay.toFixed(0)}ms typing delay`);
 
     res.json({
       reply: enhancedReply,
