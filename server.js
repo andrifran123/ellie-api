@@ -6741,6 +6741,13 @@ If they already answered a question, you KNOW the answer - reference it instead 
         content: `📸 You're sharing a photo naturally. You're at: ${photoLocation}. Share it casually like "what do you think?", "me rn 😊", or "how's this look?" - NOT "hey I sent you a pic". Keep it to 1 short sentence.`
       });
       console.log(`📸 Added photo reminder as last system message (location: ${photoLocation})`);
+    } else {
+      // 🚨 CRITICAL: Tell AI NO photo is being sent - prevents fake photo roleplay
+      messagesToSend.push({
+        role: "system",
+        content: `⚠️ NO PHOTO: You are NOT sending a photo with this message. Do NOT write roleplay actions like "*sends a picture*" or describe sending photos. Just respond naturally with text only.`
+      });
+      console.log(`📸 Added NO-PHOTO reminder to prevent fake photo roleplay`);
     }
 
     // 🔀 HYBRID MODEL ROUTING
