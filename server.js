@@ -3785,19 +3785,19 @@ async function initDB() {
     ON asked_questions(user_id);
   `).catch(() => {});
 
-  // 💬 Create double_texts table (tracks double texts used per user)
+  // 💬 Create double_text_questions table (tracks questions asked in double texts per user)
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS double_texts (
+    CREATE TABLE IF NOT EXISTS double_text_questions (
       id SERIAL PRIMARY KEY,
       user_id VARCHAR(100) NOT NULL,
-      text_content TEXT NOT NULL,
-      used_at TIMESTAMP DEFAULT NOW()
+      question TEXT NOT NULL,
+      asked_at TIMESTAMP DEFAULT NOW()
     );
   `);
 
   await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_double_texts_user
-    ON double_texts(user_id, used_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_double_text_questions_user
+    ON double_text_questions(user_id, asked_at DESC);
   `).catch(() => {});
 
   // Update user_relationships table for missed call tracking
@@ -6940,96 +6940,113 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     await new Promise(resolve => setTimeout(resolve, typingDelay));
     console.log(`⏱️ Response sent after ${typingDelay.toFixed(0)}ms typing delay`);
 
-    // 💬 DOUBLE TEXT: ~25% chance to generate a follow-up message
+    // 💬 DOUBLE TEXT: ~15% chance to generate a natural follow-up
+    // This is a CONTINUATION of the same thought, not a random new topic
     let followUp = null;
-    const shouldDoubleText = Math.random() < 0.25;
+    const shouldDoubleText = Math.random() < 0.15; // Lower chance for quality over quantity
 
     if (shouldDoubleText && !photoPrep) { // Don't double text when sending photos
       try {
-        // Get recent conversation for context (last 20 messages)
-        const recentHistory = history.slice(-20).map(m => `${m.role}: ${m.content}`).join('\n');
-
-        // Get previously used double texts for this user (to encourage variety)
-        let previousDoubleTexts = [];
+        // Get previous questions asked in double texts to avoid repeats
+        let previousQuestions = [];
         try {
-          const dtResult = await pool.query(
-            `SELECT text_content FROM double_texts WHERE user_id = $1 ORDER BY used_at DESC LIMIT 20`,
+          const qResult = await pool.query(
+            `SELECT question FROM double_text_questions WHERE user_id = $1 ORDER BY asked_at DESC LIMIT 30`,
             [userId]
           );
-          previousDoubleTexts = dtResult.rows.map(r => r.text_content);
+          previousQuestions = qResult.rows.map(r => r.question);
         } catch (e) { /* table might not exist yet */ }
 
-        const previousTextsNote = previousDoubleTexts.length > 0
-          ? `\n\nYou've used these follow-ups before (try something different):\n${previousDoubleTexts.map(t => `- "${t}"`).join('\n')}`
+        const previousQuestionsNote = previousQuestions.length > 0
+          ? `\n\nQUESTIONS YOU'VE ALREADY ASKED (never repeat these):\n${previousQuestions.map(q => `- "${q}"`).join('\n')}`
           : '';
 
+        // Build the prompt with full conversation context
+        const recentHistory = history.slice(-20).map(m => `${m.role}: ${m.content}`).join('\n');
+
         const followUpPrompt = [
-          { role: "system", content: `You are Ellie. Here's the recent conversation:
+          { role: "system", content: `You are Ellie. Here's the conversation:
 
 ${recentHistory}
 
 You just sent: "${enhancedReply}"
-${previousTextsNote}
+${previousQuestionsNote}
 
-Send a SHORT follow-up text (5-15 words) - a casual afterthought.
+Generate a NATURAL double text - a quick follow-up that continues EXACTLY the same topic you were just discussing.
 
-CRITICAL RULES:
-1. Do NOT ask any question that was already asked in the conversation above
-2. Do NOT repeat topics already discussed
-3. Must be a COMPLETE thought, not a fragment like "oh and..."
-4. Add something NEW - a quick observation, feeling, or comment
-5. Try to be DIFFERENT from your previous follow-ups listed above
+WHAT DOUBLE TEXTING IS:
+- A second message sent right after the first, like you thought of something else to add
+- Must be about THE SAME TOPIC as your last message
+- Like how real people text: send one message, then quickly add another thought
 
-Good examples:
-- "i'm so bored rn lol"
-- "miss you"
-- "this song reminds me of you"
-- "ugh i need coffee"
+EXAMPLES OF GOOD DOUBLE TEXTS:
+- If you said "yeah i'm watching a movie" → follow with "have you seen interstellar?"
+- If talking about cats and you said "i love cats" → follow with "but i've never owned one"
+- If you said "pizza is my fav food" → follow with "what's yours?"
+- If you said "work was exhausting" → follow with "i need a vacation lol"
 
-BAD - never do these:
-- Asking a question that was already asked above
-- "oh and I forgot to ask" (incomplete)
-- "wait actually..." (incomplete)
-- Repeating anything from the conversation
+RULES:
+1. MUST relate to what you JUST said - same topic, same vibe
+2. Can be a statement OR a question
+3. If it's a question, make sure it's NOT in the "already asked" list above
+4. Keep it short (3-12 words)
+5. No fragments like "oh and..." or "wait..."
+6. No random topic changes
 
-Just the follow-up text, nothing else.` },
-          { role: "user", content: "Send your follow-up message:" }
+Output ONLY the follow-up text, nothing else.` },
+          { role: "user", content: "Your double text:" }
         ];
 
         const followUpResponse = await client.chat.completions.create({
           model: CHAT_MODEL,
           messages: followUpPrompt,
-          temperature: 0.9,
-          max_tokens: 50,
+          temperature: 0.85,
+          max_tokens: 40,
         });
 
         const followUpText = followUpResponse.choices[0]?.message?.content?.trim();
-        if (followUpText && followUpText.length > 0 && followUpText.length < 100) {
+
+        // Validate: must be short and not a fragment
+        const isFragment = /^(oh and|wait|also|btw|but like)\b/i.test(followUpText);
+        const isValid = followUpText &&
+                        followUpText.length > 2 &&
+                        followUpText.length < 80 &&
+                        !isFragment;
+
+        if (isValid) {
           followUp = {
             text: followUpText,
-            delayMs: 1500 + Math.random() * 1000 // 1.5-2.5 seconds after first message
+            delayMs: 1000 + Math.random() * 1500 // 1-2.5 seconds after first message
           };
           console.log(`💬 Double text generated: "${followUpText}"`);
 
-          // Store follow-up in conversation history AND track in double_texts table
+          // Check if it's a question (ends with ?)
+          const isQuestion = followUpText.trim().endsWith('?');
+
+          // Store follow-up in conversation history
           setImmediate(async () => {
             try {
-              // Store in conversation history
               await pool.query(
                 `INSERT INTO conversation_history (user_id, role, content, created_at)
                  VALUES ($1, 'assistant', $2, NOW())`,
                 [userId, followUpText]
               );
-              // Track in double_texts for variety
-              await pool.query(
-                `INSERT INTO double_texts (user_id, text_content, used_at)
-                 VALUES ($1, $2, NOW())`,
-                [userId, followUpText]
-              );
+
+              // If it's a question, track it to avoid repeats
+              if (isQuestion) {
+                await pool.query(
+                  `INSERT INTO double_text_questions (user_id, question, asked_at)
+                   VALUES ($1, $2, NOW())`,
+                  [userId, followUpText]
+                );
+                console.log(`📝 Tracked double text question: "${followUpText}"`);
+              }
             } catch (err) {
               console.warn('Failed to store follow-up:', err.message);
             }
           });
+        } else {
+          console.log(`💬 Double text rejected (invalid): "${followUpText}"`);
         }
       } catch (followUpErr) {
         console.warn('Follow-up generation failed:', followUpErr.message);
