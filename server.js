@@ -4732,14 +4732,29 @@ async function getHistory(userId) {
     // NOTE: Memories are extracted from ALL messages and stored separately - never deleted
     // UI shows only last 40 messages (see /api/chat-view/messages endpoint)
     // IMPORTANT: Include photo_url so AI knows when photos were sent
-    const result = await pool.query(
-      `SELECT role, content, photo_url
-       FROM conversation_history
-       WHERE user_id = $1
-       ORDER BY created_at DESC
-       LIMIT 100`,
-      [userId]
-    );
+    let result;
+    try {
+      // Try with photo_url column first
+      result = await pool.query(
+        `SELECT role, content, photo_url
+         FROM conversation_history
+         WHERE user_id = $1
+         ORDER BY created_at DESC
+         LIMIT 100`,
+        [userId]
+      );
+    } catch (colErr) {
+      // Fallback if photo_url column doesn't exist yet
+      console.warn('⚠️ photo_url column not found, using basic query');
+      result = await pool.query(
+        `SELECT role, content, NULL as photo_url
+         FROM conversation_history
+         WHERE user_id = $1
+         ORDER BY created_at DESC
+         LIMIT 100`,
+        [userId]
+      );
+    }
 
     // Process messages to include photo context for AI
     const messages = result.rows.reverse().map(msg => {
