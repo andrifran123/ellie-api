@@ -343,7 +343,7 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
           /i('m| am) (so |really )?(horny|turned on)/i,
           /you('re| are) making me (horny|hard|wet)/i,
         ],
-        chance: 0.55,  // Higher chance during sexual talk - she's into it
+        chance: 0.80,  // 80% chance during sexual talk - she's into it
         nsfw: true,    // Flag to select NSFW photos
       },
       activity_her: {
