@@ -299,187 +299,222 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
       return milestone;
     }
 
-    // IGNORE DIRECT REQUESTS (handled with refusals)
+    // ═══════════════════════════════════════════════════════════════
+    // STAGE-SPECIFIC PHOTO RULES
+    // ═══════════════════════════════════════════════════════════════
+    // STRANGER: 1 photo milestone, can ask for 1 more (special photo), then NOTHING until paid
+    // FRIEND_TENSION: Work/gym photos ONLY (if contextual), can ask for 2-3 more per session (3hr reset)
+    // COMPLICATED: Teasing + work/gym photos, can ask for 4 more per session, can be explicit
+    // EXCLUSIVE: Random sexual + work/gym, can ask for 7 more per session
+    // ═══════════════════════════════════════════════════════════════
+
+    const currentStage = relationship.current_stage || 'STRANGER';
+
+    // 🚫 STRANGER STAGE - Very limited (handled by milestone + special followup only)
+    if (currentStage === 'STRANGER') {
+      // Strangers only get photos from milestone check (runs before this)
+      // and the special followup photo (also runs before this)
+      // No additional photos for strangers
+      return { shouldSend: false, reason: 'stranger_no_photos' };
+    }
+
+    // IGNORE DIRECT REQUESTS like "send me a photo" (handled with refusals)
     if (detectPhotoRequest(userMessage.toLowerCase())) {
       return { shouldSend: false, reason: 'direct_request_ignored' };
     }
 
-    // 🔥 SEXUAL CONVERSATION PATTERNS
-    const sexualPatterns = [
-      /\b(horny|turned on|aroused|hard|wet)\b/i,
-      /\b(fuck|fucking|sex|cock|dick|pussy)\b/i,
-      /\b(cum|cumming|orgasm)\b/i,
-      /want (to see )?you(r)? (body|ass|tits|boobs)/i,
-      /take (it |something )?off/i,
-      /show me (more|something)/i,
-      /i('m| am) (so |really )?(horny|turned on)/i,
-      /you('re| are) making me (horny|hard|wet)/i,
+    // 🔥 "ASKING FOR MORE" patterns - user explicitly requesting another photo
+    const askingForMorePatterns = [
+      /\b(another|more|one more|next|again)\b.*\b(pic|photo|picture|selfie|one)\b/i,
+      /\b(pic|photo|picture|selfie)\b.*\b(another|more|one more|next|again)\b/i,
+      /\b(send|show|take)\b.*\b(another|more|one more)\b/i,
+      /\bshow\s+me\s+more\b/i,
+      /\bcan\s+i\s+(see|get)\s+(more|another)\b/i,
+      /\bnext\s+(one|pic|photo)\b/i,
+      /\bkeep\s+(going|them\s+coming)\b/i,
+      /\bmore\s+please\b/i,
+      /\bi\s+want\s+more\b/i,
+      /\b(take|show)\b.*\b(off|clothes|shirt|top|bra|pants)\b/i,
+      /\b(undress|strip)\b/i,
     ];
-    const isSexualConversation = sexualPatterns.some(pattern => pattern.test(userMessage));
+    const isAskingForMore = askingForMorePatterns.some(pattern => pattern.test(userMessage));
 
-    // 🔥 PER-STAGE PHOTO CAPS (for sexual conversations)
-    // First photo is free, then user can ask for X more based on stage
-    // Note: "Ask for more" is handled by checkSpecialFollowupPhoto() which runs BEFORE this
-    const photoCapsByStage = {
-      STRANGER: 1,        // 1 total (first photo only, no extras)
-      FRIEND_TENSION: 3,  // 3 total (first + 2 extras)
-      COMPLICATED: 5,     // 5 total (first + 4 extras)
-      EXCLUSIVE: 9,       // 9 total (first + 8 extras)
+    // 🔥 SESSION-BASED CAPS (reset after 3 hours of no photos)
+    const sessionCapsByStage = {
+      FRIEND_TENSION: 3,  // First + 2 more asks = 3 total per session
+      COMPLICATED: 5,     // First + 4 more asks = 5 total per session
+      EXCLUSIVE: 8,       // First + 7 more asks = 8 total per session
     };
-    const currentStage = relationship.current_stage || 'STRANGER';
-    const maxPhotos = photoCapsByStage[currentStage] ?? 1;
+    const sessionCap = sessionCapsByStage[currentStage] ?? 1;
 
-    // Count photos sent in last 24 hours (for cap enforcement)
-    const recentPhotosQuery = await pool.query(
+    // Count photos in current session (last 3 hours)
+    const sessionPhotosQuery = await pool.query(
       `SELECT COUNT(*) as count FROM user_photo_history
-       WHERE user_id = $1 AND sent_at > NOW() - INTERVAL '24 hours'`,
+       WHERE user_id = $1 AND sent_at > NOW() - INTERVAL '3 hours'`,
       [userId]
     );
-    const photosInLast24h = parseInt(recentPhotosQuery.rows[0]?.count || 0);
+    const photosInSession = parseInt(sessionPhotosQuery.rows[0]?.count || 0);
 
-    // Check if user has hit their stage cap
-    if (photosInLast24h >= maxPhotos) {
-      console.log(`📸 User hit photo cap for ${currentStage}: ${photosInLast24h}/${maxPhotos} photos in 24h`);
-      return { shouldSend: false, reason: 'stage_cap_reached' };
-    }
-
-    // Check time limit for non-sexual (4 hours)
+    // Check if there's been a recent photo (for "ask for more" to work)
     const lastPhotoQuery = await pool.query(
       `SELECT sent_at FROM user_photo_history
        WHERE user_id = $1 ORDER BY sent_at DESC LIMIT 1`,
       [userId]
     );
 
-    if (lastPhotoQuery.rows.length > 0 && !isSexualConversation) {
-      const lastPhoto = lastPhotoQuery.rows[0].sent_at;
-      const hoursSinceLastPhoto = (Date.now() - new Date(lastPhoto)) / (1000 * 60 * 60);
-      if (hoursSinceLastPhoto < 4) {
-        return { shouldSend: false, reason: 'time_limit' };
+    const hasRecentPhoto = lastPhotoQuery.rows.length > 0 &&
+      ((Date.now() - new Date(lastPhotoQuery.rows[0].sent_at)) / (1000 * 60 * 60)) < 1;
+
+    // 📸 IF USER IS ASKING FOR MORE
+    if (isAskingForMore && hasRecentPhoto) {
+      // Check session cap
+      if (photosInSession >= sessionCap) {
+        console.log(`📸 User hit session cap for ${currentStage}: ${photosInSession}/${sessionCap} in 3hrs`);
+        return { shouldSend: false, reason: 'session_cap_reached' };
       }
+
+      console.log(`🔥 User asking for more - sending! (${photosInSession}/${sessionCap} in session)`);
+
+      // Determine what type of photos they can get
+      let nsfwAllowed = false;
+      let categories = ['casual', 'work', 'gym'];
+
+      if (currentStage === 'COMPLICATED') {
+        nsfwAllowed = true;  // Can get explicit
+        categories = ['teasing', 'flirty', 'suggestive', 'work', 'gym'];
+      } else if (currentStage === 'EXCLUSIVE') {
+        nsfwAllowed = true;
+        categories = null;  // Any category including sexual
+      }
+
+      return {
+        shouldSend: true,
+        triggerType: 'ask_for_more',
+        categories: categories,
+        nsfwAllowed: nsfwAllowed,
+        preferHighNsfw: currentStage === 'EXCLUSIVE',
+        preferSexyContent: currentStage !== 'FRIEND_TENSION',
+        isMilestone: false
+      };
     }
 
-    // Minimum messages requirement
+    // Minimum messages requirement for first automatic photo
     const messagesCount = relationship.total_interactions || 0;
-    if (relationship.current_stage === 'STRANGER' && messagesCount < 20) {
+    if (messagesCount < 5) {
       return { shouldSend: false, reason: 'too_early' };
     }
 
     // Extract conversation topics for context-aware selection
     const topics = extractConversationTopics(userMessage, conversationContext.ellieResponse || '');
 
-    // Contextual triggers based on conversation
-    // Lower chances = more human-like, not every request gets a photo
-    const triggers = {
-      // 🔥 Sexual conversation - she's more open when things get heated
-      sexual_conversation: {
-        patterns: sexualPatterns,  // Use the same patterns defined above
-        chance: 0.80,  // 80% chance during sexual talk - she's into it
-        nsfw: true,    // Flag to select NSFW photos
-      },
-      activity_her: {
-        patterns: [
-          /just (woke up|got up|finished)/,
-          /(done with|finished) (workout|gym)/,
-          /getting ready/,
-          /just took a/,
-        ],
-        chance: 0.20,  // Lowered - she doesn't always share
-      },
-      activity_user: {
-        patterns: [
-          /what are you up to/,
-          /what are you doing/,
-          /how('s| is) your (day|morning)/,
-        ],
-        chance: 0.15,  // Lowered - rare to send pic just for this
-      },
-      flirt_response: {
-        patterns: [
-          /you('re| are) (so )?(hot|beautiful|gorgeous|sexy|cute|pretty)/,
-          /(love|like|miss) you/,
-          /thinking (about|of) you/,
-        ],
-        chance: 0.25,  // Lowered - not always rewarding compliments
-      },
-      // Indirect requests - still higher but not guaranteed
-      indirect_tease: {
-        patterns: [
-          /i bet you look/i,
-          /you must look/i,
-          /wish i could see what you/i,
-          /what are you wearing/i,
-          /describe yourself/i,
-          /paint me a picture/i,
-          /prove it/i,
-        ],
-        chance: 0.45,  // Lowered from 85% - she's not always in the mood
-      },
-      conversation_flow: {
-        chance: 0.12,  // Lowered - rare natural photo shares
-        requiresGoodConversation: true
-      },
-      // Spontaneous DISABLED - photos should only come when contextually appropriate
-      // spontaneous: {
-      //   chance: 0.12,
-      // }
-    };
+    // ═══════════════════════════════════════════════════════════════
+    // AUTOMATIC PHOTO TRIGGERS (first photo of session)
+    // Based on stage and context
+    // ═══════════════════════════════════════════════════════════════
 
-    // Determine photo categories based on relationship stage
-    const stage = relationship.current_stage;
-    const categoryMap = {
-      STRANGER: ['casual', 'friendly'],
-      FRIEND: ['casual', 'playful'],
-      FRIEND_TENSION: ['casual', 'playful', 'flirty'],
-      DATING: ['playful', 'flirty', 'cute'],
-      COMPLICATED: ['flirty', 'suggestive', 'intimate'],
-      COMMITTED: ['flirty', 'romantic', 'intimate'],
-      EXCLUSIVE: ['intimate', 'romantic', 'suggestive']
-    };
+    // Check if already sent a photo this session (3 hours)
+    if (photosInSession > 0) {
+      // Already sent first photo - user needs to ask for more
+      return { shouldSend: false, reason: 'must_ask_for_more' };
+    }
 
-    // Check triggers - ONLY send photos when there's a natural reason
-    for (const [triggerType, config] of Object.entries(triggers)) {
-      let triggered = false;
+    // FRIEND_TENSION: Only work/gym contextual photos
+    if (currentStage === 'FRIEND_TENSION') {
+      const workGymPatterns = [
+        /\b(gym|workout|exercise|training|lift|weights)\b/i,
+        /\b(work|office|job|meeting|busy)\b/i,
+        /(done with|finished) (workout|gym|work)/i,
+        /at (the )?gym/i,
+        /at work/i,
+        /just (finished|got back from) (gym|work)/i,
+      ];
 
-      // REMOVED: spontaneous trigger - was too random and felt unnatural
-      if (triggerType === 'conversation_flow') {
-        // Only after 6+ messages AND good conversation flow
-        const recentMessageCount = conversationContext.recentMessageCount || 0;
-        triggered = recentMessageCount >= 6 && Math.random() < config.chance;
-      } else if (config.patterns) {
-        const hasMatch = config.patterns.some(pattern => pattern.test(userMessage));
-        triggered = hasMatch && Math.random() < config.chance;
-      }
+      const isWorkGymContext = workGymPatterns.some(p => p.test(userMessage));
 
-      if (triggered) {
-        // 🔥 For sexual triggers, prefer higher nsfw_level and sexy photos
-        let categories = categoryMap[stage] || ['casual'];
-        let nsfwAllowed = stage !== 'STRANGER';
-        let preferHighNsfw = false;
-        let preferSexyContent = false;  // Use ass_visible, breasts_visible columns
-
-        if (config.nsfw && stage !== 'STRANGER') {
-          // Sexual conversation - prefer bedroom photos with high nsfw and visible body parts
-          // Categories are location-based (bedroom_*, gym_*, etc) so we prefer bedroom
-          categories = null;  // null = any category, we'll filter by nsfw_level instead
-          nsfwAllowed = true;
-          preferHighNsfw = true;     // Prefer photos with nsfw_level 2+
-          preferSexyContent = true;  // Prefer ass_visible or breasts_visible
-          console.log(`🔥 Sexual trigger activated - selecting NSFW photos`);
-        }
-
+      if (isWorkGymContext && Math.random() < 0.35) {
+        console.log(`📸 FRIEND_TENSION: Work/gym context detected - sending photo`);
         return {
           shouldSend: true,
-          triggerType,
-          categories: categories,
-          topics: topics,
-          nsfwAllowed: nsfwAllowed,
-          preferHighNsfw: preferHighNsfw,
-          preferSexyContent: preferSexyContent,
+          triggerType: 'work_gym_context',
+          categories: ['work', 'gym', 'casual'],
+          nsfwAllowed: false,
+          preferHighNsfw: false,
+          preferSexyContent: false,
           isMilestone: false
         };
       }
+
+      return { shouldSend: false, reason: 'friend_tension_no_context' };
     }
 
+    // COMPLICATED: Teasing + work/gym photos
+    if (currentStage === 'COMPLICATED') {
+      // Can send teasing photos randomly or contextually
+      const teasingPatterns = [
+        /you('re| are) (so )?(hot|beautiful|gorgeous|sexy|cute|pretty)/i,
+        /\b(horny|turned on|aroused)\b/i,
+        /thinking (about|of) you/i,
+        /miss you/i,
+        /what are you wearing/i,
+      ];
+
+      const workGymPatterns = [
+        /\b(gym|workout|work|office)\b/i,
+        /(done with|finished) (workout|gym|work)/i,
+      ];
+
+      const isTeasingContext = teasingPatterns.some(p => p.test(userMessage));
+      const isWorkGymContext = workGymPatterns.some(p => p.test(userMessage));
+
+      if ((isTeasingContext || isWorkGymContext) && Math.random() < 0.45) {
+        console.log(`📸 COMPLICATED: Teasing/work context - sending photo`);
+        return {
+          shouldSend: true,
+          triggerType: isTeasingContext ? 'teasing_context' : 'work_gym_context',
+          categories: ['teasing', 'flirty', 'suggestive', 'work', 'gym'],
+          nsfwAllowed: true,
+          preferHighNsfw: false,
+          preferSexyContent: true,
+          isMilestone: false
+        };
+      }
+
+      return { shouldSend: false, reason: 'complicated_no_trigger' };
+    }
+
+    // EXCLUSIVE: Random sexual + work/gym photos
+    if (currentStage === 'EXCLUSIVE') {
+      const sexualPatterns = [
+        /\b(horny|turned on|aroused|hard|wet)\b/i,
+        /\b(fuck|fucking|sex|cock|dick|pussy)\b/i,
+        /want (to see )?you/i,
+        /thinking (about|of) you/i,
+        /miss you/i,
+        /you('re| are) (so )?(hot|sexy|beautiful)/i,
+      ];
+
+      const isSexualContext = sexualPatterns.some(p => p.test(userMessage));
+
+      // Higher chance for exclusive - 60% if sexual context, 25% random
+      const chance = isSexualContext ? 0.60 : 0.25;
+
+      if (Math.random() < chance) {
+        console.log(`📸 EXCLUSIVE: Sending ${isSexualContext ? 'sexual' : 'random'} photo`);
+        return {
+          shouldSend: true,
+          triggerType: isSexualContext ? 'sexual_context' : 'random_exclusive',
+          categories: null,  // Any category
+          nsfwAllowed: true,
+          preferHighNsfw: isSexualContext,
+          preferSexyContent: true,
+          isMilestone: false
+        };
+      }
+
+      return { shouldSend: false, reason: 'exclusive_chance_failed' };
+    }
+
+    // Fallback - no trigger matched
     return { shouldSend: false, reason: 'no_trigger' };
 
   } catch (error) {
