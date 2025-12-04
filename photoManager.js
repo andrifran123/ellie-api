@@ -317,40 +317,17 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     ];
     const isSexualConversation = sexualPatterns.some(pattern => pattern.test(userMessage));
 
-    // 🔥 "ASKING FOR MORE" patterns - user explicitly requesting another photo
-    const askingForMorePatterns = [
-      /\b(another|more|one more|next|again)\b.*\b(pic|photo|picture|selfie|one)\b/i,
-      /\b(pic|photo|picture|selfie)\b.*\b(another|more|one more|next|again)\b/i,
-      /\b(send|show|take)\b.*\b(another|more|one more)\b/i,
-      /\bshow\s+me\s+more\b/i,
-      /\bcan\s+i\s+(see|get)\s+(more|another)\b/i,
-      /\bnext\s+(one|pic|photo)\b/i,
-      /\bkeep\s+(going|them\s+coming)\b/i,
-      /\bmore\s+please\b/i,
-      /\bi\s+want\s+more\b/i,
-    ];
-    const isAskingForMore = askingForMorePatterns.some(pattern => pattern.test(userMessage));
-
     // 🔥 PER-STAGE PHOTO CAPS (for sexual conversations)
     // First photo is free, then user can ask for X more based on stage
+    // Note: "Ask for more" is handled by checkSpecialFollowupPhoto() which runs BEFORE this
     const photoCapsByStage = {
-      STRANGER: 0,        // No extra photos
-      FRIEND: 1,          // 1 extra (2 total)
-      FRIEND_TENSION: 2,  // 2 extra (3 total)
-      DATING: 3,          // 3 extra (4 total)
-      COMPLICATED: 4,     // 4 extra (5 total)
-      COMMITTED: 6,       // 6 extra (7 total)
-      EXCLUSIVE: 8,       // 8 extra (9 total)
+      STRANGER: 1,        // 1 total (first photo only, no extras)
+      FRIEND_TENSION: 3,  // 3 total (first + 2 extras)
+      COMPLICATED: 5,     // 5 total (first + 4 extras)
+      EXCLUSIVE: 9,       // 9 total (first + 8 extras)
     };
     const currentStage = relationship.current_stage || 'STRANGER';
-    const maxExtraPhotos = photoCapsByStage[currentStage] ?? 0;
-
-    // Check time limit and photo caps
-    const lastPhotoQuery = await pool.query(
-      `SELECT sent_at FROM user_photo_history
-       WHERE user_id = $1 ORDER BY sent_at DESC LIMIT 1`,
-      [userId]
-    );
+    const maxPhotos = photoCapsByStage[currentStage] ?? 1;
 
     // Count photos sent in last 24 hours (for cap enforcement)
     const recentPhotosQuery = await pool.query(
@@ -360,29 +337,24 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     );
     const photosInLast24h = parseInt(recentPhotosQuery.rows[0]?.count || 0);
 
-    if (lastPhotoQuery.rows.length > 0) {
+    // Check if user has hit their stage cap
+    if (photosInLast24h >= maxPhotos) {
+      console.log(`📸 User hit photo cap for ${currentStage}: ${photosInLast24h}/${maxPhotos} photos in 24h`);
+      return { shouldSend: false, reason: 'stage_cap_reached' };
+    }
+
+    // Check time limit for non-sexual (4 hours)
+    const lastPhotoQuery = await pool.query(
+      `SELECT sent_at FROM user_photo_history
+       WHERE user_id = $1 ORDER BY sent_at DESC LIMIT 1`,
+      [userId]
+    );
+
+    if (lastPhotoQuery.rows.length > 0 && !isSexualConversation) {
       const lastPhoto = lastPhotoQuery.rows[0].sent_at;
       const hoursSinceLastPhoto = (Date.now() - new Date(lastPhoto)) / (1000 * 60 * 60);
-
-      if (isSexualConversation) {
-        // 🔥 SEXUAL: User must ASK for more to get another photo
-        if (!isAskingForMore) {
-          console.log(`📸 Sexual convo but user didn't ask for more - no photo`);
-          return { shouldSend: false, reason: 'sexual_must_ask' };
-        }
-
-        // Check if user has hit their stage cap (first photo is free, so cap is maxExtraPhotos + 1)
-        if (photosInLast24h > maxExtraPhotos) {
-          console.log(`📸 User hit photo cap for ${currentStage}: ${photosInLast24h}/${maxExtraPhotos + 1} photos in 24h`);
-          return { shouldSend: false, reason: 'stage_cap_reached' };
-        }
-
-        console.log(`🔥 Sexual conversation + user asked for more - sending photo! (${photosInLast24h}/${maxExtraPhotos + 1} cap for ${currentStage})`);
-      } else {
-        // Non-sexual: 4-hour limit
-        if (hoursSinceLastPhoto < 4) {
-          return { shouldSend: false, reason: 'time_limit' };
-        }
+      if (hoursSinceLastPhoto < 4) {
+        return { shouldSend: false, reason: 'time_limit' };
       }
     }
 
