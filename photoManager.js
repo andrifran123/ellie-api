@@ -304,7 +304,20 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
       return { shouldSend: false, reason: 'direct_request_ignored' };
     }
 
-    // Check daily limit
+    // 🔥 SEXUAL CONVERSATION PATTERNS - checked BEFORE time limit
+    const sexualPatterns = [
+      /\b(horny|turned on|aroused|hard|wet)\b/i,
+      /\b(fuck|fucking|sex|cock|dick|pussy)\b/i,
+      /\b(cum|cumming|orgasm)\b/i,
+      /want (to see )?you(r)? (body|ass|tits|boobs)/i,
+      /take (it |something )?off/i,
+      /show me (more|something)/i,
+      /i('m| am) (so |really )?(horny|turned on)/i,
+      /you('re| are) making me (horny|hard|wet)/i,
+    ];
+    const isSexualConversation = sexualPatterns.some(pattern => pattern.test(userMessage));
+
+    // Check time limit - but BYPASS for sexual conversations
     const lastPhotoQuery = await pool.query(
       `SELECT sent_at FROM user_photo_history
        WHERE user_id = $1 ORDER BY sent_at DESC LIMIT 1`,
@@ -314,8 +327,20 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     if (lastPhotoQuery.rows.length > 0) {
       const lastPhoto = lastPhotoQuery.rows[0].sent_at;
       const hoursSinceLastPhoto = (Date.now() - new Date(lastPhoto)) / (1000 * 60 * 60);
-      if (hoursSinceLastPhoto < 20) {
-        return { shouldSend: false, reason: 'daily_limit' };
+      const minutesSinceLastPhoto = hoursSinceLastPhoto * 60;
+
+      if (isSexualConversation) {
+        // 🔥 SEXUAL: Only 10-minute cooldown between photos
+        if (minutesSinceLastPhoto < 10) {
+          console.log(`📸 Sexual convo but only ${minutesSinceLastPhoto.toFixed(1)} mins since last photo - waiting`);
+          return { shouldSend: false, reason: 'sexual_cooldown' };
+        }
+        console.log(`🔥 Sexual conversation - bypassing normal time limit (${minutesSinceLastPhoto.toFixed(1)} mins since last)`);
+      } else {
+        // Non-sexual: 4-hour limit
+        if (hoursSinceLastPhoto < 4) {
+          return { shouldSend: false, reason: 'time_limit' };
+        }
       }
     }
 
@@ -333,16 +358,7 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     const triggers = {
       // 🔥 Sexual conversation - she's more open when things get heated
       sexual_conversation: {
-        patterns: [
-          /\b(horny|turned on|aroused|hard|wet)\b/i,
-          /\b(fuck|fucking|sex|cock|dick|pussy)\b/i,
-          /\b(cum|cumming|orgasm)\b/i,
-          /want (to see )?you(r)? (body|ass|tits|boobs)/i,
-          /take (it |something )?off/i,
-          /show me (more|something)/i,
-          /i('m| am) (so |really )?(horny|turned on)/i,
-          /you('re| are) making me (horny|hard|wet)/i,
-        ],
+        patterns: sexualPatterns,  // Use the same patterns defined above
         chance: 0.80,  // 80% chance during sexual talk - she's into it
         nsfw: true,    // Flag to select NSFW photos
       },
