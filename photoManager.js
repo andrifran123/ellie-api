@@ -331,24 +331,53 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     ];
     const isAskingForMore = askingForMorePatterns.some(pattern => pattern.test(userMessage));
 
-    // Check time limit
+    // 🔥 PER-STAGE PHOTO CAPS (for sexual conversations)
+    // First photo is free, then user can ask for X more based on stage
+    const photoCapsByStage = {
+      STRANGER: 0,        // No extra photos
+      FRIEND: 1,          // 1 extra (2 total)
+      FRIEND_TENSION: 2,  // 2 extra (3 total)
+      DATING: 3,          // 3 extra (4 total)
+      COMPLICATED: 4,     // 4 extra (5 total)
+      COMMITTED: 6,       // 6 extra (7 total)
+      EXCLUSIVE: 8,       // 8 extra (9 total)
+    };
+    const currentStage = relationship.current_stage || 'STRANGER';
+    const maxExtraPhotos = photoCapsByStage[currentStage] ?? 0;
+
+    // Check time limit and photo caps
     const lastPhotoQuery = await pool.query(
       `SELECT sent_at FROM user_photo_history
        WHERE user_id = $1 ORDER BY sent_at DESC LIMIT 1`,
       [userId]
     );
 
+    // Count photos sent in last 24 hours (for cap enforcement)
+    const recentPhotosQuery = await pool.query(
+      `SELECT COUNT(*) as count FROM user_photo_history
+       WHERE user_id = $1 AND sent_at > NOW() - INTERVAL '24 hours'`,
+      [userId]
+    );
+    const photosInLast24h = parseInt(recentPhotosQuery.rows[0]?.count || 0);
+
     if (lastPhotoQuery.rows.length > 0) {
       const lastPhoto = lastPhotoQuery.rows[0].sent_at;
       const hoursSinceLastPhoto = (Date.now() - new Date(lastPhoto)) / (1000 * 60 * 60);
 
       if (isSexualConversation) {
-        // 🔥 SEXUAL: User must ASK for more to get another photo (no time limit)
+        // 🔥 SEXUAL: User must ASK for more to get another photo
         if (!isAskingForMore) {
           console.log(`📸 Sexual convo but user didn't ask for more - no photo`);
           return { shouldSend: false, reason: 'sexual_must_ask' };
         }
-        console.log(`🔥 Sexual conversation + user asked for more - sending photo!`);
+
+        // Check if user has hit their stage cap (first photo is free, so cap is maxExtraPhotos + 1)
+        if (photosInLast24h > maxExtraPhotos) {
+          console.log(`📸 User hit photo cap for ${currentStage}: ${photosInLast24h}/${maxExtraPhotos + 1} photos in 24h`);
+          return { shouldSend: false, reason: 'stage_cap_reached' };
+        }
+
+        console.log(`🔥 Sexual conversation + user asked for more - sending photo! (${photosInLast24h}/${maxExtraPhotos + 1} cap for ${currentStage})`);
       } else {
         // Non-sexual: 4-hour limit
         if (hoursSinceLastPhoto < 4) {
