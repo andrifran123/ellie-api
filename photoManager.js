@@ -304,7 +304,7 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
       return { shouldSend: false, reason: 'direct_request_ignored' };
     }
 
-    // 🔥 SEXUAL CONVERSATION PATTERNS - checked BEFORE time limit
+    // 🔥 SEXUAL CONVERSATION PATTERNS
     const sexualPatterns = [
       /\b(horny|turned on|aroused|hard|wet)\b/i,
       /\b(fuck|fucking|sex|cock|dick|pussy)\b/i,
@@ -317,7 +317,21 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     ];
     const isSexualConversation = sexualPatterns.some(pattern => pattern.test(userMessage));
 
-    // Check time limit - but BYPASS for sexual conversations
+    // 🔥 "ASKING FOR MORE" patterns - user explicitly requesting another photo
+    const askingForMorePatterns = [
+      /\b(another|more|one more|next|again)\b.*\b(pic|photo|picture|selfie|one)\b/i,
+      /\b(pic|photo|picture|selfie)\b.*\b(another|more|one more|next|again)\b/i,
+      /\b(send|show|take)\b.*\b(another|more|one more)\b/i,
+      /\bshow\s+me\s+more\b/i,
+      /\bcan\s+i\s+(see|get)\s+(more|another)\b/i,
+      /\bnext\s+(one|pic|photo)\b/i,
+      /\bkeep\s+(going|them\s+coming)\b/i,
+      /\bmore\s+please\b/i,
+      /\bi\s+want\s+more\b/i,
+    ];
+    const isAskingForMore = askingForMorePatterns.some(pattern => pattern.test(userMessage));
+
+    // Check time limit
     const lastPhotoQuery = await pool.query(
       `SELECT sent_at FROM user_photo_history
        WHERE user_id = $1 ORDER BY sent_at DESC LIMIT 1`,
@@ -327,15 +341,14 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     if (lastPhotoQuery.rows.length > 0) {
       const lastPhoto = lastPhotoQuery.rows[0].sent_at;
       const hoursSinceLastPhoto = (Date.now() - new Date(lastPhoto)) / (1000 * 60 * 60);
-      const minutesSinceLastPhoto = hoursSinceLastPhoto * 60;
 
       if (isSexualConversation) {
-        // 🔥 SEXUAL: Only 10-minute cooldown between photos
-        if (minutesSinceLastPhoto < 10) {
-          console.log(`📸 Sexual convo but only ${minutesSinceLastPhoto.toFixed(1)} mins since last photo - waiting`);
-          return { shouldSend: false, reason: 'sexual_cooldown' };
+        // 🔥 SEXUAL: User must ASK for more to get another photo (no time limit)
+        if (!isAskingForMore) {
+          console.log(`📸 Sexual convo but user didn't ask for more - no photo`);
+          return { shouldSend: false, reason: 'sexual_must_ask' };
         }
-        console.log(`🔥 Sexual conversation - bypassing normal time limit (${minutesSinceLastPhoto.toFixed(1)} mins since last)`);
+        console.log(`🔥 Sexual conversation + user asked for more - sending photo!`);
       } else {
         // Non-sexual: 4-hour limit
         if (hoursSinceLastPhoto < 4) {
