@@ -18,7 +18,8 @@
       "Bash(git pull:*)",
       "Bash(node scripts/check-photo-categories.js:*)",
       "Bash(node scripts/check-user.js:*)",
-      "Bash(node scripts/find-user.js:*)"
+      "Bash(node scripts/find-user.js:*)",
+      "Bash(git config:*)"
     ],
     "deny": [],
     "ask": []

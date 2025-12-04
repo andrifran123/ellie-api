@@ -1843,7 +1843,9 @@ CRITICAL - STAY IN CHARACTER:
     // DEBUG: Log what we're sending
     console.log(`[Euryale] Sending ${enhancedMessages.length} messages to OpenRouter`);
     console.log(`[Euryale] System prompt length: ${enhancedMessages[0]?.content?.length || 0} chars`);
-    console.log(`[Euryale] Last user message: "${enhancedMessages[enhancedMessages.length - 1]?.content?.substring(0, 50) || 'none'}..."`);
+    // Find actual last user message for debug log
+    const lastUserMsg = [...enhancedMessages].reverse().find(m => m.role === 'user');
+    console.log(`[Euryale] Last user message: "${lastUserMsg?.content?.substring(0, 50) || 'none'}..."`);
 
     const response = await fetch(OPENROUTER_ENDPOINT, {
       method: 'POST',
@@ -6727,28 +6729,41 @@ If they already answered a question, you KNOW the answer - reference it instead 
     }
 
     // Build fresh message array with personality ALWAYS first
-    const messagesToSend = [
-      { role: "system", content: finalSystemMsg },  // Personality ALWAYS included (+ photo context if applicable)
-      ...history.slice(-20)  // Last 20 messages (don't skip any!)
-    ];
+    // Get the last 20 messages from history
+    const recentHistory = history.slice(-20);
 
-    // 🎯 CRITICAL: Add photo reminder as the LAST system message (right before AI generates)
-    // This is more effective than appending to the main system message
+    // 🎯 CRITICAL: Insert photo/no-photo reminder BEFORE the last user message
+    // LLMs expect the conversation to end with a user message for proper completion
+    let photoReminder;
     if (photoPrep) {
       const photoLocation = photoPrep.photoContext?.match(/Location: ([^(.\n]+)/)?.[1]?.trim() || 'somewhere';
-      messagesToSend.push({
+      photoReminder = {
         role: "system",
         content: `📸 You're sharing a photo naturally. You're at: ${photoLocation}. Share it casually like "what do you think?", "me rn 😊", or "how's this look?" - NOT "hey I sent you a pic". Keep it to 1 short sentence.`
-      });
-      console.log(`📸 Added photo reminder as last system message (location: ${photoLocation})`);
+      };
+      console.log(`📸 Photo reminder injected (location: ${photoLocation})`);
     } else {
       // 🚨 CRITICAL: Tell AI NO photo is being sent - prevents fake photo roleplay
-      messagesToSend.push({
+      photoReminder = {
         role: "system",
-        content: `⚠️ NO PHOTO: You are NOT sending a photo with this message. Do NOT write roleplay actions like "*sends a picture*" or describe sending photos. Just respond naturally with text only.`
-      });
-      console.log(`📸 Added NO-PHOTO reminder to prevent fake photo roleplay`);
+        content: `⚠️ NO PHOTO: You are NOT sending a photo. Do NOT roleplay sending photos. Respond with text only.`
+      };
+      console.log(`📸 NO-PHOTO reminder injected`);
     }
+
+    // Insert reminder before the last user message (so conversation ends with user message)
+    const lastUserMsgIndex = recentHistory.map(m => m.role).lastIndexOf('user');
+    if (lastUserMsgIndex > 0) {
+      recentHistory.splice(lastUserMsgIndex, 0, photoReminder);
+    } else {
+      // Fallback: append to main system message if no user message found
+      finalSystemMsg += '\n\n' + photoReminder.content;
+    }
+
+    const messagesToSend = [
+      { role: "system", content: finalSystemMsg },  // Personality ALWAYS included (+ photo context if applicable)
+      ...recentHistory
+    ];
 
     // 🔀 HYBRID MODEL ROUTING
     // Route to Groq (free) or Hermes 3 (NSFW) based on user tier and content
