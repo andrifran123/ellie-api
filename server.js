@@ -3545,11 +3545,17 @@ app.use((req, res, next) => {
 app.use(express.static(path.join(__dirname, "public")));
 
 
-// Redundant health (kept)
-app.get("/healthz", (_req, res) => res.status(200).send("ok"));
-app.head("/healthz", (_req, res) => res.status(200).end());
-app.get("/api/healthz", (_req, res) => res.status(200).send("ok"));
-app.head("/api/healthz", (_req, res) => res.status(200).end());
+// DB-aware health check - USE THIS IN RENDER SETTINGS
+// Path: /health/db for full DB verification
+app.get("/health/db", async (_req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.status(200).json({ status: 'ok', db: 'connected' });
+  } catch (err) {
+    console.error('❌ DB Health check failed:', err.message);
+    res.status(500).json({ status: 'error', db: 'disconnected', error: err.message });
+  }
+});
 
 // DB (Supabase transaction pooler friendly)
 const rawDbUrl = process.env.DATABASE_URL;
@@ -3585,6 +3591,49 @@ try {
 }
 console.log(`Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬â„¢ DB host/port: ${pgConfig.host}:${pgConfig.port} (SSL ${pgConfig.ssl ? "on" : "off"})`);
 const pool = new Pool(pgConfig);
+
+// ============================================================
+// 🔄 DATABASE CONNECTION RESILIENCE
+// ============================================================
+// Handle pool errors - prevents crashes from dropped connections
+pool.on('error', (err, client) => {
+  console.error('❌ Unexpected database pool error:', err.message);
+  // Don't crash - pool will automatically create new connections
+});
+
+// Connection health check with retry
+let dbHealthy = false;
+async function checkDbConnection(retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await pool.query('SELECT 1');
+      if (!dbHealthy) {
+        console.log('✅ Database connection restored');
+        dbHealthy = true;
+      }
+      return true;
+    } catch (err) {
+      console.error(`❌ Database health check failed (attempt ${i + 1}/${retries}):`, err.message);
+      dbHealthy = false;
+      if (i < retries - 1) {
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s before retry
+      }
+    }
+  }
+  return false;
+}
+
+// Periodic health check every 30 seconds
+setInterval(async () => {
+  await checkDbConnection(1);
+}, 30000);
+
+// Initial connection check on startup
+checkDbConnection().then(healthy => {
+  if (!healthy) {
+    console.error('❌ WARNING: Could not establish initial database connection');
+  }
+});
 
 async function initDB() {
   try {
