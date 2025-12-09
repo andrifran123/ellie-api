@@ -417,6 +417,12 @@ function checkMinorSafetyViolation(message) {
 
 // Add this NEW function after line 170
 function validateElleResponse(response, relationshipLevel = 0, photoActuallySent = false) {
+  // 1. CLEAN UP QUOTES (Fix for Llama mimicking example format)
+  // If the message starts and ends with quotes, remove them.
+  if (response && response.startsWith('"') && response.endsWith('"')) {
+    response = response.slice(1, -1);
+  }
+
   // 🚨 CRITICAL: Check for empty or whitespace-only responses FIRST
   if (!response || response.trim().length === 0) {
     console.error(`⚠️ Empty response detected - regeneration needed`);
