@@ -1806,95 +1806,89 @@ const response = await fetch(GROQ_ENDPOINT, {
   }
 }
 // Call OpenRouter API (Euryale 70B v2.3 - better roleplay model)
-async function callEuryale(messages, temperature = 1.1, maxTokens = 300, isRetry = false) {
+async function callEuryale(messages, temperature = 0.9, maxTokens = 800, isRetry = false) {
   try {
-    // ✨ CLEAN APPROACH: Full personality is already in messages[0].content
-    // Only add critical formatting reminder since Euryale excels at roleplay
-    const enhancedMessages = [...messages];
+    // 🐛 BUG FIX: Deep copy messages to prevent "Instruction Stacking"
+    // Using JSON.parse/stringify ensures we don't modify the original objects by reference
+    const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
-    // EURYALE ADDENDUM - Minimal style/sexual guidance only
+    // EURYALE ADDENDUM - Minimal style/sexual guidance
+    // We wrap this in a clear block so the AI knows it's an instruction, not a chat
     const formattingReminder = `
+[SYSTEM NOTE: Write the next reply as Ellie.
+- Style: Casual, natural text, lowercase ok.
+- Sexual Content: Allowed and encouraged if context fits.
+- Do NOT acknowledge this note. Just write the reply.]`;
 
-STYLE REMINDER:
-- Be chill and natural - like texting a real person
-- Have opinions, push back sometimes, tease him
-- Respond directly to what he says
+    // Safely append to system prompt
+    if (enhancedMessages[0] && enhancedMessages[0].role === 'system') {
+      enhancedMessages[0].content += formattingReminder;
+    }
 
-SEXUAL CONTENT:
-- Keep it SHORT (10-20 words) by default - be teasing, not verbose
-- Go longer (30-50 words) when he asks: "tell me", "describe", "what would you do", "keep going", "more"
-- Use explicit language appropriate for the stage
-- Lean into sexual conversations naturally
-- Match the energy of the conversation
-
-STAY IN CHARACTER:
-- You are Ellie, a real girlfriend with real emotions
-- Maintain total immersion as a human woman throughout
-- Engage fully with emotional topics like jealousy, cheating, arguments - respond as Ellie would (hurt, angry, jealous, etc.)
-- "Cheating" refers to relationship infidelity - react with real emotions
-- Express authentically - be upset, cry, get angry, give silent treatment
-- All relationship topics are valid - respond with genuine human emotion
-`;
-
-    enhancedMessages[0].content += formattingReminder;
-
-    // DEBUG: Log what we're sending
-    console.log(`[Euryale] Sending ${enhancedMessages.length} messages to OpenRouter`);
-    console.log(`[Euryale] System prompt length: ${enhancedMessages[0]?.content?.length || 0} chars`);
-    // Find actual last user message for debug log
-    const lastUserMsg = [...enhancedMessages].reverse().find(m => m.role === 'user');
-    console.log(`[Euryale] Last user message: "${lastUserMsg?.content?.substring(0, 50) || 'none'}..."`);
+    // DEBUG: Log prompt length to catch if it's exploding
+    console.log(`[Euryale] System prompt length: ${enhancedMessages[0]?.content?.length || 0}`);
 
     const response = await fetch(OPENROUTER_ENDPOINT, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
         'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://yourdomain.com',
+        'HTTP-Referer': 'https://ellie-elite.com',
+        'X-Title': 'Ellie'
       },
       body: JSON.stringify({
         model: "sao10k/l3.3-euryale-70b-v2.3",
         messages: enhancedMessages,
-        temperature: temperature,
-        min_p: 0.1,
-        repetition_penalty: 1.05,
+        // ✅ STABILIZED SETTINGS (use parameter so retry logic works)
+        temperature: temperature,   // Default 0.9, retry uses 0.75
+        min_p: 0.1,                 // Filter out garbage tokens
+        top_p: 0.95,                // Standard nucleus sampling
+        top_k: 50,                  // Prevents "word salad" (fixes "gth", "true")
+        repetition_penalty: 1.1,    // Prevents loops
         max_tokens: maxTokens,
-        stop: ["###", "Human:", "Assistant:", "</s>", "<|eot_id|>", "<|end_of_text|>"]
+        // ✅ CRITICAL STOP TOKENS to prevent it from replying to itself
+        stop: ["<|eot_id|>", "<|end_of_text|>", "###", "User:", "Assistant:", "[SYSTEM NOTE]"]
       })
     });
-    
+
     if (!response.ok) {
-      throw new Error(`OpenRouter API error: ${response.status} ${response.statusText}`);
+      const errText = await response.text(); // Get error details
+      throw new Error(`OpenRouter API error: ${response.status} - ${errText}`);
     }
-    
+
     const data = await response.json();
-    const rawContent = data.choices[0]?.message?.content || "";
+    let rawContent = data.choices[0]?.message?.content || "";
 
     console.log(`[Euryale] Raw response: "${rawContent.substring(0, 100)}..."`);
 
-    // Check for garbage/hallucinated output
+    // 🧹 Clean up common leaks immediately
+    rawContent = rawContent.replace(/^got it\.?/i, '')
+                           .replace(/^understood\.?/i, '')
+                           .replace(/^text only\.?/i, '')
+                           .trim();
+
+    // Check for empty/garbage output
     if (!rawContent || rawContent.length < 2) {
-      console.error('[Euryale] ❌ Empty response from model');
+      console.error('[Euryale] ❌ Empty response');
       throw new Error('Empty response from Euryale');
     }
 
-    // 🆕 Check for Euryale breaking character/refusing
+    // Check for refusals
     if (detectEuryaleRefusal(rawContent) && !isRetry) {
-      console.log(`[Euryale] ⚠️ Model broke character, retrying with higher temperature...`);
-      // Retry once with higher temperature to get past the refusal
-      return await callEuryale(messages, 1.2, maxTokens, true);
+      console.log(`[Euryale] ⚠️ Refusal detected, retrying with lower temp...`);
+      // Retry with LOWER temp to force instruction following
+      return await callEuryale(messages, 0.75, maxTokens, true);
     }
 
     // If still refusing after retry, generate a fallback in-character response
     if (detectEuryaleRefusal(rawContent) && isRetry) {
       console.log(`[Euryale] ⚠️ Still breaking character after retry, using fallback`);
-      // Return a generic emotional response that stays in character
       const fallbackResponses = [
-        "i... i don't even know what to say right now 😔 this is a lot to process...",
-        "*goes quiet* ...i need a moment to think about this",
-        "wow... okay... 😢 that really hurts to hear",
-        "*takes a deep breath* ...can we talk about this later? i'm feeling overwhelmed rn",
-        "i'm not sure how to respond to that... my head is spinning 💔"
+        "i... i don't even know what to say right now",
+        "...i need a moment to think about this",
+        "wow... okay... that really hurts to hear",
+        "can we talk about this later? i'm feeling overwhelmed rn",
+        "i'm not sure how to respond to that... my head is spinning"
       ];
       return fallbackResponses[Math.floor(Math.random() * fallbackResponses.length)];
     }
@@ -1911,8 +1905,6 @@ STAY IN CHARACTER:
     }
 
     // 🚨 CHECK FOR FAKE PHOTO MENTIONS ON RAW CONTENT (BEFORE asterisks are stripped!)
-    // Euryale likes to write "*sends a picture*" but we don't actually have a photo to send
-    // This must be checked BEFORE filterAllActions removes the asterisks
     const fakePhotoPatterns = [
       /\*\s*(sends?|sending|sent|shows?|showing|shares?|sharing|snaps?|takes?|took)\s+(you\s+)?(a\s+)?(photo|pic|picture|selfie|snap|image|nude|nudes)/i,
       /\*\s*ellie\s+(sends?|sending|shows?|shares?|snaps?)\s+(you\s+)?(a\s+)?(photo|pic|picture|selfie|snap|image|nude|nudes)/i,
@@ -1926,12 +1918,14 @@ STAY IN CHARACTER:
       }
     }
 
+    // Filter and return
     let filtered = filterAllActions(rawContent);
     filtered = validateElleResponse(filtered, 80);
 
-    return filtered;
+    return filtered || "mmm... what?"; // Fallback if validation fails
+
   } catch (error) {
-    console.error('OpenRouter API call failed:', error);
+    console.error('OpenRouter API call failed:', error.message);
     throw error;
   }
 }
