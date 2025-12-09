@@ -1806,7 +1806,7 @@ const response = await fetch(GROQ_ENDPOINT, {
   }
 }
 // Call OpenRouter API (Euryale 70B v2.3 - better roleplay model)
-async function callEuryale(messages, temperature = 0.9, maxTokens = 800, isRetry = false) {
+async function callEuryale(messages, temperature = 0.85, maxTokens = 800, isRetry = false) {
   try {
     // 1. Deep copy to prevent mutation bugs
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
@@ -1897,14 +1897,42 @@ async function callEuryale(messages, temperature = 0.9, maxTokens = 800, isRetry
       return fallbackResponses[Math.floor(Math.random() * fallbackResponses.length)];
     }
 
-    // Detect word-salad gibberish (random unrelated words)
+    // Detect word-salad gibberish (multiple checks)
     const words = rawContent.split(/\s+/);
+
+    // Check 1: Random capitalized words ratio
     const capitalizedWords = words.filter(w => /^[A-Z][a-z]/.test(w)).length;
     const capsRatio = capitalizedWords / words.length;
-
-    // If more than 40% of words are randomly capitalized names, it's gibberish
     if (capsRatio > 0.4 && words.length > 5) {
       console.error(`[Euryale] ❌ Gibberish detected (${Math.round(capsRatio * 100)}% capitalized names): "${rawContent.substring(0, 50)}..."`);
+      throw new Error('Gibberish response from Euryale');
+    }
+
+    // Check 2: Random numbers in text (like "ur 113", "haha 42")
+    const randomNumberPattern = /\b\d{2,}\b/g;
+    const numberMatches = rawContent.match(randomNumberPattern) || [];
+    if (numberMatches.length >= 2) {
+      console.error(`[Euryale] ❌ Gibberish detected (random numbers): "${rawContent.substring(0, 50)}..."`);
+      throw new Error('Gibberish response from Euryale');
+    }
+
+    // Check 3: Nonsense word patterns (random consonant clusters, gibberish)
+    const nonsensePatterns = [
+      /\b[bcdfghjklmnpqrstvwxz]{4,}\b/i,  // 4+ consonants in a row
+      /\b(gth|hth|slime brain|make me cum haha|sweet fuck)\b/i,  // Known gibberish
+      /\bur\s+\d+\b/i,  // "ur 113" pattern
+    ];
+    for (const pattern of nonsensePatterns) {
+      if (pattern.test(rawContent)) {
+        console.error(`[Euryale] ❌ Gibberish detected (nonsense pattern): "${rawContent.substring(0, 50)}..."`);
+        throw new Error('Gibberish response from Euryale');
+      }
+    }
+
+    // Check 4: Too many unrelated words crammed together
+    const incoherentPattern = /\b(ew|haha|lol|omg)\s+(btw|how|what)\s+.{0,10}\s+(sweet|fuck|slime|brain|cum)\b/i;
+    if (incoherentPattern.test(rawContent)) {
+      console.error(`[Euryale] ❌ Gibberish detected (incoherent): "${rawContent.substring(0, 50)}..."`);
       throw new Error('Gibberish response from Euryale');
     }
 
