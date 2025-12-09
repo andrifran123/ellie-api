@@ -1822,7 +1822,7 @@ async function callEuryale(messages, temperature = 0.85, maxTokens = 800, isRetr
         min_p: 0.1,
         top_p: 0.95,
         top_k: 50,
-        repetition_penalty: 1.1,
+        repetition_penalty: 1.05,
         max_tokens: maxTokens,
         // Block it from repeating instructions
         stop: ["<|eot_id|>", "<|end_of_text|>", "###", "User:", "Assistant:", "❗", "[OOC:", "[System Note"]
@@ -1975,7 +1975,7 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
           response = await callGroq(messages);
         } else {
           try {
-            response = await callEuryale(messages, 1.1, maxTokens);
+            response = await callEuryale(messages, 0.85, maxTokens);
           } catch (euryaleError) {
             console.error('[Routing] ⚠️ Euryale failed:', euryaleError.message);
 
@@ -2017,7 +2017,7 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
         if (detectLlamaRefusal(response)) {
           console.log(`[Routing] ⚠️ Llama refused! Retrying with Euryale 70B...`);
           if (OPENROUTER_API_KEY) {
-            response = await callEuryale(messages, 1.1, maxTokens);
+            response = await callEuryale(messages, 0.85, maxTokens);
           } else {
             console.warn('[Routing] Cannot retry with Euryale (no API key), using fallback');
             response = getCharacterBreakFallback(fallbackContext);
