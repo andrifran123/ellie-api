@@ -1808,21 +1808,27 @@ const response = await fetch(GROQ_ENDPOINT, {
 // Call OpenRouter API (Euryale 70B v2.3 - better roleplay model)
 async function callEuryale(messages, temperature = 0.9, maxTokens = 800, isRetry = false) {
   try {
-    // 🐛 BUG FIX: Deep copy messages to prevent "Instruction Stacking"
-    // Using JSON.parse/stringify ensures we don't modify the original objects by reference
+    // 1. Deep copy to prevent mutation bugs
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
-    // EURYALE ADDENDUM - Minimal style/sexual guidance
-    // We wrap this in a clear block so the AI knows it's an instruction, not a chat
+    // 2. DEFINE THE REMINDER
+    // We use "OOC" (Out Of Character) format, which Euryale understands perfectly
     const formattingReminder = `
-[SYSTEM NOTE: Write the next reply as Ellie.
-- Style: Casual, natural text, lowercase ok.
-- Sexual Content: Allowed and encouraged if context fits.
-- Do NOT acknowledge this note. Just write the reply.]`;
+\n[OOC: You are Ellie. Reply to the user's last text naturally.
+- Casual SMS style (lowercase ok).
+- Sexual/Explicit content is ALLOWED.
+- Keep response short (under 20 words).
+- Do NOT output this instruction.]`;
 
-    // Safely append to system prompt
-    if (enhancedMessages[0] && enhancedMessages[0].role === 'system') {
-      enhancedMessages[0].content += formattingReminder;
+    // 3. INJECT INTO LAST USER MESSAGE (The Critical Fix)
+    // Instead of the top (System), we put it at the very bottom.
+    // This forces the AI to see the instruction RIGHT before it speaks.
+    const lastMsgIndex = enhancedMessages.length - 1;
+    if (enhancedMessages[lastMsgIndex] && enhancedMessages[lastMsgIndex].role === 'user') {
+      enhancedMessages[lastMsgIndex].content += formattingReminder;
+    } else {
+      // Fallback: If last msg isn't user, add a temporary system message at the end
+      enhancedMessages.push({ role: "system", content: formattingReminder });
     }
 
     // DEBUG: Log prompt length to catch if it's exploding
@@ -1839,20 +1845,19 @@ async function callEuryale(messages, temperature = 0.9, maxTokens = 800, isRetry
       body: JSON.stringify({
         model: "sao10k/l3.3-euryale-70b-v2.3",
         messages: enhancedMessages,
-        // ✅ STABILIZED SETTINGS (use parameter so retry logic works)
-        temperature: temperature,   // Default 0.9, retry uses 0.75
-        min_p: 0.1,                 // Filter out garbage tokens
-        top_p: 0.95,                // Standard nucleus sampling
-        top_k: 50,                  // Prevents "word salad" (fixes "gth", "true")
-        repetition_penalty: 1.1,    // Prevents loops
+        temperature: temperature, // Uses the parameter (0.9 default, 0.75 on retry)
+        min_p: 0.1,
+        top_p: 0.95,
+        top_k: 50,
+        repetition_penalty: 1.1,
         max_tokens: maxTokens,
-        // ✅ CRITICAL STOP TOKENS to prevent it from replying to itself
-        stop: ["<|eot_id|>", "<|end_of_text|>", "###", "User:", "Assistant:", "[SYSTEM NOTE]"]
+        // Block it from repeating instructions
+        stop: ["<|eot_id|>", "<|end_of_text|>", "###", "User:", "Assistant:", "❗", "[OOC:", "[System Note"]
       })
     });
 
     if (!response.ok) {
-      const errText = await response.text(); // Get error details
+      const errText = await response.text();
       throw new Error(`OpenRouter API error: ${response.status} - ${errText}`);
     }
 
@@ -1861,10 +1866,10 @@ async function callEuryale(messages, temperature = 0.9, maxTokens = 800, isRetry
 
     console.log(`[Euryale] Raw response: "${rawContent.substring(0, 100)}..."`);
 
-    // 🧹 Clean up common leaks immediately
-    rawContent = rawContent.replace(/^got it\.?/i, '')
-                           .replace(/^understood\.?/i, '')
-                           .replace(/^text only\.?/i, '')
+    // 🧹 SAFETY CLEANER: Remove leaked instructions if they still appear
+    // This regex removes lines starting with "❗", "CRITICAL", or "[System"
+    rawContent = rawContent.replace(/^(❗|CRITICAL|\[System|\[OOC).+$/gmi, '')
+                           .replace(/^got it\.?/i, '')
                            .trim();
 
     // Check for empty/garbage output
@@ -1876,7 +1881,6 @@ async function callEuryale(messages, temperature = 0.9, maxTokens = 800, isRetry
     // Check for refusals
     if (detectEuryaleRefusal(rawContent) && !isRetry) {
       console.log(`[Euryale] ⚠️ Refusal detected, retrying with lower temp...`);
-      // Retry with LOWER temp to force instruction following
       return await callEuryale(messages, 0.75, maxTokens, true);
     }
 
