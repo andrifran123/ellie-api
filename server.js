@@ -6786,12 +6786,11 @@ If they already answered a question, you KNOW the answer - reference it instead 
       // Continue without photo if prep fails
     }
 
-    // Build fresh message array with personality ALWAYS first
-    // Get the last 20 messages from history
-    const recentHistory = history.slice(-20);
+    // 🧹 FIX: Filter out any 'system' messages from history to prevent duplication
+    // (This stops the "Double Prompt" bug that was causing the 13k character bloat)
+    const recentHistory = history.slice(-20).filter(m => m.role !== 'system');
 
     // 🎯 CRITICAL: Insert photo/no-photo reminder BEFORE the last user message
-    // LLMs expect the conversation to end with a user message for proper completion
     let photoReminder;
     if (photoPrep) {
       const photoLocation = photoPrep.photoContext?.match(/Location: ([^(.\n]+)/)?.[1]?.trim() || 'somewhere';
@@ -6799,23 +6798,20 @@ If they already answered a question, you KNOW the answer - reference it instead 
         role: "system",
         content: `📸 You're sharing a photo naturally. You're at: ${photoLocation}. Share it casually like "what do you think?", "me rn 😊", or "how's this look?" - NOT "hey I sent you a pic". Keep it to 1 short sentence.`
       };
-      console.log(`📸 Photo reminder injected (location: ${photoLocation})`);
     } else {
-      // 🚨 CRITICAL: Tell AI NO photo is being sent - prevents fake photo roleplay
       photoReminder = {
         role: "system",
         content: `⚠️ NO PHOTO: You are NOT sending a photo. Do NOT roleplay sending photos. Respond with text only.`
       };
-      console.log(`📸 NO-PHOTO reminder injected`);
     }
 
-    // Insert reminder before the last user message (so conversation ends with user message)
+    // Insert reminder before the last user message
     const lastUserMsgIndex = recentHistory.map(m => m.role).lastIndexOf('user');
-    if (lastUserMsgIndex > 0) {
+    if (lastUserMsgIndex > -1) { // Changed from > 0 to > -1 to handle single-message chats
       recentHistory.splice(lastUserMsgIndex, 0, photoReminder);
     } else {
-      // Fallback: append to main system message if no user message found
-      finalSystemMsg += '\n\n' + photoReminder.content;
+      // Fallback if no user message found
+      recentHistory.push(photoReminder);
     }
 
     const messagesToSend = [
