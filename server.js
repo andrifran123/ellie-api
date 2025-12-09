@@ -417,20 +417,23 @@ function checkMinorSafetyViolation(message) {
 
 // Add this NEW function after line 170
 function validateElleResponse(response, relationshipLevel = 0, photoActuallySent = false) {
-  // 1. CLEAN UP QUOTES (Fix for Llama mimicking example format)
-  // If the message starts and ends with quotes, remove them.
-  if (response && response.startsWith('"') && response.endsWith('"')) {
-    response = response.slice(1, -1);
-  }
+  if (!response) return null;
 
-  // 🚨 CRITICAL: Check for empty or whitespace-only responses FIRST
-  if (!response || response.trim().length === 0) {
+  // 🧹 AGGRESSIVE CLEANER
+  // 1. Trim whitespace first
+  response = response.trim();
+
+  // 2. Rip off ANY starting/ending quotes (including smart quotes "")
+  // This Regex says: "Remove any quote characters at the very start or very end"
+  response = response.replace(/^["'\u201C\u201D\u2018\u2019]+|["'\u201C\u201D\u2018\u2019]+$/g, '').trim();
+
+  // 🚨 CRITICAL: Check for empty response AFTER cleaning
+  if (response.length === 0) {
     console.error(`⚠️ Empty response detected - regeneration needed`);
-    return null; // Signal regeneration needed
+    return null;
   }
 
   // 🚨 PHOTO MENTION MISMATCH FIX
-  // If AI mentions sending a photo but no photo is actually being sent, signal regeneration
   console.log(`📸 [VALIDATE] photoActuallySent = ${photoActuallySent}`);
   if (!photoActuallySent) {
     const photoMentionPatterns = [
@@ -439,88 +442,52 @@ function validateElleResponse(response, relationshipLevel = 0, photoActuallySent
       /\bi('m| am)\s+sending\s+(you\s+)?(a\s+)?(photo|pic|picture)\b/i,
       /\bcheck\s+(this|it)\s+out\b/i,
       /\blook at (this|what i)\b/i,
-      /\bme rn\b/i,  // Common photo caption
+      /\bme rn\b/i,
       /\bjust took this\b/i,
-      // 🚨 ROLEPLAY-STYLE PHOTO MENTIONS (asterisk actions)
       /\*\s*(sends?|sending|sent|shows?|showing|shares?|sharing|snaps?|takes?|took)\s+(you\s+)?(a\s+)?(photo|pic|picture|selfie|snap|image|nude|nudes)/i,
-      /\*\s*ellie\s+(sends?|sending|shows?|shares?|snaps?)\s+(you\s+)?(a\s+)?(photo|pic|picture|selfie|snap|image|nude|nudes)/i,
-      /\*\s*(attaches?|attached|posts?|uploads?)\s+(a\s+)?(photo|pic|picture|selfie|image|nude)/i,
     ];
 
     for (const pattern of photoMentionPatterns) {
       if (pattern.test(response)) {
         console.log(`🚨 AI claimed to send photo but none sent - forcing regeneration`);
-        // Return null to trigger regeneration with a correction prompt
         return null;
       }
     }
   }
 
   // 🧹 Clean up overused/dismissive words
-  // "whatever" sounds too dismissive and robotic
   response = response.replace(/\bwhatever\b/gi, (match) => {
-    // Replace with more natural alternatives randomly
     const alternatives = ['anyway', 'i guess', 'idk', ''];
     const alt = alternatives[Math.floor(Math.random() * alternatives.length)];
-    if (alt === '') return ''; // Just remove it
-    // Preserve case
     return match[0] === match[0].toUpperCase() ? alt.charAt(0).toUpperCase() + alt.slice(1) : alt;
   });
-  // Clean up any double spaces from removals
+
   response = response.replace(/\s{2,}/g, ' ').trim();
 
   // 🚨 REPETITION COLLAPSE DETECTION
-  // Catches when model gets stuck repeating words/phrases
   const words = response.toLowerCase().split(/\s+/);
   if (words.length >= 6) {
-    // Check for same word repeated 4+ times in a row
     let repeatCount = 1;
     for (let i = 1; i < words.length; i++) {
       if (words[i] === words[i-1] && words[i].length > 2) {
         repeatCount++;
-        if (repeatCount >= 4) {
-          console.error(`⚠️ Repetition collapse detected: "${words[i]}" repeated ${repeatCount}+ times`);
-          return null;
-        }
+        if (repeatCount >= 4) return null;
       } else {
         repeatCount = 1;
-      }
-    }
-
-    // Check for high repetition ratio (same word appears too often)
-    const wordCounts = {};
-    for (const word of words) {
-      if (word.length > 2) { // Ignore short words like "a", "I", "is"
-        wordCounts[word] = (wordCounts[word] || 0) + 1;
-      }
-    }
-    for (const [word, count] of Object.entries(wordCounts)) {
-      // If a word appears more than 40% of the time and more than 5 times, it's likely broken
-      if (count > 5 && count / words.length > 0.4) {
-        console.error(`⚠️ Repetition collapse detected: "${word}" appears ${count}/${words.length} times (${Math.round(count/words.length*100)}%)`);
-        return null;
       }
     }
   }
 
   const invalidPhrases = [
-    "i'm here to help",
-    "how can i assist",
-    "what's on your mind",
-    "how may i assist",
-    "what can i do for you",
-    "is there anything",
-    "###"
+    "i'm here to help", "how can i assist", "what's on your mind",
+    "how may i assist", "what can i do for you", "is there anything", "###"
   ];
 
   const lowerResponse = response.toLowerCase();
   for (const phrase of invalidPhrases) {
-    if (lowerResponse.includes(phrase)) {
-      console.error(`⚠️ Character break detected: "${phrase}"`);
-      // Return null to signal that regeneration is needed
-      return null;
-    }
+    if (lowerResponse.includes(phrase)) return null;
   }
+
   return response;
 }
 // ============================================================
