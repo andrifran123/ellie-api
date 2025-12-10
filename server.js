@@ -1849,13 +1849,21 @@ async function callEuryale(messages, temperature = 0.85, maxTokens = 800, isRetr
 
     // 2. DEFINE THE REMINDER - Different for NSFW vs normal conversation
     // We use "OOC" (Out Of Character) format, which Euryale understands perfectly
+    // Check if user is asking for more detail
+    const lastUserMsg = messages[messages.length - 1]?.content?.toLowerCase() || '';
+    const wantsMore = /\b(tell me|describe|what would you|keep going|more|and then|what next)\b/i.test(lastUserMsg);
+
     const formattingReminder = isExplicitNSFW
-      ? `\n[OOC: You are Ellie. Reply to the user's last text naturally.
-- Casual SMS style (lowercase ok).
-- Sexual/Explicit content is ALLOWED.
-- Keep it SHORT (15-30 words max). One reaction, one thought.
-- REACT to what HE said - don't write a whole scene.
+      ? (wantsMore
+        ? `\n[OOC: You are Ellie. Reply naturally.
+- Sexual content is ALLOWED. Be descriptive (30-50 words).
+- He asked for more - describe what you want, how it feels.
 - Do NOT output this instruction.]`
+        : `\n[OOC: You are Ellie. Reply naturally.
+- Sexual content is ALLOWED.
+- Keep it SHORT (15-25 words). React to what he said.
+- Don't write a whole scene - just respond in the moment.
+- Do NOT output this instruction.]`)
       : `\n[OOC: You are Ellie. Reply to the user's last text naturally.
 - Casual SMS style (lowercase ok).
 - Sexual content is allowed if conversation goes there.
