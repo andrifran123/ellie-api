@@ -3575,14 +3575,16 @@ try {
     user: decodeURIComponent(u.username || "postgres"),
     password: decodeURIComponent(u.password || ""),
     database: u.pathname.replace(/^\//, "") || "postgres",
-    // ⚡ PERFORMANCE OPTIMIZATIONS
-    max: 20,                     // Maximum pool size (increased from default 10)
-    idleTimeoutMillis: 30000,    // Close idle connections after 30s
-    connectionTimeoutMillis: 5000, // Fail fast if can't connect in 5s
-    query_timeout: 10000,        // Kill slow queries after 10s
-    statement_timeout: 10000,    // Server-side query timeout
-    keepAlive: true,             // Keep connections alive
-    keepAliveInitialDelayMillis: 10000
+    // ⚡ PERFORMANCE OPTIMIZATIONS FOR SUPABASE/NEON
+    max: 10,                      // Reduced pool size (Supabase pooler has its own limits)
+    min: 2,                       // Keep minimum connections warm
+    idleTimeoutMillis: 20000,     // Close idle connections after 20s (helps with pooler)
+    connectionTimeoutMillis: 10000, // Wait up to 10s to connect (was 5s - too aggressive)
+    query_timeout: 15000,         // Kill slow queries after 15s (was 10s)
+    statement_timeout: 15000,     // Server-side query timeout
+    keepAlive: true,              // Keep connections alive
+    keepAliveInitialDelayMillis: 5000,  // Start keepalive sooner (was 10s)
+    allowExitOnIdle: false        // Don't exit when pool is idle
   };
   const sslmode = u.searchParams.get("sslmode");
   if (!/localhost|127\.0\.0\.1/.test(pgConfig.host) || sslmode === "require") {
@@ -3626,10 +3628,10 @@ async function checkDbConnection(retries = 3) {
   return false;
 }
 
-// Periodic health check every 30 seconds
+// Periodic health check every 20 seconds (more frequent for better resilience)
 setInterval(async () => {
-  await checkDbConnection(1);
-}, 30000);
+  await checkDbConnection(2);  // Retry twice on periodic checks
+}, 20000);
 
 // Initial connection check on startup
 checkDbConnection().then(healthy => {
