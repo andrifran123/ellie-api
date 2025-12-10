@@ -185,7 +185,26 @@ async function shouldSendPhoto(pool, userId, conversationContext) {
     if (milestone.shouldSend) return milestone;
 
     if (currentStage === 'STRANGER') return { shouldSend: false, reason: 'stranger_no_photos' };
-    if (detectPhotoRequest(userMessage.toLowerCase())) return { shouldSend: false, reason: 'direct_request_ignored' };
+
+    // Direct photo requests - EXCLUSIVE stage complies, others ignore
+    const isDirectRequest = detectPhotoRequest(userMessage.toLowerCase());
+    if (isDirectRequest) {
+      if (currentStage === 'EXCLUSIVE') {
+        // Boyfriend asked, girlfriend sends
+        console.log(`📸 Direct photo request in EXCLUSIVE stage - complying`);
+        return {
+          shouldSend: true,
+          triggerType: 'direct_request_exclusive',
+          categories: null, // Any category is fine
+          nsfwAllowed: true,
+          preferHighNsfw: true,
+          preferSexyContent: true,
+          isMilestone: false
+        };
+      }
+      // Other stages ignore direct requests
+      return { shouldSend: false, reason: 'direct_request_ignored' };
+    }
 
     // 2. Session Limits
     const askingForMorePatterns = [/\b(another|more|one more|next|again)\b.*\b(pic|photo|picture|selfie)\b/i];
