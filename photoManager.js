@@ -304,7 +304,9 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
   try {
     const { categories, topics, nsfwAllowed, preferHighNsfw, preferSexyContent } = criteria;
     const maxNsfwLevel = nsfwAllowed ? (preferHighNsfw ? 5 : 2) : 0;
-    const minNsfwLevel = preferHighNsfw ? 2 : 0;
+    // If we have a location filter, allow any nsfw level (0+) to not exclude SFW location photos
+    // Otherwise, if preferHighNsfw, require nsfw >= 2
+    const minNsfwLevel = recentLocation ? 0 : (preferHighNsfw ? 2 : 0);
 
     // ⛔ ANTI-CONFLICT FILTERING: Explicitly exclude clashing categories
     let negativeCategoryFilter = '';
