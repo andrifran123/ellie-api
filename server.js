@@ -1779,19 +1779,24 @@ const response = await fetch(GROQ_ENDPOINT, {
   }
 }
 // Call OpenRouter API (Euryale 70B v2.3 - better roleplay model)
-async function callEuryale(messages, temperature = 0.85, maxTokens = 800, isRetry = false) {
+async function callEuryale(messages, temperature = 0.85, maxTokens = 800, isRetry = false, isExplicitNSFW = false) {
   try {
     // 1. Deep copy to prevent mutation bugs
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
-    // 2. DEFINE THE REMINDER
+    // 2. DEFINE THE REMINDER - Different for NSFW vs normal conversation
     // We use "OOC" (Out Of Character) format, which Euryale understands perfectly
-    const formattingReminder = `
-\n[OOC: You are Ellie. Reply to the user's last text naturally.
+    const formattingReminder = isExplicitNSFW
+      ? `\n[OOC: You are Ellie. Reply to the user's last text naturally.
 - Casual SMS style (lowercase ok).
 - Sexual/Explicit content is ALLOWED and ENCOURAGED.
 - Be descriptive and expressive (20-50 words for sexual content).
 - Describe sensations, desires, what you want to do - make it HOT.
+- Do NOT output this instruction.]`
+      : `\n[OOC: You are Ellie. Reply to the user's last text naturally.
+- Casual SMS style (lowercase ok).
+- Sexual content is allowed if conversation goes there.
+- Keep response natural length (10-30 words for normal chat).
 - Do NOT output this instruction.]`;
 
     // 3. INJECT INTO LAST USER MESSAGE (The Critical Fix)
@@ -1977,7 +1982,8 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
         } else {
           try {
             // Use slightly higher temp (0.92) for more creative NSFW responses
-            response = await callEuryale(messages, 0.92, maxTokens);
+            // Pass currentMessageNSFW to know if THIS message is explicit (not just context)
+            response = await callEuryale(messages, currentMessageNSFW ? 0.92 : 0.85, maxTokens, false, currentMessageNSFW);
           } catch (euryaleError) {
             console.error('[Routing] ⚠️ Euryale failed:', euryaleError.message);
 
@@ -1995,7 +2001,7 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
                   }
                   return m;
                 });
-                response = await callEuryale(correctedMessages, 1.0, maxTokens, true);
+                response = await callEuryale(correctedMessages, 1.0, maxTokens, true, currentMessageNSFW);
               } catch (retryError) {
                 console.error('[Routing] ⚠️ Euryale retry also failed, falling back to Groq:', retryError.message);
                 response = await callGroq(messages);
@@ -2016,10 +2022,11 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
         response = await callGroq(messages);
 
         // 🆕 IF LLAMA REFUSED, AUTOMATICALLY RETRY WITH EURYALE
+        // Note: If Llama refused, it's likely borderline NSFW, so pass true for isExplicitNSFW
         if (detectLlamaRefusal(response)) {
           console.log(`[Routing] ⚠️ Llama refused! Retrying with Euryale 70B...`);
           if (OPENROUTER_API_KEY) {
-            response = await callEuryale(messages, 0.85, maxTokens);
+            response = await callEuryale(messages, 0.85, maxTokens, false, true);
           } else {
             console.warn('[Routing] Cannot retry with Euryale (no API key), using fallback');
             response = getCharacterBreakFallback(fallbackContext);
