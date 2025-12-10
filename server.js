@@ -2028,74 +2028,51 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
     let response;
 
     // 3. Route based on tier and content
+    // 🆕 ALL USERS now use Qwen 2.5 72B (normal) + Euryale 70B (NSFW)
     if (userTier === 'free') {
-      // Free users always use Groq (no NSFW blocking for free tier)
-      console.log(`[Routing] Free user -> Groq Llama 70B`);
-      if (!GROQ_API_KEY) {
-        throw new Error('GROQ_API_KEY not configured');
-      }
-      response = await callGroq(messages);
+      // Free users: Qwen for normal, NO NSFW access
+      console.log(`[Routing] Free user -> Qwen 2.5 72B`);
+      response = await callQwen(messages, 0.8, maxTokens);
     } else {
-      // Paid users
+      // Paid users: Qwen for normal, Euryale for NSFW
       if (isNSFW) {
-        console.log(`[Routing] Paid user + NSFW (current OR context) -> OpenRouter Euryale 70B`);
-        if (!OPENROUTER_API_KEY) {
-          console.warn('⚠️ OPENROUTER_API_KEY not configured, falling back to Groq');
-          response = await callGroq(messages);
-        } else {
-          try {
-            // Use slightly higher temp (0.92) for more creative NSFW responses
-            // Pass currentMessageNSFW to know if THIS message is explicit (not just context)
-            response = await callEuryale(messages, currentMessageNSFW ? 0.92 : 0.85, maxTokens, false, currentMessageNSFW);
-          } catch (euryaleError) {
-            console.error('[Routing] ⚠️ Euryale failed:', euryaleError.message);
+        // NSFW content -> Euryale 70B (uncensored)
+        console.log(`[Routing] Paid user + NSFW (current OR context) -> Euryale 70B`);
+        try {
+          // Use slightly higher temp (0.92) for more creative NSFW responses
+          // Pass currentMessageNSFW to know if THIS message is explicit (not just context)
+          response = await callEuryale(messages, currentMessageNSFW ? 0.92 : 0.85, maxTokens, false, currentMessageNSFW);
+        } catch (euryaleError) {
+          console.error('[Routing] ⚠️ Euryale failed:', euryaleError.message);
 
-            // If Euryale tried to fake-send a photo, retry with correction instruction
-            if (euryaleError.message.includes('claimed to send photo')) {
-              console.log('[Routing] 🔄 Retrying Euryale with photo correction...');
-              try {
-                // Add correction to system message
-                const correctedMessages = messages.map((m, i) => {
-                  if (i === 0 && m.role === 'system') {
-                    return {
-                      ...m,
-                      content: m.content + '\n\n⚠️ CRITICAL: Do NOT write roleplay actions like "*sends a picture*" or "*attaches photo*". You cannot send photos. Just respond with text only.'
-                    };
-                  }
-                  return m;
-                });
-                response = await callEuryale(correctedMessages, 1.0, maxTokens, true, currentMessageNSFW);
-              } catch (retryError) {
-                console.error('[Routing] ⚠️ Euryale retry also failed, falling back to Groq:', retryError.message);
-                response = await callGroq(messages);
-              }
-            } else {
-              // Fall back to Groq if Euryale returns garbage
-              response = await callGroq(messages);
+          // If Euryale tried to fake-send a photo, retry with correction instruction
+          if (euryaleError.message.includes('claimed to send photo')) {
+            console.log('[Routing] 🔄 Retrying Euryale with photo correction...');
+            try {
+              const correctedMessages = messages.map((m, i) => {
+                if (i === 0 && m.role === 'system') {
+                  return {
+                    ...m,
+                    content: m.content + '\n\n⚠️ CRITICAL: Do NOT write roleplay actions like "*sends a picture*" or "*attaches photo*". You cannot send photos. Just respond with text only.'
+                  };
+                }
+                return m;
+              });
+              response = await callEuryale(correctedMessages, 1.0, maxTokens, true, currentMessageNSFW);
+            } catch (retryError) {
+              console.error('[Routing] ⚠️ Euryale retry also failed, falling back to Qwen:', retryError.message);
+              response = await callQwen(messages, 0.8, maxTokens);
             }
+          } else {
+            // Fall back to Qwen if Euryale returns garbage
+            console.log('[Routing] Falling back to Qwen 2.5 72B...');
+            response = await callQwen(messages, 0.8, maxTokens);
           }
         }
       } else {
-        // 🆕 PAID USERS: Use Qwen 2.5 72B for normal chat (smarter, more natural)
+        // Normal chat -> Qwen 2.5 72B (smart, natural)
         console.log(`[Routing] Paid user + Normal -> Qwen 2.5 72B`);
-        if (!OPENROUTER_API_KEY) {
-          // Fallback to Groq if no OpenRouter key
-          console.warn('⚠️ OPENROUTER_API_KEY not configured, falling back to Groq');
-          response = await callGroq(messages);
-        } else {
-          try {
-            response = await callQwen(messages, 0.8, maxTokens);
-          } catch (qwenError) {
-            console.error('[Routing] ⚠️ Qwen failed:', qwenError.message);
-            // Fallback to Groq if Qwen fails
-            if (GROQ_API_KEY) {
-              console.log('[Routing] Falling back to Groq Llama 70B...');
-              response = await callGroq(messages);
-            } else {
-              throw qwenError;
-            }
-          }
-        }
+        response = await callQwen(messages, 0.8, maxTokens);
       }
     }
 
@@ -2110,26 +2087,7 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
 
   } catch (error) {
     console.error('❌ Hybrid routing error:', error.message);
-    // Try Groq as last resort before throwing
-    if (GROQ_API_KEY && error.message !== 'GROQ_API_KEY not configured') {
-      try {
-        console.log('[Routing] Attempting Groq fallback...');
-        const fallbackResponse = await callGroq(messages);
-
-        // 🛡️ Check fallback response too
-        if (detectCharacterBreak(fallbackResponse)) {
-          console.error(`[SAFETY NET] Character break in fallback! Using safe response.`);
-          return getCharacterBreakFallback(fallbackContext);
-        }
-
-        return fallbackResponse;
-      } catch (groqError) {
-        console.error('❌ Groq fallback also failed:', groqError.message);
-        // Return a safe in-character response instead of throwing
-        return getCharacterBreakFallback(fallbackContext);
-      }
-    }
-    // Even on total failure, return something in-character
+    // On total failure, return something in-character
     return getCharacterBreakFallback(fallbackContext);
   }
 }
