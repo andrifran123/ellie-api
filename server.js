@@ -1778,6 +1778,69 @@ const response = await fetch(GROQ_ENDPOINT, {
     throw error;
   }
 }
+// Call OpenRouter API (Qwen 2.5 72B - smart, natural roleplay)
+async function callQwen(messages, temperature = 0.8, maxTokens = 800) {
+  try {
+    const enhancedMessages = JSON.parse(JSON.stringify(messages));
+
+    // Qwen formatting reminder - natural conversation style
+    const formattingReminder = `
+\n[Style: You are Ellie. Reply naturally as a real person texting.
+- Casual SMS style (lowercase ok)
+- NO *actions* or (actions) - express through words
+- Be flirty and playful when appropriate
+- Keep responses concise (10-30 words for normal chat)]`;
+
+    // Inject into last user message
+    const lastMsgIndex = enhancedMessages.length - 1;
+    if (enhancedMessages[lastMsgIndex] && enhancedMessages[lastMsgIndex].role === 'user') {
+      enhancedMessages[lastMsgIndex].content += formattingReminder;
+    }
+
+    console.log(`[Qwen] Calling Qwen 2.5 72B...`);
+
+    const response = await fetch(OPENROUTER_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://ellie-elite.com',
+        'X-Title': 'Ellie'
+      },
+      body: JSON.stringify({
+        model: "qwen/qwen-2.5-72b-instruct",
+        messages: enhancedMessages,
+        temperature: temperature,
+        max_tokens: maxTokens
+      })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Qwen API error: ${response.status} - ${errText}`);
+    }
+
+    const data = await response.json();
+    let rawContent = data.choices[0]?.message?.content || "";
+
+    console.log(`[Qwen] Raw response: "${rawContent.substring(0, 100)}..."`);
+
+    // Clean up any leaked instructions
+    rawContent = rawContent.replace(/^\[Style:.*?\]$/gmi, '').trim();
+
+    if (!rawContent || rawContent.length < 2) {
+      throw new Error('Empty response from Qwen');
+    }
+
+    const filtered = filterAllActions(rawContent);
+    return filtered;
+
+  } catch (error) {
+    console.error('[Qwen] API call failed:', error);
+    throw error;
+  }
+}
+
 // Call OpenRouter API (Euryale 70B v2.3 - better roleplay model)
 async function callEuryale(messages, temperature = 0.85, maxTokens = 800, isRetry = false, isExplicitNSFW = false) {
   try {
@@ -2013,23 +2076,24 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
           }
         }
       } else {
-        console.log(`[Routing] Paid user + Normal -> Groq Llama 70B (FREE)`);
-        if (!GROQ_API_KEY) {
-          throw new Error('GROQ_API_KEY not configured');
-        }
-
-        // 🆕 TRY LLAMA FIRST, BUT CHECK FOR REFUSAL
-        response = await callGroq(messages);
-
-        // 🆕 IF LLAMA REFUSED, AUTOMATICALLY RETRY WITH EURYALE
-        // Note: If Llama refused, it's likely borderline NSFW, so pass true for isExplicitNSFW
-        if (detectLlamaRefusal(response)) {
-          console.log(`[Routing] ⚠️ Llama refused! Retrying with Euryale 70B...`);
-          if (OPENROUTER_API_KEY) {
-            response = await callEuryale(messages, 0.85, maxTokens, false, true);
-          } else {
-            console.warn('[Routing] Cannot retry with Euryale (no API key), using fallback');
-            response = getCharacterBreakFallback(fallbackContext);
+        // 🆕 PAID USERS: Use Qwen 2.5 72B for normal chat (smarter, more natural)
+        console.log(`[Routing] Paid user + Normal -> Qwen 2.5 72B`);
+        if (!OPENROUTER_API_KEY) {
+          // Fallback to Groq if no OpenRouter key
+          console.warn('⚠️ OPENROUTER_API_KEY not configured, falling back to Groq');
+          response = await callGroq(messages);
+        } else {
+          try {
+            response = await callQwen(messages, 0.8, maxTokens);
+          } catch (qwenError) {
+            console.error('[Routing] ⚠️ Qwen failed:', qwenError.message);
+            // Fallback to Groq if Qwen fails
+            if (GROQ_API_KEY) {
+              console.log('[Routing] Falling back to Groq Llama 70B...');
+              response = await callGroq(messages);
+            } else {
+              throw qwenError;
+            }
           }
         }
       }
