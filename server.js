@@ -3616,8 +3616,8 @@ try {
     password: decodeURIComponent(u.password || ""),
     database: u.pathname.replace(/^\//, "") || "postgres",
     // ⚡ PERFORMANCE OPTIMIZATIONS FOR SUPABASE/NEON
-    max: 5,                       // Smaller pool - Supabase free tier has limited connections
-    min: 1,                       // Keep 1 connection warm
+    max: 20,                      // Allow up to 20 concurrent DB connections
+    min: 2,                       // Keep 2 connections warm
     idleTimeoutMillis: 30000,     // Close idle connections after 30s
     connectionTimeoutMillis: 15000, // Wait up to 15s to connect
     query_timeout: 20000,         // Kill slow queries after 20s
