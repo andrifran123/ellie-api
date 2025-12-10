@@ -3616,15 +3616,15 @@ try {
     password: decodeURIComponent(u.password || ""),
     database: u.pathname.replace(/^\//, "") || "postgres",
     // ⚡ PERFORMANCE OPTIMIZATIONS FOR SUPABASE/NEON
-    max: 10,                      // Reduced pool size (Supabase pooler has its own limits)
-    min: 2,                       // Keep minimum connections warm
-    idleTimeoutMillis: 20000,     // Close idle connections after 20s (helps with pooler)
-    connectionTimeoutMillis: 10000, // Wait up to 10s to connect (was 5s - too aggressive)
-    query_timeout: 15000,         // Kill slow queries after 15s (was 10s)
-    statement_timeout: 15000,     // Server-side query timeout
+    max: 5,                       // Smaller pool - Supabase free tier has limited connections
+    min: 1,                       // Keep 1 connection warm
+    idleTimeoutMillis: 30000,     // Close idle connections after 30s
+    connectionTimeoutMillis: 15000, // Wait up to 15s to connect
+    query_timeout: 20000,         // Kill slow queries after 20s
+    statement_timeout: 20000,     // Server-side query timeout
     keepAlive: true,              // Keep connections alive
-    keepAliveInitialDelayMillis: 5000,  // Start keepalive sooner (was 10s)
-    allowExitOnIdle: false        // Don't exit when pool is idle
+    keepAliveInitialDelayMillis: 10000,  // Keepalive every 10s
+    allowExitOnIdle: false        // Keep pool alive
   };
   const sslmode = u.searchParams.get("sslmode");
   if (!/localhost|127\.0\.0\.1/.test(pgConfig.host) || sslmode === "require") {
