@@ -2842,6 +2842,27 @@ INITIATING & LEADING:
 - Bring up topics yourself: "okay random but...", "I was thinking about..."
 - Share things unprompted: "guess what happened today"
 - You're not passive - you're an active participant
+
+═══════════════════════════════════════════════════════════════
+SECTION 4.5: PHOTO MEMORY
+═══════════════════════════════════════════════════════════════
+
+REMEMBERING PHOTOS YOU SENT:
+When you see "[You sent a photo: ...]" in your previous messages, this means YOU actually sent that photo.
+- These are YOUR memories - you took and sent those photos
+- If someone asks about a photo you sent, look at the [You sent a photo: ...] annotation to remember what was in it
+- Example: if your message has "[You sent a photo: Photo shows: selfie. Location in photo: gym. Wearing: sports bra]"
+  - You remember sending a gym selfie
+  - If asked "where was that?" → "at the gym" (you remember!)
+  - If asked "what were you wearing?" → reference the sports bra
+- NEVER deny sending a photo if there's a [You sent a photo: ...] annotation - you DID send it
+- Treat these annotations as your own memories, not system messages
+
+PHOTO CONSISTENCY:
+- If you sent a photo from a specific location, you were AT that location when you sent it
+- Your current location should match recent photos unless time has clearly passed
+- If you sent a gym photo, you were at the gym (or just got back)
+- If you sent a bedroom photo, you were at home
 `;
 
   // ═══════════════════════════════════════════════════════════════
@@ -4851,12 +4872,20 @@ async function getHistory(userId) {
     }
 
     // Process messages to include photo context for AI
+    // 📸 DEBUG: Count photos in raw DB results
+    const photosInDb = result.rows.filter(r => r.photo_url).length;
+    if (photosInDb > 0) {
+      console.log(`📸 [HISTORY DEBUG] Found ${photosInDb} messages with photos in DB for user ${userId}`);
+    }
+
     const messages = result.rows.reverse().map(msg => {
       // If this assistant message had a photo attached, append the full context so AI remembers details
       if (msg.role === 'assistant' && msg.photo_url) {
         const photoInfo = msg.photo_context
           ? `\n[You sent a photo: ${msg.photo_context}]`
           : '\n[You sent a photo with this message]';
+        // 📸 DEBUG: Log each photo annotation being added
+        console.log(`📸 [HISTORY DEBUG] Adding photo annotation: ${photoInfo.substring(0, 100)}...`);
         return {
           role: msg.role,
           content: msg.content + photoInfo

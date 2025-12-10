@@ -401,9 +401,10 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
 
 async function getRecentStatedLocation(pool, userId) {
   try {
-    // ⬆️ UPDATED: Look back 4 hours and 50 messages (was 30m/10 msgs)
+    // ⬆️ UPDATED: Look back 4 hours and 50 messages
+    // 🔧 FIX: Check ONLY Ellie's (assistant) messages + her photo_context for location consistency
     const { rows } = await pool.query(
-      `SELECT content FROM conversation_history
+      `SELECT content, photo_context FROM conversation_history
        WHERE user_id = $1
        AND role = 'assistant'
        AND created_at > NOW() - INTERVAL '4 hours'
@@ -414,6 +415,32 @@ async function getRecentStatedLocation(pool, userId) {
 
     if (!rows.length) return null;
 
+    // 📸 PRIORITY 1: Check photo_context FIRST (most accurate - where photo was taken)
+    // This is the most reliable source since it's metadata from the actual photo
+    const photoLocationPatterns = [
+      { pattern: /location[^:]*:\s*(home|apartment|house)/i, location: 'home' },
+      { pattern: /location[^:]*:\s*(gym|fitness)/i, location: 'gym' },
+      { pattern: /location[^:]*:\s*(office|work|desk)/i, location: 'work' },
+      { pattern: /location[^:]*:\s*(bedroom|bed)/i, location: 'bedroom' },
+      { pattern: /location[^:]*:\s*(bathroom|shower)/i, location: 'bathroom' },
+      { pattern: /location[^:]*:\s*(cafe|coffee)/i, location: 'cafe' },
+      { pattern: /location[^:]*:\s*(outside|park|street)/i, location: 'outside' },
+      { pattern: /location[^:]*:\s*(car)/i, location: 'car' },
+    ];
+
+    // Check most recent photo first for location
+    for (const row of rows) {
+      if (row.photo_context) {
+        for (const { pattern, location } of photoLocationPatterns) {
+          if (pattern.test(row.photo_context)) {
+            console.log(`📍 Detected Ellie's location: "${location}" from her recent photo`);
+            return location;
+          }
+        }
+      }
+    }
+
+    // PRIORITY 2: Check Ellie's text messages for location statements
     const locationPatterns = [
       { pattern: /\b(at home|at my place|in my apartment|in my room)\b/i, location: 'home' },
       { pattern: /\b(at the gym|at gym|working out|hitting the gym)\b/i, location: 'gym' },
@@ -429,12 +456,13 @@ async function getRecentStatedLocation(pool, userId) {
       const content = row.content.toLowerCase();
       for (const { pattern, location } of locationPatterns) {
         if (pattern.test(content)) {
-          console.log(`📍 Detected persistent location: "${location}" from chat history.`);
+          console.log(`📍 Detected Ellie's location: "${location}" from her message`);
           return location;
         }
       }
     }
 
+    console.log(`📍 [DEBUG] No location detected for Ellie in last 50 messages`);
     return null;
   } catch (error) {
     console.error('❌ Error checking recent location:', error);
