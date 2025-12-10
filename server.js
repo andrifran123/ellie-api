@@ -6991,12 +6991,14 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
         
         // Generate random thoughts (if not dream)
         // Only for users with 30+ messages - can't "think about" someone you just met
-        if (!dreamMessage && (relationship?.total_interactions || 0) >= 30) {
-          const thoughtMessage = dreamSystem.generateRandomThoughts(memories, mood);
-          if (thoughtMessage) {
-            enhancedReply = thoughtMessage + " " + enhancedReply;
-          }
-        }
+        // DISABLED: This was prepending random thoughts that don't fit the context
+        // e.g. "you randomly popped into my head earlier" when user asks for a photo
+        // if (!dreamMessage && (relationship?.total_interactions || 0) >= 30) {
+        //   const thoughtMessage = dreamSystem.generateRandomThoughts(memories, mood);
+        //   if (thoughtMessage) {
+        //     enhancedReply = thoughtMessage + " " + enhancedReply;
+        //   }
+        // }
       } catch (dreamErr) {
         console.error('Dream system error:', dreamErr);
       }
