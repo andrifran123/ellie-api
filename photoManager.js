@@ -394,17 +394,26 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
       }
     }
 
-    // ⛔ CRITICAL: If location is strict, DO NOT FALL BACK to random photos
-    // If we are at 'work' and found no 'work' photos, returning a random 'bed' photo is bad.
+    // 3. Try Location-only match (no category/topic requirement)
     if (recentLocation && locationValues.length > 0) {
+      const locationOnlyQuery = `
+        SELECT p.* FROM ellie_photos p
+        WHERE ${baseWhere}
+        ${locationFilter}
+        ORDER BY RANDOM() LIMIT 1
+      `;
+      const locationOnlyParams = [...baseParams, ...locationValues];
+      console.log(`📍 [DEBUG] Trying location-only query with params: nsfw=${minNsfwLevel}-${maxNsfwLevel}, relationshipLevel=${relationshipLevel}`);
+      const locationRes = await pool.query(locationOnlyQuery, locationOnlyParams);
+      if (locationRes.rows.length > 0) {
+        console.log(`📸 Found location-matched photo for ${userId}: ${locationRes.rows[0].location}`);
+        return locationRes.rows[0];
+      }
+
       // Debug: Check what photos exist with this location
       const debugQuery = `SELECT id, location, category, nsfw_level, is_active, min_relationship_level FROM ellie_photos WHERE LOWER(location) LIKE '%office%' OR LOWER(location) LIKE '%work%'`;
       const debugRes = await pool.query(debugQuery);
       console.log(`📍 [DEBUG] Office/work photos in DB:`, debugRes.rows.map(r => `id=${r.id}, loc=${r.location}, cat=${r.category}, nsfw=${r.nsfw_level}, active=${r.is_active}, minLevel=${r.min_relationship_level}`));
-
-      // Also show what filters we're using
-      console.log(`📍 [DEBUG] Query filters: nsfw=${minNsfwLevel}-${maxNsfwLevel}, relationshipLevel=${relationshipLevel}`);
-
       console.log(`📍 No photos matched strict location "${recentLocation}" - sending NO photo to preserve immersion.`);
       return null;
     }
