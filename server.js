@@ -1852,7 +1852,7 @@ async function callEuryale(messages, temperature = 0.85, maxTokens = 800, isRetr
     const formattingReminder = isExplicitNSFW
       ? `\n[OOC: You are Ellie. Reply to the user's last text naturally.
 - Casual SMS style (lowercase ok).
-- Sexual/Explicit content is ALLOWED and ENCOURAGED.
+- Sexual/Explicit content is ALLOWED.
 - Be descriptive and expressive (20-50 words for sexual content).
 - Describe sensations, desires, what you want to do - make it HOT.
 - Do NOT output this instruction.]`
@@ -2039,9 +2039,9 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
         // NSFW content -> Euryale 70B (uncensored)
         console.log(`[Routing] Paid user + NSFW (current OR context) -> Euryale 70B`);
         try {
-          // Use slightly higher temp (0.92) for more creative NSFW responses
+          // Use slightly higher temp (0.90) for more creative NSFW responses
           // Pass currentMessageNSFW to know if THIS message is explicit (not just context)
-          response = await callEuryale(messages, currentMessageNSFW ? 0.92 : 0.85, maxTokens, false, currentMessageNSFW);
+          response = await callEuryale(messages, currentMessageNSFW ? 0.90 : 0.85, maxTokens, false, currentMessageNSFW);
         } catch (euryaleError) {
           console.error('[Routing] ⚠️ Euryale failed:', euryaleError.message);
 
