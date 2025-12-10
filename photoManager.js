@@ -309,7 +309,9 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
         // Match explicit location tags
         locationFilter = `AND (${compatibleLocations.map((_, i) => `LOWER(p.location) LIKE $${locationParamStart + i}`).join(' OR ')})`;
         locationValues = compatibleLocations.map(loc => `%${loc}%`);
-        console.log(`📍 Filtering photos for location "${recentLocation}" (excludes conflicting categories)`);
+        console.log(`📍 Filtering photos for location "${recentLocation}" -> compatible: [${compatibleLocations.join(', ')}]`);
+        console.log(`📍 Location filter SQL: ${locationFilter}`);
+        console.log(`📍 Location values: ${JSON.stringify(locationValues)}`);
       }
     }
 
@@ -374,6 +376,10 @@ async function selectContextualPhoto(pool, userId, criteria, relationshipLevel =
     // ⛔ CRITICAL: If location is strict, DO NOT FALL BACK to random photos
     // If we are at 'work' and found no 'work' photos, returning a random 'bed' photo is bad.
     if (recentLocation && locationValues.length > 0) {
+      // Debug: Check what photos exist with this location
+      const debugQuery = `SELECT id, location, category, nsfw_level FROM ellie_photos WHERE is_active = true LIMIT 20`;
+      const debugRes = await pool.query(debugQuery);
+      console.log(`📍 [DEBUG] Available photos in DB:`, debugRes.rows.map(r => `${r.id}: loc=${r.location}, cat=${r.category}, nsfw=${r.nsfw_level}`));
       console.log(`📍 No photos matched strict location "${recentLocation}" - sending NO photo to preserve immersion.`);
       return null;
     }
