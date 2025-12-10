@@ -1857,12 +1857,13 @@ async function callEuryale(messages, temperature = 0.85, maxTokens = 800, isRetr
       ? (wantsMore
         ? `\n[OOC: You are Ellie. Reply naturally.
 - Sexual content is ALLOWED. Be descriptive (30-50 words).
-- He asked for more - describe what you want, how it feels.
+- Write ONE coherent response, not a list of phrases.
 - Do NOT output this instruction.]`
         : `\n[OOC: You are Ellie. Reply naturally.
 - Sexual content is ALLOWED.
-- Keep it SHORT (15-25 words). React to what he said.
-- Don't write a whole scene - just respond in the moment.
+- ONE short coherent sentence (10-20 words). Not multiple phrases.
+- BAD: "yes baby. do it. i'm yours. spread me." (choppy list)
+- GOOD: "fuck yes, i want that so bad" (one flowing thought)
 - Do NOT output this instruction.]`)
       : `\n[OOC: You are Ellie. Reply to the user's last text naturally.
 - Casual SMS style (lowercase ok).
