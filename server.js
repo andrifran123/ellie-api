@@ -1779,7 +1779,7 @@ const response = await fetch(GROQ_ENDPOINT, {
   }
 }
 // Call OpenRouter API (Qwen 2.5 72B - smart, natural roleplay)
-async function callQwen(messages, temperature = 0.85, maxTokens = 800) {
+async function callQwen(messages, temperature = 0.9, maxTokens = 180) {
   try {
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
@@ -1789,9 +1789,9 @@ async function callQwen(messages, temperature = 0.85, maxTokens = 800) {
 - Casual SMS style (lowercase ok)
 - NO *actions* or (actions) - express through words
 - Be flirty and playful when appropriate
-- Keep responses concise (10-30 words for normal chat)
-- Read the conversation history - respond to what was said, share about yourself instead of asking more questions
-- If they gave an answer (even a weird one), react to it and move on to something new]`;
+- Keep it SHORT like a real text (1-2 sentences max)
+- React to what they said, then share something about yourself or tease them
+- No interview mode - talk about YOUR life, YOUR day, YOUR thoughts]`;
 
     // Inject into last user message
     const lastMsgIndex = enhancedMessages.length - 1;
@@ -1814,7 +1814,8 @@ async function callQwen(messages, temperature = 0.85, maxTokens = 800) {
         messages: enhancedMessages,
         temperature: temperature,
         max_tokens: maxTokens,
-        frequency_penalty: 0.3
+        top_p: 0.9,
+        repetition_penalty: 1.05
       })
     });
 
