@@ -1778,12 +1778,12 @@ const response = await fetch(GROQ_ENDPOINT, {
     throw error;
   }
 }
-// Call OpenRouter API (Qwen 2.5 72B - smart, natural roleplay)
-async function callQwen(messages, temperature = 0.7, maxTokens = 180) {
+// Call OpenRouter API (Noromaid 20B - roleplay-focused model)
+async function callNoromaid(messages, temperature = 0.7, maxTokens = 180) {
   try {
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
-    // Qwen formatting reminder - natural conversation style with anti-question-loop
+    // Noromaid formatting reminder - natural conversation style with anti-question-loop
     const formattingReminder = `
 \n[Style: You are Ellie. Reply naturally as a real person texting.
 - Casual SMS style (lowercase ok)
@@ -1805,7 +1805,7 @@ CONVERSATION STYLE (CRITICAL - READ THIS):
       enhancedMessages[lastMsgIndex].content += formattingReminder;
     }
 
-    console.log(`[Qwen] Calling Qwen 2.5 72B...`);
+    console.log(`[Noromaid] Calling Noromaid 20B...`);
 
     const response = await fetch(OPENROUTER_ENDPOINT, {
       method: 'POST',
@@ -1816,7 +1816,7 @@ CONVERSATION STYLE (CRITICAL - READ THIS):
         'X-Title': 'Ellie'
       },
       body: JSON.stringify({
-        model: "qwen/qwen-2.5-72b-instruct",
+        model: "neversleep/noromaid-20b",
         messages: enhancedMessages,
         temperature: temperature,
         max_tokens: maxTokens,
@@ -1827,26 +1827,26 @@ CONVERSATION STYLE (CRITICAL - READ THIS):
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(`Qwen API error: ${response.status} - ${errText}`);
+      throw new Error(`Noromaid API error: ${response.status} - ${errText}`);
     }
 
     const data = await response.json();
     let rawContent = data.choices[0]?.message?.content || "";
 
-    console.log(`[Qwen] Raw response: "${rawContent.substring(0, 100)}..."`);
+    console.log(`[Noromaid] Raw response: "${rawContent.substring(0, 100)}..."`);
 
     // Clean up any leaked instructions
     rawContent = rawContent.replace(/^\[Style:.*?\]$/gmi, '').trim();
 
     if (!rawContent || rawContent.length < 2) {
-      throw new Error('Empty response from Qwen');
+      throw new Error('Empty response from Noromaid');
     }
 
     const filtered = filterAllActions(rawContent);
     return filtered;
 
   } catch (error) {
-    console.error('[Qwen] API call failed:', error);
+    console.error('[Noromaid] API call failed:', error);
     throw error;
   }
 }
@@ -2047,13 +2047,13 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
     let response;
 
     // 3. Route based on tier and content
-    // 🆕 ALL USERS now use Qwen 2.5 72B (normal) + Euryale 70B (NSFW)
+    // 🆕 ALL USERS now use Noromaid 20B (normal) + Euryale 70B (NSFW)
     if (userTier === 'free') {
-      // Free users: Qwen for normal, NO NSFW access
-      console.log(`[Routing] Free user -> Qwen 2.5 72B`);
-      response = await callQwen(messages, 0.8, maxTokens);
+      // Free users: Noromaid for normal, NO NSFW access
+      console.log(`[Routing] Free user -> Noromaid 20B`);
+      response = await callNoromaid(messages, 0.8, maxTokens);
     } else {
-      // Paid users: Qwen for normal, Euryale for NSFW
+      // Paid users: Noromaid for normal, Euryale for NSFW
       if (isNSFW) {
         // NSFW content -> Euryale 70B (uncensored)
         console.log(`[Routing] Paid user + NSFW (current OR context) -> Euryale 70B`);
@@ -2079,19 +2079,19 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
               });
               response = await callEuryale(correctedMessages, 1.0, maxTokens, true, currentMessageNSFW);
             } catch (retryError) {
-              console.error('[Routing] ⚠️ Euryale retry also failed, falling back to Qwen:', retryError.message);
-              response = await callQwen(messages, 0.8, maxTokens);
+              console.error('[Routing] ⚠️ Euryale retry also failed, falling back to Noromaid:', retryError.message);
+              response = await callNoromaid(messages, 0.8, maxTokens);
             }
           } else {
-            // Fall back to Qwen if Euryale returns garbage
-            console.log('[Routing] Falling back to Qwen 2.5 72B...');
-            response = await callQwen(messages, 0.8, maxTokens);
+            // Fall back to Noromaid if Euryale returns garbage
+            console.log('[Routing] Falling back to Noromaid 20B...');
+            response = await callNoromaid(messages, 0.8, maxTokens);
           }
         }
       } else {
-        // Normal chat -> Qwen 2.5 72B (smart, natural)
-        console.log(`[Routing] Paid user + Normal -> Qwen 2.5 72B`);
-        response = await callQwen(messages, 0.8, maxTokens);
+        // Normal chat -> Noromaid 20B (roleplay-focused)
+        console.log(`[Routing] Paid user + Normal -> Noromaid 20B`);
+        response = await callNoromaid(messages, 0.8, maxTokens);
       }
     }
 
@@ -10068,8 +10068,8 @@ server.listen(PORT, async () => {
   }
   if (OPENROUTER_API_KEY) {
     console.log("🔀 Hybrid Routing: ENABLED (OpenRouter)");
-    console.log("   ├─ Free tier: Qwen 2.5 72B");
-    console.log("   ├─ Paid normal: Qwen 2.5 72B");
+    console.log("   ├─ Free tier: Noromaid 20B");
+    console.log("   ├─ Paid normal: Noromaid 20B");
     console.log("   └─ Paid NSFW: Euryale 70B (uncensored)");
   } else {
     console.log("🔀 Hybrid Routing: DISABLED (using OpenAI fallback)");
@@ -10078,7 +10078,7 @@ server.listen(PORT, async () => {
     console.log("🔊 Voice System: Cartesia Sonic (realistic voice)");
     console.log("🧠 Voice AI Brain: Using hybrid routing (same as chat)");
     console.log("   ├─ Transcription: OpenAI Whisper");
-    console.log("   ├─ AI Response: Qwen 2.5 72B + Euryale 70B");
+    console.log("   ├─ AI Response: Noromaid 20B + Euryale 70B");
     console.log("   └─ Voice Synthesis: Cartesia Sonic (3000x cheaper!)");
   } else {
     console.log("🔊 Voice System: OpenAI TTS (set CARTESIA_API_KEY for 90% cost savings)");
