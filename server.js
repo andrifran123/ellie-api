@@ -2451,7 +2451,7 @@ async function getAskedQuestions(userId) {
 // ============================================================
 
 const RELATIONSHIP_STAGES = {
-  STRANGER: { min: 0, max: 20, label: "Curious Stranger" },
+  STRANGER: { min: 0, max: 10, label: "Curious Stranger" },
   FRIEND_TENSION: { min: 21, max: 40, label: "Friend with Tension" },
   COMPLICATED: { min: 41, max: 60, label: "It's Complicated" },
   EXCLUSIVE: { min: 61, max: 100, label: "Exclusive" },
@@ -3617,14 +3617,14 @@ try {
     password: decodeURIComponent(u.password || ""),
     database: u.pathname.replace(/^\//, "") || "postgres",
     // ⚡ PERFORMANCE OPTIMIZATIONS FOR SUPABASE/NEON
-    max: 20,                      // Allow up to 20 concurrent DB connections
-    min: 2,                       // Keep 2 connections warm
-    idleTimeoutMillis: 30000,     // Close idle connections after 30s
-    connectionTimeoutMillis: 15000, // Wait up to 15s to connect
-    query_timeout: 20000,         // Kill slow queries after 20s
-    statement_timeout: 20000,     // Server-side query timeout
+    max: 10,                      // Allow up to 20 concurrent DB connections
+    min: 1,                       // Keep 2 connections warm
+    idleTimeoutMillis: 60000,     // Close idle connections after 30s
+    connectionTimeoutMillis: 30000, // Wait up to 15s to connect
+    query_timeout: 30000,         // Kill slow queries after 20s
+    statement_timeout: 30000,     // Server-side query timeout
     keepAlive: true,              // Keep connections alive
-    keepAliveInitialDelayMillis: 10000,  // Keepalive every 10s
+    keepAliveInitialDelayMillis: 30000,  // Keepalive every 10s
     allowExitOnIdle: false        // Keep pool alive
   };
   const sslmode = u.searchParams.get("sslmode");
@@ -3672,7 +3672,7 @@ async function checkDbConnection(retries = 3) {
 // Periodic health check every 20 seconds (more frequent for better resilience)
 setInterval(async () => {
   await checkDbConnection(2);  // Retry twice on periodic checks
-}, 20000);
+}, 60000);
 
 // Initial connection check on startup
 checkDbConnection().then(healthy => {
