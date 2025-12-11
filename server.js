@@ -1779,7 +1779,7 @@ const response = await fetch(GROQ_ENDPOINT, {
   }
 }
 // Call OpenRouter API (Noromaid 20B - roleplay-focused model)
-async function callNoromaid(messages, temperature = 0.95, maxTokens = 600) {
+async function callNoromaid(messages, temperature = 0.95, maxTokens = 200) {
   try {
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
