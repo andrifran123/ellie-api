@@ -1779,7 +1779,7 @@ const response = await fetch(GROQ_ENDPOINT, {
   }
 }
 // Call OpenRouter API (Qwen 2.5 72B - smart, natural roleplay)
-async function callQwen(messages, temperature = 0.8, maxTokens = 800) {
+async function callQwen(messages, temperature = 0.85, maxTokens = 800) {
   try {
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
@@ -1789,7 +1789,9 @@ async function callQwen(messages, temperature = 0.8, maxTokens = 800) {
 - Casual SMS style (lowercase ok)
 - NO *actions* or (actions) - express through words
 - Be flirty and playful when appropriate
-- Keep responses concise (10-30 words for normal chat)]`;
+- Keep responses concise (10-30 words for normal chat)
+- Read the conversation history - respond to what was said, share about yourself instead of asking more questions
+- If they gave an answer (even a weird one), react to it and move on to something new]`;
 
     // Inject into last user message
     const lastMsgIndex = enhancedMessages.length - 1;
@@ -1811,7 +1813,8 @@ async function callQwen(messages, temperature = 0.8, maxTokens = 800) {
         model: "qwen/qwen-2.5-72b-instruct",
         messages: enhancedMessages,
         temperature: temperature,
-        max_tokens: maxTokens
+        max_tokens: maxTokens,
+        frequency_penalty: 0.3
       })
     });
 
@@ -6735,12 +6738,12 @@ Before responding, check what you said earlier in this conversation. Stay consis
 - If you described your day, stick to that story
 - Read your previous messages carefully and stay consistent
 
-NEVER REPEAT QUESTIONS:
-Look at your previous messages. If you already asked a question (even with different wording), DO NOT ask it again.
-- Asked "watched any movies?" -> Don't ask "seen any good movies?"
-- Asked "how was your day?" -> Don't ask "what did you do today?"
-- Asked "what do you do for work?" -> Don't ask "what's your job?"
-If they already answered a question, you KNOW the answer - reference it instead of re-asking.`;
+CONVERSATION FLOW:
+After asking something, move forward - share something about yourself or react to their answer.
+- They answered? Cool, now tell them something about YOUR day/life
+- Weird answer? Tease them about it, then change the subject
+- Short answer? Match the energy or bring up something interesting
+Your job is to keep things moving and fun, not to interview them.`;
 
     // 📝 Add question tracking context
     try {
