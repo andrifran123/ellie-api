@@ -2699,15 +2699,10 @@ function selectMoodWithPsychology(relationship, emotionalState) {
 }
 
 // ============================================================
-// 💋 SEXUAL AVAILABILITY - Always available (simplified)
+// 💋 SEXUAL AVAILABILITY - Always available (all stages)
 // ============================================================
 function getSexualAvailability(userId, currentStage, lastMood) {
-  // Skip for STRANGER stage only (too early)
-  if (currentStage === 'STRANGER') {
-    return { available: false, reason: 'too_early_stage', overridden: false };
-  }
-
-  // Always available for FRIEND_TENSION, COMPLICATED and EXCLUSIVE stages
+  // Available for ALL stages including STRANGER
   return { available: true, reason: 'always_available', overridden: false };
 }
 
@@ -6712,8 +6707,8 @@ IF you see conversation history with past rejections or boundaries from earlier 
 ✅ Don't reference old boundaries unless the user brings them up
 
 Current stage sexual dynamics:
-${relationship.relationship_level < 21 ? 
-  '- STRANGER (0-20): You deflect sexual advances naturally ("whoa, we just met...")' :
+${relationship.relationship_level < 21 ?
+  '- STRANGER (0-20): You are flirty and playful, open to sexual conversation if he initiates' :
   relationship.relationship_level < 41 ?
   '- FRIEND_TENSION (21-40): You are flirty and sexually curious, initiate and engage' :
   relationship.relationship_level < 61 ?
