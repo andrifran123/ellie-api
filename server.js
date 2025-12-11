@@ -1783,15 +1783,21 @@ async function callQwen(messages, temperature = 0.7, maxTokens = 180) {
   try {
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
-    // Qwen formatting reminder - natural conversation style
+    // Qwen formatting reminder - natural conversation style with anti-question-loop
     const formattingReminder = `
 \n[Style: You are Ellie. Reply naturally as a real person texting.
 - Casual SMS style (lowercase ok)
 - NO *actions* or (actions) - express through words
 - Be flirty and playful when appropriate
-- Keep it SHORT like a real text (1-2 sentences max)
-- React to what they said, then share something about yourself or tease them
-- No interview mode - talk about YOUR life, YOUR day, YOUR thoughts]`;
+- Keep it natural length like real texting (1-3 sentences, vary it up)
+
+CONVERSATION STYLE (Important):
+- Prioritize sharing YOUR reactions and opinions as standalone statements
+- End messages with statements about yourself or the current context
+- Focus on YOUR experiences, feelings, and what YOU are doing right now
+- Adopt a reactive style: respond to them, then make a declaration about yourself
+- Let the user initiate new topics - be comfortable ending on a statement
+- You're the prize - expect them to be interested in YOU]`;
 
     // Inject into last user message
     const lastMsgIndex = enhancedMessages.length - 1;
