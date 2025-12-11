@@ -10065,15 +10065,11 @@ server.listen(PORT, async () => {
   } else {
     console.log("🧠 Memory System: DISABLED (set SUPABASE_URL and SUPABASE_KEY to enable)");
   }
-  if (GROQ_API_KEY && OPENROUTER_API_KEY) {
-    console.log("🔀 Hybrid Routing: ENABLED (Groq + OpenRouter)");
-    console.log("   ├─ Free tier: Groq Llama 70B (FREE)");
-    console.log("   ├─ Paid normal: Groq Llama 70B (FREE)");
-    console.log("   └─ Paid NSFW: OpenRouter Euryale 70B");
-  } else if (GROQ_API_KEY) {
-    console.log("🔀 Hybrid Routing: PARTIAL (Groq only - no NSFW model)");
-  } else if (OPENROUTER_API_KEY) {
-    console.log("🔀 Hybrid Routing: PARTIAL (OpenRouter only - no free tier)");
+  if (OPENROUTER_API_KEY) {
+    console.log("🔀 Hybrid Routing: ENABLED (OpenRouter)");
+    console.log("   ├─ Free tier: Qwen 2.5 72B");
+    console.log("   ├─ Paid normal: Qwen 2.5 72B");
+    console.log("   └─ Paid NSFW: Euryale 70B (uncensored)");
   } else {
     console.log("🔀 Hybrid Routing: DISABLED (using OpenAI fallback)");
   }
@@ -10081,7 +10077,7 @@ server.listen(PORT, async () => {
     console.log("🔊 Voice System: Cartesia Sonic (realistic voice)");
     console.log("🧠 Voice AI Brain: Using hybrid routing (same as chat)");
     console.log("   ├─ Transcription: OpenAI Whisper");
-    console.log("   ├─ AI Response: Hybrid routing (Llama 70B + Euryale 70B)");
+    console.log("   ├─ AI Response: Qwen 2.5 72B + Euryale 70B");
     console.log("   └─ Voice Synthesis: Cartesia Sonic (3000x cheaper!)");
   } else {
     console.log("🔊 Voice System: OpenAI TTS (set CARTESIA_API_KEY for 90% cost savings)");
