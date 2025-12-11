@@ -6978,11 +6978,12 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     }
     
     // 💭 Check for dream/thought generation (before micro-expressions)
-    // ⚡ PERFORMANCE FIX: Reuse relevantMemories from parallel fetch (line 6527) instead of fetching again!
-    if (memorySystem && memorySystem.enabled && relevantMemories && relevantMemories.length > 0) {
+    if (memorySystem && memorySystem.enabled) {
       try {
-        // Generate dream sequence using already-fetched memories
-        const dreamMessage = await dreamSystem.generateDreamSequence(userId, relevantMemories);
+        const memories = await memorySystem.recallMemories(userId, message, { limit: 10 });
+        
+        // Generate dream sequence
+        const dreamMessage = await dreamSystem.generateDreamSequence(userId, memories);
         if (dreamMessage) {
           enhancedReply = dreamMessage;
           console.log(`💭 Generated dream sequence for ${userId}`);
