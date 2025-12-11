@@ -1779,7 +1779,7 @@ const response = await fetch(GROQ_ENDPOINT, {
   }
 }
 // Call OpenRouter API (Qwen 2.5 72B - smart, natural roleplay)
-async function callQwen(messages, temperature = 0.9, maxTokens = 180) {
+async function callQwen(messages, temperature = 0.7, maxTokens = 180) {
   try {
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
