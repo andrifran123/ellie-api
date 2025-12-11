@@ -2454,16 +2454,16 @@ const RELATIONSHIP_STAGES = {
   EXCLUSIVE: { min: 61, max: 100, label: "Exclusive" },
 };
 
-// Enhanced mood system with better psychological patterns
+// Simplified mood system - no level restrictions
 const MOOD_TYPES = {
-  flirty: { weight: 0.15, intensity: 0.8, minLevel: 10 },
-  playful: { weight: 0.30, intensity: 0.6, minLevel: 0 },
-  distant: { weight: 0.10, intensity: -0.3, minLevel: 0 },
-  vulnerable: { weight: 0.05, intensity: 0.9, minLevel: 25 },
-  normal: { weight: 0.30, intensity: 0.4, minLevel: 0 },
-  mysterious: { weight: 0.10, intensity: 0.2, minLevel: 0 },
-  emotional: { weight: 0.08, intensity: 0.7, minLevel: 35 },
-  loving: { weight: 0.05, intensity: 0.95, minLevel: 60 }
+  flirty: { weight: 0.15, intensity: 0.8 },
+  playful: { weight: 0.30, intensity: 0.6 },
+  distant: { weight: 0.10, intensity: -0.3 },
+  vulnerable: { weight: 0.05, intensity: 0.9 },
+  normal: { weight: 0.30, intensity: 0.4 },
+  mysterious: { weight: 0.10, intensity: 0.2 },
+  emotional: { weight: 0.08, intensity: 0.7 },
+  loving: { weight: 0.05, intensity: 0.95 }
 };
 
 // ENHANCED jealousy triggers by stage
@@ -2653,10 +2653,9 @@ function calculateEmotionalState(relationship, recentHistory = []) {
 // Helper function to select mood with psychological patterns
 function selectMoodWithPsychology(relationship, emotionalState) {
   const { current_stage, relationship_level, last_mood } = relationship;
-  
-  // Get stage-appropriate moods
+
+  // Get all moods (no level restriction)
   const availableMoods = Object.entries(MOOD_TYPES)
-    .filter(([mood, config]) => config.minLevel <= relationship_level)
     .reduce((acc, [mood, config]) => {
       acc[mood] = config.weight;
       return acc;
