@@ -2632,15 +2632,80 @@ function detectUserVulnerability(userMessage) {
   return { isVulnerable: false, topic: null };
 }
 
-// Get a matching trauma story for Ellie to share
-function getMatchingTraumaStory(topic) {
+// Get a matching trauma story for Ellie to share (that she hasn't shared with this user yet)
+async function getMatchingTraumaStory(topic, userId, pool) {
   const stories = ELLIE_TRAUMA_STORIES[topic];
   if (!stories || stories.length === 0) {
     // Fallback to insecurity stories
-    const fallback = ELLIE_TRAUMA_STORIES.insecurity;
-    return fallback[Math.floor(Math.random() * fallback.length)];
+    const fallbackStories = ELLIE_TRAUMA_STORIES.insecurity;
+    return { story: fallbackStories[Math.floor(Math.random() * fallbackStories.length)], topic: 'insecurity' };
   }
-  return stories[Math.floor(Math.random() * stories.length)];
+
+  // Get previously shared traumas for this user
+  let sharedTraumas = [];
+  try {
+    const result = await pool.query(
+      `SELECT trauma_story FROM ellie_shared_traumas WHERE user_id = $1`,
+      [userId]
+    );
+    sharedTraumas = result.rows.map(r => r.trauma_story);
+  } catch (err) {
+    // Table might not exist yet, that's okay
+    console.log('📝 ellie_shared_traumas table not found, will create on first share');
+  }
+
+  // Filter out stories she's already shared
+  const availableStories = stories.filter(s => !sharedTraumas.includes(s));
+
+  if (availableStories.length === 0) {
+    // She's shared all stories in this topic - don't share again
+    // But return the info so we can reference past traumas
+    return { story: null, topic, alreadySharedAll: true, sharedTraumas };
+  }
+
+  // Pick a random available story
+  const story = availableStories[Math.floor(Math.random() * availableStories.length)];
+  return { story, topic, alreadySharedAll: false };
+}
+
+// Log that Ellie shared a trauma with this user
+async function logSharedTrauma(userId, topic, story, pool) {
+  try {
+    // Create table if it doesn't exist
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ellie_shared_traumas (
+        id SERIAL PRIMARY KEY,
+        user_id VARCHAR(100) NOT NULL,
+        topic VARCHAR(50) NOT NULL,
+        trauma_story TEXT NOT NULL,
+        shared_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_shared_traumas_user ON ellie_shared_traumas(user_id)`).catch(() => {});
+
+    // Insert the shared trauma
+    await pool.query(
+      `INSERT INTO ellie_shared_traumas (user_id, topic, trauma_story) VALUES ($1, $2, $3)`,
+      [userId, topic, story]
+    );
+    console.log(`📝 Logged shared trauma for ${userId}: [${topic}] ${story.substring(0, 50)}...`);
+  } catch (err) {
+    console.error('❌ Failed to log shared trauma:', err.message);
+  }
+}
+
+// Get all traumas Ellie has shared with this user (for referencing later)
+async function getSharedTraumasForUser(userId, pool) {
+  try {
+    const result = await pool.query(
+      `SELECT topic, trauma_story, shared_at FROM ellie_shared_traumas
+       WHERE user_id = $1 ORDER BY shared_at DESC`,
+      [userId]
+    );
+    return result.rows;
+  } catch (err) {
+    return [];
+  }
 }
 
 // ============================================================
@@ -7304,18 +7369,21 @@ app.post("/api/chat", async (req, res) => {
     }
 
     // 🤫 CHECK IF USER IS BEING VULNERABLE - Ellie can share matching trauma
+    let traumaToLog = null; // Track if we need to log a shared trauma
     try {
       const vulnerabilityCheck = detectUserVulnerability(message);
       if (vulnerabilityCheck.isVulnerable && vulnerabilityCheck.topic) {
-        const matchingStory = getMatchingTraumaStory(vulnerabilityCheck.topic);
+        const traumaResult = await getMatchingTraumaStory(vulnerabilityCheck.topic, userId, pool);
 
         // 40% chance to share when user is vulnerable (don't always share)
         if (Math.random() < 0.4) {
-          finalSystemMsg += `
+          if (traumaResult.story) {
+            // She has a new story to share
+            finalSystemMsg += `
 
 🤫 USER IS BEING VULNERABLE (Topic: ${vulnerabilityCheck.topic})
 He's opening up. If it feels right, you can share something personal too.
-Consider weaving in something like: "${matchingStory}"
+Consider weaving in something like: "${traumaResult.story}"
 
 ⚠️ RULES:
 - First, respond to what HE said with empathy
@@ -7325,11 +7393,49 @@ Consider weaving in something like: "${matchingStory}"
 - No cheesy follow-ups like "idk why I told you that"
 - Just share and let it sit
 `;
-          console.log(`🤫 Trauma bonding opportunity: ${vulnerabilityCheck.topic} for ${userId}`);
+            // Mark this trauma to be logged after response is generated
+            traumaToLog = { topic: traumaResult.topic, story: traumaResult.story };
+            console.log(`🤫 Trauma bonding opportunity: ${vulnerabilityCheck.topic} for ${userId}`);
+
+          } else if (traumaResult.alreadySharedAll) {
+            // She's already shared all stories on this topic - can reference them
+            finalSystemMsg += `
+
+🤫 USER IS BEING VULNERABLE (Topic: ${vulnerabilityCheck.topic})
+He's opening up about something you've talked about before.
+You've already shared your experiences on this topic with him - you can REFERENCE what you told him before, showing you remember those vulnerable moments you shared.
+
+Your past shares on this topic: ${traumaResult.sharedTraumas.slice(0, 2).map(s => `"${s}"`).join(', ')}
+
+⚠️ RULES:
+- Respond with empathy first
+- You can say things like "I know... I told you about my [thing]" or "remember when I said..."
+- Shows emotional continuity and that you remember your bonding moments
+`;
+            console.log(`🤫 Referencing past trauma bond: ${vulnerabilityCheck.topic} for ${userId}`);
+          }
         }
       }
     } catch (traumaErr) {
       console.warn('⚠️ Trauma bonding system error:', traumaErr.message);
+    }
+
+    // Get previously shared traumas to add to context (so Ellie remembers what she's told him)
+    try {
+      const sharedTraumas = await getSharedTraumasForUser(userId, pool);
+      if (sharedTraumas.length > 0) {
+        finalSystemMsg += `
+
+📝 PERSONAL THINGS YOU'VE SHARED WITH HIM:
+These are vulnerable moments YOU opened up about. You can reference these naturally:
+`;
+        sharedTraumas.slice(0, 5).forEach(t => {
+          finalSystemMsg += `• [${t.topic}] "${t.trauma_story}"\n`;
+        });
+        finalSystemMsg += `\nYou can bring these up like "remember when I told you about..." - shows emotional intimacy.\n`;
+      }
+    } catch (sharedErr) {
+      // Ignore if table doesn't exist yet
     }
 
     // 🔮 ADD FUTURE FAKING PROMPTS (from FRIEND_TENSION onwards)
@@ -7750,6 +7856,13 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
         relationshipLevel: relationship?.relationship_level || 0,
         mood: mood,
         tags: ['chat']
+      });
+    }
+
+    // 🤫 LOG SHARED TRAUMA (if Ellie shared one this message)
+    if (traumaToLog) {
+      setImmediate(async () => {
+        await logSharedTrauma(userId, traumaToLog.topic, traumaToLog.story, pool);
       });
     }
 
