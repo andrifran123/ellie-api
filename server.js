@@ -1791,12 +1791,20 @@ async function callDeepSeek(messages, temperature = 0.3, maxTokens = 200) {
     const minutes = estTime.getMinutes().toString().padStart(2, '0');
     const timeOfDay = hours < 12 ? 'morning' : hours < 17 ? 'afternoon' : hours < 21 ? 'evening' : 'night';
 
-    const timeReminder = `[Current time: ${days[estTime.getDay()]}, ${timeOfDay} (${hours}:${minutes} EST) - Be aware of the time when responding]`;
+    const timeReminder = `[Current time: ${days[estTime.getDay()]}, ${timeOfDay} (${hours}:${minutes} EST)]`;
+
+    // Check if this is a simple greeting (first message scenario)
+    const lastUserMsg = enhancedMessages[enhancedMessages.length - 1]?.content?.toLowerCase() || '';
+    const isSimpleGreeting = /^(hey|hi|hello|yo|sup|hii+|heyy+|what'?s? ?up)\.?!?$/i.test(lastUserMsg.trim());
+
+    const formattingReminder = isSimpleGreeting
+      ? `\n\n${timeReminder}\n[IMPORTANT: He just said a simple greeting. Match his energy - just say "heyyy" or "hey whats up". Do NOT add life updates like "just got home" or emojis. Keep it short and simple.]`
+      : `\n\n${timeReminder}`;
 
     // Inject into last user message
     const lastUserIdx = enhancedMessages.map(m => m.role).lastIndexOf('user');
     if (lastUserIdx !== -1) {
-      enhancedMessages[lastUserIdx].content = enhancedMessages[lastUserIdx].content + '\n\n' + timeReminder;
+      enhancedMessages[lastUserIdx].content = enhancedMessages[lastUserIdx].content + formattingReminder;
     }
 
     console.log(`[DeepSeek] Calling DeepSeek V3 0324...`);
