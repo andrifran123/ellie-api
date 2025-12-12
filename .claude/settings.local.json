@@ -20,7 +20,9 @@
       "Bash(node scripts/check-user.js:*)",
       "Bash(node scripts/find-user.js:*)",
       "Bash(git config:*)",
-      "Bash(git revert:*)"
+      "Bash(git revert:*)",
+      "Bash(git stash:*)",
+      "Bash(node scripts/check-memories.js:*)"
     ],
     "deny": [],
     "ask": []

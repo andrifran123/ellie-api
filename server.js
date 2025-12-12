@@ -5094,6 +5094,24 @@ async function upsertFact(userId, factData, source = null) {
   }
 }
 
+// Get all facts for a user (for memory injection)
+async function getFacts(userId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT category, fact, sentiment, confidence
+       FROM facts
+       WHERE user_id = $1
+         AND category NOT IN ('language', 'voice_preset', 'seen_chat_disclaimer')
+       ORDER BY updated_at DESC NULLS LAST`,
+      [userId]
+    );
+    return rows || [];
+  } catch (e) {
+    console.error('Error getting facts:', e.message);
+    return [];
+  }
+}
+
 async function getPreferredLanguage(userId) {
   const { rows } = await pool.query(
     `SELECT fact FROM facts
@@ -5330,7 +5348,7 @@ Language rules:
   
   const memoryPrompt = {
     role: "system",
-    content: `${systemPrompt}\n\n${languageRules}\n\n${moodStyle ? `\n${moodStyle}` : ""}\n${freshBlock}\n${VOICE_MODE_HINT}`
+    content: `${systemPrompt}\n\n${factsSummary}${moodLine}\n\n${languageRules}\n\n${moodStyle ? `\n${moodStyle}` : ""}\n${freshBlock}\n${VOICE_MODE_HINT}`
   };
 
   const fullConversation = [memoryPrompt, ...history.slice(1), { role: "user", content: userText }];
