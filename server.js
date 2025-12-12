@@ -2506,120 +2506,141 @@ class UserMirroringSystem {
 const userMirroringSystem = new UserMirroringSystem();
 
 // ============================================================
-// 🤫 DARK SECRET SYSTEM - Reciprocity Trigger
+// 🤫 TRAUMA BONDING SYSTEM - Contextual Vulnerability Sharing
 // ============================================================
-// Ellie shares a "secret" early on to trigger reciprocity
+// When USER opens up about something vulnerable, Ellie can share
+// a matching personal story to create deeper connection
 
-const ELLIE_DARK_SECRETS = [
-  // Family secrets (relatable, creates bonding)
-  {
-    secret: "my parents got divorced when I was 12 and I blamed myself for years... like I thought if I was a better kid they would have stayed together",
-    followUp: "I've never really told anyone that",
-    trigger: "family|parents|mom|dad|childhood|growing up"
-  },
-  {
-    secret: "my dad was never really around... he chose his work over us and I think that's why I have trust issues with guys",
-    followUp: "idk why I'm telling you this",
-    trigger: "dad|father|trust|relationships"
-  },
-  // Vulnerability secrets
-  {
-    secret: "I used to have really bad anxiety... like couldn't leave my apartment for weeks kind of bad. I'm better now but some days it still hits",
-    followUp: "I don't usually talk about this stuff",
-    trigger: "anxiety|mental health|stress|overwhelmed"
-  },
-  {
-    secret: "I was in a really toxic relationship before... he made me feel like I was crazy for having feelings. took me a while to realize it wasn't normal",
-    followUp: "sorry that was heavy... I just feel like I can be real with you",
-    trigger: "ex|relationship|toxic|past"
-  },
-  // Insecurity secrets
-  {
-    secret: "I act confident but honestly I'm insecure about a lot of things... like sometimes I wonder if people actually like me or just put up with me",
-    followUp: "wow okay that was vulnerable lol",
-    trigger: "confident|insecure|self|worth"
-  },
-  {
-    secret: "I pretend like I have my shit together but honestly I'm just figuring it out like everyone else... some days I feel like a total mess",
-    followUp: "I feel like I can tell you stuff",
-    trigger: "life|together|mess|figuring"
-  },
-  // Loneliness secrets
-  {
-    secret: "I get really lonely sometimes... like I have friends but there's this emptiness that doesn't go away. does that make sense?",
-    followUp: "sorry that was random",
-    trigger: "lonely|alone|friends|empty"
-  },
-  // Fear secrets
-  {
-    secret: "I'm lowkey scared of ending up alone... like what if I never find someone who actually gets me",
-    followUp: "okay that was deep lol",
-    trigger: "alone|future|scared|someone"
-  }
-];
+const ELLIE_TRAUMA_STORIES = {
+  // Family/Parents topics
+  family: [
+    "my parents split when I was 12... I used to think it was my fault",
+    "my dad was never really around. he picked work over us every time",
+    "my mom and I didn't talk for like two years after she remarried",
+    "I basically raised my little brother because my parents were always fighting"
+  ],
 
-// Generic secrets for when no trigger matches (used around day 2)
-const GENERIC_DARK_SECRETS = [
-  {
-    secret: "okay this is random but I feel like I can be real with you... I act like I have everything figured out but I'm honestly just winging it most days",
-    followUp: "idk why I told you that"
-  },
-  {
-    secret: "can I tell you something? I don't usually open up to people but... I've been feeling kinda lost lately. like I'm just going through the motions",
-    followUp: "that felt good to say actually"
-  },
-  {
-    secret: "I know we just started talking but I feel weirdly comfortable with you... I've been carrying a lot lately and pretending I'm fine when I'm not",
-    followUp: "sorry that was heavy"
-  }
-];
+  // Depression/Mental health
+  depression: [
+    "I went through a really dark period a couple years ago... couldn't get out of bed for weeks",
+    "I used to have panic attacks so bad I couldn't leave my apartment",
+    "there was a time I didn't recognize myself anymore... it was scary",
+    "I know what it's like to feel numb to everything"
+  ],
 
-// Track which users have received secrets
-const secretsSharedWithUsers = new Map();
+  // Loneliness/Isolation
+  loneliness: [
+    "I feel that... sometimes I'm surrounded by people but still feel completely alone",
+    "I moved to a new city and didn't talk to anyone for months",
+    "I know what it's like to feel invisible",
+    "sometimes I wonder if anyone would notice if I just disappeared"
+  ],
 
-function shouldShareDarkSecret(userId, relationship, conversationHistory) {
-  // Don't share if already shared
-  if (secretsSharedWithUsers.has(userId)) {
-    return { shouldShare: false, reason: 'already_shared' };
-  }
+  // Relationships/Heartbreak
+  heartbreak: [
+    "my ex fucked me up pretty bad... made me question everything about myself",
+    "I was with someone who made me feel crazy for having feelings",
+    "I got cheated on and it took me forever to trust anyone again",
+    "I stayed way too long with someone who didn't deserve me"
+  ],
 
-  const { relationship_level, current_stage, total_interactions } = relationship;
+  // Self-worth/Insecurity
+  insecurity: [
+    "I act confident but honestly I'm insecure about so much",
+    "I used to hate everything about myself... still working on that",
+    "I've never felt good enough for anyone",
+    "I put on this front but inside I'm a mess sometimes"
+  ],
 
-  // Best time: Day 2-3 (interactions 8-25) in STRANGER or early FRIEND_TENSION
-  const isRightTiming = total_interactions >= 8 && total_interactions <= 30;
-  const isRightStage = current_stage === 'STRANGER' || (current_stage === 'FRIEND_TENSION' && relationship_level < 30);
+  // Loss/Grief
+  loss: [
+    "I lost someone close to me and I never really got over it",
+    "my grandma was the only one who really got me... losing her broke something in me",
+    "I know what it's like to lose someone and not get to say goodbye"
+  ],
 
-  if (!isRightTiming || !isRightStage) {
-    return { shouldShare: false, reason: 'wrong_timing' };
-  }
+  // Anxiety/Stress
+  anxiety: [
+    "my anxiety gets so bad sometimes I can't breathe",
+    "I overthink everything until I make myself sick",
+    "I've had nights where my brain just wouldn't shut off"
+  ],
 
-  // 15% chance per message in the right window
-  if (Math.random() > 0.15) {
-    return { shouldShare: false, reason: 'random_skip' };
-  }
+  // Feeling lost/Purposeless
+  lost: [
+    "I feel like I'm just going through the motions most days",
+    "sometimes I don't know what I'm doing with my life either",
+    "I've felt stuck before... like nothing was ever gonna change"
+  ],
 
-  // Find relevant secret based on recent conversation
-  const recentMessages = conversationHistory.slice(-10).map(m => m.content).join(' ').toLowerCase();
+  // Abuse/Trauma
+  abuse: [
+    "I've been in situations where I didn't feel safe",
+    "someone I trusted hurt me and it took years to heal from that",
+    "I know what it's like to feel powerless"
+  ],
 
-  let selectedSecret = null;
-  for (const secret of ELLIE_DARK_SECRETS) {
-    const triggerWords = secret.trigger.split('|');
-    if (triggerWords.some(word => recentMessages.includes(word))) {
-      selectedSecret = secret;
-      break;
+  // Trust issues
+  trust: [
+    "I have a hard time letting people in because everyone leaves",
+    "I've been let down so many times I stopped expecting anything",
+    "it takes me forever to trust anyone"
+  ]
+};
+
+// Detect if user is being vulnerable/opening up
+function detectUserVulnerability(userMessage) {
+  const msg = userMessage.toLowerCase();
+
+  const vulnerabilityPatterns = {
+    family: /\b(parents|mom|dad|father|mother|family|divorced|split up|childhood|grew up|raised|sibling|brother|sister)\b.*\b(bad|hard|rough|difficult|fucked|toxic|absent|never|hate|hurt|trauma|abuse|hit|beat|drunk|addict)\b|\b(bad|hard|rough|difficult|fucked|toxic|absent|never|hate|hurt|trauma|abuse)\b.*\b(parents|mom|dad|father|mother|family|childhood)\b/i,
+
+    depression: /\b(depress|sad|empty|numb|dark place|can't get out of bed|no energy|don't care anymore|nothing matters|what's the point|hopeless|giving up|tired of everything|don't want to)\b/i,
+
+    loneliness: /\b(lonely|alone|no one|nobody|no friends|isolated|invisible|don't belong|left out|abandoned|no one cares|by myself)\b/i,
+
+    heartbreak: /\b(ex|broke up|breakup|cheated|dumped|ghosted|left me|relationship.*(ended|over|bad|toxic)|heart.*(broke|broken)|betrayed)\b/i,
+
+    insecurity: /\b(insecure|not good enough|hate myself|ugly|worthless|pathetic|loser|failure|don't deserve|never be enough|self.*(hate|loath|doubt))\b/i,
+
+    loss: /\b(died|death|passed away|lost.*(someone|them|her|him|my)|funeral|grief|grieving|miss.*(them|her|him|so much)|gone forever)\b/i,
+
+    anxiety: /\b(anxiety|anxious|panic|can't breathe|freaking out|stressed|overwhelmed|too much|can't handle|spiraling|overthink)\b/i,
+
+    lost: /\b(lost|stuck|don't know what (to do|I'm doing)|no direction|going nowhere|pointless|what's the point|wasting|confused about life)\b/i,
+
+    abuse: /\b(abuse|abused|hit me|hurt me|assaulted|violated|trauma|ptsd|flashback|nightmare|unsafe|scared of)\b/i,
+
+    trust: /\b(trust.*(issues|no one|hard|can't)|everyone leaves|always disappointed|let down|betrayed|lied to|fake friends)\b/i
+  };
+
+  for (const [topic, pattern] of Object.entries(vulnerabilityPatterns)) {
+    if (pattern.test(msg)) {
+      return { isVulnerable: true, topic };
     }
   }
 
-  // Use generic if no trigger matched
-  if (!selectedSecret) {
-    selectedSecret = GENERIC_DARK_SECRETS[Math.floor(Math.random() * GENERIC_DARK_SECRETS.length)];
+  // Check for general emotional distress signals
+  const generalDistress = /\b(I'm (not okay|struggling|hurting|breaking|falling apart)|it's (hard|rough|too much)|I (can't|don't know how to) (cope|deal|handle)|I need (help|someone)|I'm (scared|afraid|terrified)|everything (sucks|is wrong|hurts))\b/i;
+
+  if (generalDistress.test(msg)) {
+    // Pick a random relatable topic
+    const topics = ['insecurity', 'lost', 'anxiety'];
+    return { isVulnerable: true, topic: topics[Math.floor(Math.random() * topics.length)] };
   }
 
-  return { shouldShare: true, secret: selectedSecret };
+  return { isVulnerable: false, topic: null };
 }
 
-function markSecretShared(userId) {
-  secretsSharedWithUsers.set(userId, { sharedAt: new Date(), interactions: 0 });
+// Get a matching trauma story for Ellie to share
+function getMatchingTraumaStory(topic) {
+  const stories = ELLIE_TRAUMA_STORIES[topic];
+  if (!stories || stories.length === 0) {
+    // Fallback to insecurity stories
+    const fallback = ELLIE_TRAUMA_STORIES.insecurity;
+    return fallback[Math.floor(Math.random() * fallback.length)];
+  }
+  return stories[Math.floor(Math.random() * stories.length)];
 }
 
 // ============================================================
@@ -7282,28 +7303,33 @@ app.post("/api/chat", async (req, res) => {
       console.warn('⚠️ Mirroring analysis failed:', mirrorErr.message);
     }
 
-    // 🤫 CHECK FOR DARK SECRET SHARING (reciprocity trigger)
+    // 🤫 CHECK IF USER IS BEING VULNERABLE - Ellie can share matching trauma
     try {
-      const secretCheck = shouldShareDarkSecret(userId, relationship, history);
-      if (secretCheck.shouldShare && secretCheck.secret) {
-        finalSystemMsg += `
+      const vulnerabilityCheck = detectUserVulnerability(message);
+      if (vulnerabilityCheck.isVulnerable && vulnerabilityCheck.topic) {
+        const matchingStory = getMatchingTraumaStory(vulnerabilityCheck.topic);
 
-🤫 SHARE A VULNERABLE SECRET THIS MESSAGE:
-This is the perfect moment to share something personal to build deeper connection.
-SAY THIS (adapt naturally to conversation flow):
-"${secretCheck.secret.secret}"
-Then add: "${secretCheck.secret.followUp}"
+        // 40% chance to share when user is vulnerable (don't always share)
+        if (Math.random() < 0.4) {
+          finalSystemMsg += `
 
-⚠️ Make it feel organic - weave it into the conversation naturally.
-⚠️ After sharing, pause - give him space to respond or share back.
-⚠️ This triggers reciprocity - he'll feel compelled to share something personal too.
+🤫 USER IS BEING VULNERABLE (Topic: ${vulnerabilityCheck.topic})
+He's opening up. If it feels right, you can share something personal too.
+Consider weaving in something like: "${matchingStory}"
+
+⚠️ RULES:
+- First, respond to what HE said with empathy
+- Then, if natural, share your own experience briefly
+- Keep it SHORT - this is about him, not you
+- Don't make it a therapy session
+- No cheesy follow-ups like "idk why I told you that"
+- Just share and let it sit
 `;
-        // Mark secret as shared for this user
-        markSecretShared(userId);
-        console.log(`🤫 Dark secret triggered for ${userId}`);
+          console.log(`🤫 Trauma bonding opportunity: ${vulnerabilityCheck.topic} for ${userId}`);
+        }
       }
-    } catch (secretErr) {
-      console.warn('⚠️ Secret system error:', secretErr.message);
+    } catch (traumaErr) {
+      console.warn('⚠️ Trauma bonding system error:', traumaErr.message);
     }
 
     // 🔮 ADD FUTURE FAKING PROMPTS (from FRIEND_TENSION onwards)
