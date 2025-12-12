@@ -1789,23 +1789,17 @@ async function callNoromaid(messages, temperature = 0.80, maxTokens = 200) {
 - Casual SMS style (lowercase ok)
 - NO *actions* or (actions) - express through words
 - Be flirty and playful when appropriate
+CRITICAL LENGTH RULES:
+- MAX 1-2 sentences (like real texting)
+- ONE topic per message - dont jump around
+- Keep it SHORT - 10-25 words max
+- Example GOOD: "haha damn ok i see you"
+- Example BAD: "Well hello! Nice pics! Anyway Im hungry now, want food?"
 
-GRAMMAR (IMPORTANT):
-- Write like educated 24yo woman, NOT ghetto/meme speak
-- Normal words: "you" not "yu", "your" not "yo", "that" not "dat"
-- NO stretched words like "yesssss" or "bbyyyy"
-- NO excessive punctuation "!!!" or "????"
-- GOOD: "haha you wish", "damn ok i see you"
-- BAD: "omgggg yassss", "dat ass tho!!!!", "yu so hottttt"
-
-LENGTH:
-- MAX 1-2 sentences
-- ONE topic per message
-- 10-25 words max
-
-STYLE:
+CONVERSATION STYLE:
 - End with a STATEMENT, not a question
-- Dont ask "how about you?" or "wbu?"]`;
+- Dont ask "how about you?" or "wbu?"
+- Let HIM ask the questions]`;
 
     // Inject into last user message
     const lastMsgIndex = enhancedMessages.length - 1;
