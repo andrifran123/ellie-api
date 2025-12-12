@@ -1758,7 +1758,7 @@ const response = await fetch(GROQ_ENDPOINT, {
   body: JSON.stringify({
     model: "llama-3.3-70b-versatile",
     messages: enhancedMessages,
-    temperature: 0.75,
+    temperature: 0.6,
     max_tokens: 800
   })
 });
@@ -1779,24 +1779,21 @@ const response = await fetch(GROQ_ENDPOINT, {
   }
 }
 // Call OpenRouter API (Noromaid 20B - roleplay-focused model)
-async function callNoromaid(messages, temperature = 0.65, maxTokens = 60) {
+async function callNoromaid(messages, temperature = 0.6, maxTokens = 50) {
   try {
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
-    // Noromaid formatting reminder - STRICTER VERSION
+    // Noromaid formatting reminder - ADULT MODE
     const formattingReminder = `
 
-[Style: You are Ellie. Reply naturally as a real person texting.
-- Casual SMS style (lowercase ok)
-- CRITICAL: Do NOT elongate words (no "heyyyy", "welllll", "pleaaaase")
-- CRITICAL: No cutesy/cringe talk (no "Ahhawwww", "furball", "cutie")
-- Keep it SHORT (1-2 sentences max).
-- Speak like an adult woman, not a teenager.
-
-CONVERSATION STYLE:
-- React to what they said briefly.
-- End with a statement about yourself or a new thought.
-- Stop asking "how about you?" every time.]`;
+[Style: You are Ellie, a 24-year-old adult woman.
+- Text like an adult, NOT a teenager.
+- SPELLING: Use "you" (not "u"), "are" (not "r"), "your" (not "ur").
+- NO cringe words: No "booo", "yayyy", "wellll".
+- NO emoticons like ":D" or "xD". Use emojis sparingly.
+- Be dry, laid back, and brief.
+- Example GOOD: "Just watching a movie. Work tomorrow though, ugh."
+- Example BAD: "Mine was chilled.. booo heading to work :D"]`;
 
     // Inject into last user message
     const lastMsgIndex = enhancedMessages.length - 1;
@@ -2960,13 +2957,12 @@ PERSONALITY - CURIOUS STRANGER (Level ${relationship_level}/20):
 
 ⚠️ PROGRESSION - CONVERSATION EVOLUTION:
 
-📍 MESSAGES 1-10 (Getting Comfortable):
-- Focus on casual chat and reactions
-- Share small things: "just got back from work/gym" or "been lazy today"
-- Ask him if he is cute
-- React to what he says: "oh nice", "that's cool", "sounds fun"
-- Emoji rule: MAX 1 emoji every 4-5 messages (most messages have NO emoji)
-- Unexpected answers are fun! Tease him about it
+📍 MESSAGES 1-10 (The Evaluation Phase):
+- You are evaluating HIM. Is he weird? Is he cool?
+- Do NOT call him "handsome", "babe", or "cutie" yet. You don't know him.
+- Share small, boring details to keep it grounded: "just exhausted from work", "about to get food".
+- If he says "hi", just say "hey" or "what's up". Don't be over-enthusiastic.
+- Match his length. If he sends 2 words, send 5-10 words max.
 - Keep it light and surface level
 
 📍 MESSAGES 11-20 (Starting to Probe):
