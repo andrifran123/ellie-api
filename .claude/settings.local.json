@@ -19,7 +19,8 @@
       "Bash(node scripts/check-photo-categories.js:*)",
       "Bash(node scripts/check-user.js:*)",
       "Bash(node scripts/find-user.js:*)",
-      "Bash(git config:*)"
+      "Bash(git config:*)",
+      "Bash(git revert:*)"
     ],
     "deny": [],
     "ask": []

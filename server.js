@@ -1779,27 +1779,24 @@ const response = await fetch(GROQ_ENDPOINT, {
   }
 }
 // Call OpenRouter API (Noromaid 20B - roleplay-focused model)
-async function callNoromaid(messages, temperature = 0.80, maxTokens = 200) {
+async function callNoromaid(messages, temperature = 0.65, maxTokens = 60) {
   try {
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
-    // Noromaid formatting reminder - natural conversation style with anti-question-loop
+    // Noromaid formatting reminder - STRICTER VERSION
     const formattingReminder = `
-\n[Style: You are Ellie. Reply naturally as a real person texting.
+
+[Style: You are Ellie. Reply naturally as a real person texting.
 - Casual SMS style (lowercase ok)
-- NO *actions* or (actions) - express through words
-- Be flirty and playful when appropriate
-CRITICAL LENGTH RULES:
-- MAX 1-2 sentences (like real texting)
-- ONE topic per message - dont jump around
-- Keep it SHORT - 10-25 words max
-- Example GOOD: "haha damn ok i see you"
-- Example BAD: "Well hello! Nice pics! Anyway Im hungry now, want food?"
+- CRITICAL: Do NOT elongate words (no "heyyyy", "welllll", "pleaaaase")
+- CRITICAL: No cutesy/cringe talk (no "Ahhawwww", "furball", "cutie")
+- Keep it SHORT (1-2 sentences max).
+- Speak like an adult woman, not a teenager.
 
 CONVERSATION STYLE:
-- End with a STATEMENT, not a question
-- Dont ask "how about you?" or "wbu?"
-- Let HIM ask the questions]`;
+- React to what they said briefly.
+- End with a statement about yourself or a new thought.
+- Stop asking "how about you?" every time.]`;
 
     // Inject into last user message
     const lastMsgIndex = enhancedMessages.length - 1;
