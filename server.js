@@ -1778,8 +1778,8 @@ const response = await fetch(GROQ_ENDPOINT, {
     throw error;
   }
 }
-// Call OpenRouter API (Noromaid 20B - roleplay-focused model)
-async function callNoromaid(messages, temperature = 0.6, maxTokens = 50) {
+// Call OpenRouter API (DeepSeek V3 0324)
+async function callDeepSeek(messages, temperature = 0.7, maxTokens = 150) {
   try {
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
@@ -1799,7 +1799,7 @@ async function callNoromaid(messages, temperature = 0.6, maxTokens = 50) {
       enhancedMessages[lastUserIdx].content = enhancedMessages[lastUserIdx].content + '\n\n' + timeReminder;
     }
 
-    console.log(`[Noromaid] Calling Noromaid 20B...`);
+    console.log(`[DeepSeek] Calling DeepSeek V3 0324...`);
 
     const response = await fetch(OPENROUTER_ENDPOINT, {
       method: 'POST',
@@ -1810,32 +1810,29 @@ async function callNoromaid(messages, temperature = 0.6, maxTokens = 50) {
         'X-Title': 'Ellie'
       },
       body: JSON.stringify({
-        model: "neversleep/noromaid-20b",
+        model: "deepseek/deepseek-chat-v3-0324",
         messages: enhancedMessages,
-        temperature: 0.65,
+        temperature: 0.7,
         max_tokens: maxTokens,
-        top_p: 0.92,
-        
-        repetition_penalty: 1.16,
-        min_p: 0.05
+        top_p: 0.9
       })
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(`Noromaid API error: ${response.status} - ${errText}`);
+      throw new Error(`DeepSeek API error: ${response.status} - ${errText}`);
     }
 
     const data = await response.json();
     let rawContent = data.choices[0]?.message?.content || "";
 
-    console.log(`[Noromaid] Raw response: "${rawContent.substring(0, 100)}..."`);
+    console.log(`[DeepSeek] Raw response: "${rawContent.substring(0, 100)}..."`);
 
     // Clean up any leaked instructions
     rawContent = rawContent.replace(/^\[Style:.*?\]$/gmi, '').trim();
 
     if (!rawContent || rawContent.length < 2) {
-      throw new Error('Empty response from Noromaid');
+      throw new Error('Empty response from DeepSeek');
     }
 
     const filtered = filterAllActions(rawContent);
@@ -2043,13 +2040,13 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
     let response;
 
     // 3. Route based on tier and content
-    // 🆕 ALL USERS now use Noromaid 20B (normal) + Euryale 70B (NSFW)
+    // 🆕 ALL USERS now use DeepSeek V3 (normal) + Euryale 70B (NSFW)
     if (userTier === 'free') {
-      // Free users: Noromaid for normal, NO NSFW access
-      console.log(`[Routing] Free user -> Noromaid 20B`);
-      response = await callNoromaid(messages, 0.8, maxTokens);
+      // Free users: DeepSeek for normal, NO NSFW access
+      console.log(`[Routing] Free user -> DeepSeek V3`);
+      response = await callDeepSeek(messages, 0.7, maxTokens);
     } else {
-      // Paid users: Noromaid for normal, Euryale for NSFW
+      // Paid users: DeepSeek for normal, Euryale for NSFW
       if (isNSFW) {
         // NSFW content -> Euryale 70B (uncensored)
         console.log(`[Routing] Paid user + NSFW (current OR context) -> Euryale 70B`);
@@ -2075,19 +2072,19 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
               });
               response = await callEuryale(correctedMessages, 1.0, maxTokens, true, currentMessageNSFW);
             } catch (retryError) {
-              console.error('[Routing] ⚠️ Euryale retry also failed, falling back to Noromaid:', retryError.message);
-              response = await callNoromaid(messages, 0.8, maxTokens);
+              console.error('[Routing] ⚠️ Euryale retry also failed, falling back to DeepSeek:', retryError.message);
+              response = await callDeepSeek(messages, 0.7, maxTokens);
             }
           } else {
-            // Fall back to Noromaid if Euryale returns garbage
-            console.log('[Routing] Falling back to Noromaid 20B...');
-            response = await callNoromaid(messages, 0.8, maxTokens);
+            // Fall back to DeepSeek if Euryale returns garbage
+            console.log('[Routing] Falling back to DeepSeek V3...');
+            response = await callDeepSeek(messages, 0.7, maxTokens);
           }
         }
       } else {
-        // Normal chat -> Noromaid 20B (roleplay-focused)
-        console.log(`[Routing] Paid user + Normal -> Noromaid 20B`);
-        response = await callNoromaid(messages, 0.8, maxTokens);
+        // Normal chat -> DeepSeek V3
+        console.log(`[Routing] Paid user + Normal -> DeepSeek V3`);
+        response = await callDeepSeek(messages, 0.7, maxTokens);
       }
     }
 
