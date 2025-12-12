@@ -1812,7 +1812,7 @@ async function callNoromaid(messages, temperature = 0.6, maxTokens = 50) {
       body: JSON.stringify({
         model: "neversleep/noromaid-20b",
         messages: enhancedMessages,
-        temperature: 0.75,
+        temperature: 0.65,
         max_tokens: maxTokens,
         top_p: 0.92,
         
