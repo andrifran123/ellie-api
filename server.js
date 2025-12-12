@@ -1758,7 +1758,7 @@ const response = await fetch(GROQ_ENDPOINT, {
   body: JSON.stringify({
     model: "llama-3.3-70b-versatile",
     messages: enhancedMessages,
-    temperature: temperature,
+    temperature: 0.75,
     max_tokens: 800
   })
 });
@@ -1820,13 +1820,12 @@ CONVERSATION STYLE:
       body: JSON.stringify({
         model: "neversleep/noromaid-20b",
         messages: enhancedMessages,
-        temperature: temperature,
+        temperature: 0.75,
         max_tokens: maxTokens,
-        top_p: 0.9,
-        top_k: 50,
-        repetition_penalty: 1.12,
-        mirostat_mode: 2,
-        mirostat_tau: 5.0
+        top_p: 0.92,
+        
+        repetition_penalty: 1.16,
+        min_p: 0.05
       })
     });
 
@@ -1911,10 +1910,10 @@ async function callEuryale(messages, temperature = 0.85, maxTokens = 800, isRetr
       body: JSON.stringify({
         model: "sao10k/l3.3-euryale-70b-v2.3",
         messages: enhancedMessages,
-        temperature: temperature, // Uses the parameter (0.9 default, 0.75 on retry)
+        temperature: 0.75, // Uses the parameter (0.9 default, 0.75 on retry)
         min_p: 0.1,
         top_p: 0.95,
-        top_k: 50,
+        
         repetition_penalty: 1.05,
         max_tokens: maxTokens,
         // Block it from repeating instructions
@@ -5382,7 +5381,7 @@ Language rules:
     model: CHAT_MODEL,
     messages: fullConversation,
     temperature: 0.6,
-    top_p: 0.9,
+    top_p: 0.92,
   });
 
   let reply = (completion.choices?.[0]?.message?.content || "").trim();
