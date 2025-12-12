@@ -1783,7 +1783,21 @@ async function callNoromaid(messages, temperature = 0.6, maxTokens = 50) {
   try {
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
-    // Formatting reminder removed - to be rewritten
+    // Time awareness injection
+    const now = new Date();
+    const estTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const hours = estTime.getHours();
+    const minutes = estTime.getMinutes().toString().padStart(2, '0');
+    const timeOfDay = hours < 12 ? 'morning' : hours < 17 ? 'afternoon' : hours < 21 ? 'evening' : 'night';
+
+    const timeReminder = `[Current time: ${days[estTime.getDay()]}, ${timeOfDay} (${hours}:${minutes} EST) - Be aware of the time when responding]`;
+
+    // Inject into last user message
+    const lastUserIdx = enhancedMessages.map(m => m.role).lastIndexOf('user');
+    if (lastUserIdx !== -1) {
+      enhancedMessages[lastUserIdx].content = enhancedMessages[lastUserIdx].content + '\n\n' + timeReminder;
+    }
 
     console.log(`[Noromaid] Calling Noromaid 20B...`);
 
