@@ -1779,7 +1779,7 @@ const response = await fetch(GROQ_ENDPOINT, {
   }
 }
 // Call OpenRouter API (DeepSeek V3 0324)
-async function callDeepSeek(messages, temperature = 0.7, maxTokens = 150) {
+async function callDeepSeek(messages, temperature = 0.3, maxTokens = 200) {
   try {
     const enhancedMessages = JSON.parse(JSON.stringify(messages));
 
@@ -1812,9 +1812,11 @@ async function callDeepSeek(messages, temperature = 0.7, maxTokens = 150) {
       body: JSON.stringify({
         model: "deepseek/deepseek-chat-v3-0324",
         messages: enhancedMessages,
-        temperature: 0.7,
+        temperature: 0.3,
         max_tokens: maxTokens,
-        top_p: 0.9
+        top_p: 0.9,
+        top_k: 40,
+        frequency_penalty: 0.15
       })
     });
 

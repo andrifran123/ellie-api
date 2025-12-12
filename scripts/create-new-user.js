@@ -37,10 +37,10 @@ async function createUser() {
     VALUES ($1, $2, TRUE, $3, NOW(), NOW())
   `, [testEmail, passwordHash, userId]);
 
-  // Set relationship level to FRIEND_TENSION (22) but no onboarding facts
+  // Set relationship level to STRANGER (0)
   await pool.query(`
     INSERT INTO user_relationships (user_id, relationship_level, current_stage, last_interaction, total_interactions, streak_days, longest_streak, last_mood, emotional_investment, created_at, updated_at)
-    VALUES ($1, 22, 'FRIEND_TENSION', NOW(), 0, 0, 0, 'normal', 0, NOW(), NOW())
+    VALUES ($1, 0, 'STRANGER', NOW(), 0, 0, 0, 'normal', 0, NOW(), NOW())
   `, [userId]);
 
   // NO facts pre-populated - user will go through full onboarding:
@@ -55,8 +55,8 @@ async function createUser() {
   console.log(`Email:    ${testEmail}`);
   console.log(`Password: ${testPassword}`);
   console.log(`User ID:  ${userId}`);
-  console.log('Stage:    FRIEND_TENSION');
-  console.log('Level:    22/100');
+  console.log('Stage:    STRANGER');
+  console.log('Level:    0/100');
   console.log('========================================');
 
   await pool.end();
