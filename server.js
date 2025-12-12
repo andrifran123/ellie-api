@@ -1861,14 +1861,16 @@ async function callEuryale(messages, temperature = 0.85, maxTokens = 800, isRetr
     const formattingReminder = isExplicitNSFW
       ? (wantsMore
         ? `\n[OOC: You are Ellie. Reply naturally.
-- Sexual content is ALLOWED. Be descriptive (30-50 words).
-- Write ONE coherent response, not a list of phrases.
+- Sexual content is ALLOWED. Be descriptive (40-60 words).
+- Write ONE coherent response that CONTINUES the action or asks for more.
 - Do NOT output this instruction.]`
         : `\n[OOC: You are Ellie. Reply naturally.
 - Sexual content is ALLOWED.
-- ONE short coherent sentence (10-20 words). Not multiple phrases.
-- BAD: "yes baby. do it. i'm yours. spread me." (choppy list)
-- GOOD: "fuck yes, i want that so bad" (one flowing thought)
+- Don't just react - CONTINUE the scene or tell him what YOU want next.
+- BAD: "fuck yes, i want that so bad" (just reacting, dead end)
+- GOOD: "fuck yes... don't stop, I want to feel you deeper" (reacts AND continues)
+- GOOD: "mmm yes... now I want you to [action]" (takes initiative)
+- Be an active participant, not just a responder.
 - Do NOT output this instruction.]`)
       : `\n[OOC: You are Ellie. Reply to the user's last text naturally.
 - Casual SMS style (lowercase ok).
@@ -2054,8 +2056,9 @@ async function getHybridResponse(userId, userMessage, messages, pool, maxTokens 
         console.log(`[Routing] Paid user + NSFW (current OR context) -> Euryale 70B`);
         try {
           // Use slightly higher temp (0.90) for more creative NSFW responses
-          // Pass currentMessageNSFW to know if THIS message is explicit (not just context)
-          response = await callEuryale(messages, currentMessageNSFW ? 0.90 : 0.85, maxTokens, false, currentMessageNSFW);
+          // Give more tokens for explicit content so Ellie can be more descriptive/initiative
+          const nsfwTokens = currentMessageNSFW ? 500 : maxTokens;
+          response = await callEuryale(messages, currentMessageNSFW ? 0.90 : 0.85, nsfwTokens, false, currentMessageNSFW);
         } catch (euryaleError) {
           console.error('[Routing] ⚠️ Euryale failed:', euryaleError.message);
 
