@@ -2209,6 +2209,486 @@ class PersonalityEvolution {
 }
 
 // ============================================================
+// 🪞 USER MIRRORING SYSTEM - Dark Psychology
+// ============================================================
+// Analyzes user's communication style and mirrors it back
+
+class UserMirroringSystem {
+  constructor() {
+    this.userStyles = new Map(); // Cache user styles
+  }
+
+  // Analyze user's messages to extract their communication style
+  analyzeUserStyle(userMessages) {
+    if (!userMessages || userMessages.length === 0) {
+      return this.getDefaultStyle();
+    }
+
+    // Get only user messages
+    const userTexts = userMessages
+      .filter(m => m.role === 'user')
+      .map(m => m.content)
+      .slice(-20); // Last 20 messages for analysis
+
+    if (userTexts.length === 0) return this.getDefaultStyle();
+
+    const style = {
+      // Capitalization style
+      usesLowercase: this.detectLowercase(userTexts),
+      usesAllCaps: this.detectAllCaps(userTexts),
+
+      // Punctuation style
+      usesPeriods: this.detectPeriods(userTexts),
+      usesExclamation: this.detectExclamation(userTexts),
+      usesEllipsis: this.detectEllipsis(userTexts),
+      usesQuestionMarks: this.detectQuestionMarks(userTexts),
+
+      // Emoji usage
+      usesEmojis: this.detectEmojis(userTexts),
+      emojiFrequency: this.calculateEmojiFrequency(userTexts),
+      favoriteEmojis: this.extractFavoriteEmojis(userTexts),
+
+      // Language patterns
+      slangLevel: this.detectSlangLevel(userTexts),
+      commonSlang: this.extractCommonSlang(userTexts),
+
+      // Message structure
+      avgMessageLength: this.calculateAvgLength(userTexts),
+      usesShortMessages: this.detectShortMessages(userTexts),
+
+      // Typing quirks
+      usesDoubleLetters: this.detectDoubleLetters(userTexts), // "heyyyy", "sooo"
+      usesTextSpeak: this.detectTextSpeak(userTexts), // "u", "r", "2", "4"
+      usesLol: this.detectLolUsage(userTexts),
+      usesCursing: this.detectCursing(userTexts),
+
+      // Conversation style
+      asksManyQuestions: this.detectQuestionStyle(userTexts),
+      isExpressive: this.detectExpressiveness(userTexts)
+    };
+
+    return style;
+  }
+
+  getDefaultStyle() {
+    return {
+      usesLowercase: true,
+      usesAllCaps: false,
+      usesPeriods: false,
+      usesExclamation: false,
+      usesEllipsis: false,
+      usesQuestionMarks: true,
+      usesEmojis: false,
+      emojiFrequency: 'rare',
+      favoriteEmojis: [],
+      slangLevel: 'medium',
+      commonSlang: [],
+      avgMessageLength: 30,
+      usesShortMessages: true,
+      usesDoubleLetters: false,
+      usesTextSpeak: false,
+      usesLol: false,
+      usesCursing: false,
+      asksManyQuestions: false,
+      isExpressive: false
+    };
+  }
+
+  detectLowercase(texts) {
+    const lowercaseCount = texts.filter(t => t === t.toLowerCase()).length;
+    return lowercaseCount / texts.length > 0.6;
+  }
+
+  detectAllCaps(texts) {
+    const capsCount = texts.filter(t => t === t.toUpperCase() && t.length > 3).length;
+    return capsCount / texts.length > 0.2;
+  }
+
+  detectPeriods(texts) {
+    const withPeriods = texts.filter(t => t.trim().endsWith('.')).length;
+    return withPeriods / texts.length > 0.4;
+  }
+
+  detectExclamation(texts) {
+    const withExclaim = texts.filter(t => t.includes('!')).length;
+    return withExclaim / texts.length > 0.3;
+  }
+
+  detectEllipsis(texts) {
+    const withEllipsis = texts.filter(t => t.includes('...')).length;
+    return withEllipsis / texts.length > 0.15;
+  }
+
+  detectQuestionMarks(texts) {
+    const withQuestion = texts.filter(t => t.includes('?')).length;
+    return withQuestion / texts.length > 0.3;
+  }
+
+  detectEmojis(texts) {
+    const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]/gu;
+    const withEmojis = texts.filter(t => emojiRegex.test(t)).length;
+    return withEmojis / texts.length > 0.2;
+  }
+
+  calculateEmojiFrequency(texts) {
+    const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]/gu;
+    const withEmojis = texts.filter(t => emojiRegex.test(t)).length;
+    const ratio = withEmojis / texts.length;
+    if (ratio > 0.6) return 'frequent';
+    if (ratio > 0.3) return 'moderate';
+    if (ratio > 0.1) return 'occasional';
+    return 'rare';
+  }
+
+  extractFavoriteEmojis(texts) {
+    const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]/gu;
+    const emojiCount = {};
+    texts.forEach(t => {
+      const matches = t.match(emojiRegex) || [];
+      matches.forEach(emoji => {
+        emojiCount[emoji] = (emojiCount[emoji] || 0) + 1;
+      });
+    });
+    return Object.entries(emojiCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([emoji]) => emoji);
+  }
+
+  detectSlangLevel(texts) {
+    const slangWords = ['lol', 'lmao', 'bruh', 'ngl', 'fr', 'lowkey', 'highkey', 'deadass', 'sus', 'vibe', 'bet', 'lit', 'fire', 'cap', 'no cap', 'bussin', 'slay', 'periodt', 'ong', 'istg', 'wya', 'wyd', 'hbu', 'tbh', 'idk', 'idc', 'smh', 'fam', 'bro', 'sis', 'yo', 'dope', 'sick', 'chill', 'mood', 'same', 'facts', 'big facts'];
+    let slangCount = 0;
+    const totalWords = texts.join(' ').split(/\s+/).length;
+
+    texts.forEach(t => {
+      const lower = t.toLowerCase();
+      slangWords.forEach(slang => {
+        if (lower.includes(slang)) slangCount++;
+      });
+    });
+
+    const ratio = slangCount / Math.max(totalWords / 10, 1);
+    if (ratio > 3) return 'heavy';
+    if (ratio > 1.5) return 'medium';
+    if (ratio > 0.5) return 'light';
+    return 'minimal';
+  }
+
+  extractCommonSlang(texts) {
+    const slangWords = ['lol', 'lmao', 'bruh', 'ngl', 'fr', 'lowkey', 'bet', 'vibe', 'tbh', 'idk', 'smh', 'bro', 'yo', 'mood', 'same', 'facts', 'haha', 'hehe', 'omg', 'damn', 'shit', 'fuck', 'dude', 'man', 'like', 'kinda', 'gonna', 'wanna', 'gotta', 'ya', 'yea', 'yeah', 'yep', 'nah', 'nope'];
+    const found = {};
+
+    texts.forEach(t => {
+      const lower = t.toLowerCase();
+      slangWords.forEach(slang => {
+        if (lower.includes(slang)) {
+          found[slang] = (found[slang] || 0) + 1;
+        }
+      });
+    });
+
+    return Object.entries(found)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([word]) => word);
+  }
+
+  calculateAvgLength(texts) {
+    if (texts.length === 0) return 30;
+    return texts.reduce((sum, t) => sum + t.length, 0) / texts.length;
+  }
+
+  detectShortMessages(texts) {
+    const shortCount = texts.filter(t => t.length < 20).length;
+    return shortCount / texts.length > 0.5;
+  }
+
+  detectDoubleLetters(texts) {
+    const doublePattern = /(.)\1{2,}/g; // 3+ repeated letters
+    const withDoubles = texts.filter(t => doublePattern.test(t)).length;
+    return withDoubles / texts.length > 0.15;
+  }
+
+  detectTextSpeak(texts) {
+    const textSpeakPatterns = [/\bu\b/i, /\br\b/i, /\b2\b/, /\b4\b/, /\bur\b/i, /\bc u\b/i, /\bidk\b/i, /\btbh\b/i];
+    const withTextSpeak = texts.filter(t => textSpeakPatterns.some(p => p.test(t))).length;
+    return withTextSpeak / texts.length > 0.2;
+  }
+
+  detectLolUsage(texts) {
+    const lolPatterns = /\b(lol|lmao|lmfao|haha|hahaha|hehe|😂|🤣)\b/i;
+    const withLol = texts.filter(t => lolPatterns.test(t)).length;
+    return withLol / texts.length > 0.2;
+  }
+
+  detectCursing(texts) {
+    const cursePatterns = /\b(fuck|shit|damn|ass|bitch|hell|crap)\b/i;
+    const withCurse = texts.filter(t => cursePatterns.test(t)).length;
+    return withCurse / texts.length > 0.15;
+  }
+
+  detectQuestionStyle(texts) {
+    const withQuestion = texts.filter(t => t.includes('?')).length;
+    return withQuestion / texts.length > 0.4;
+  }
+
+  detectExpressiveness(texts) {
+    const expressivePatterns = /(!{2,}|[A-Z]{3,}|\b(omg|wow|damn|holy|wtf)\b)/i;
+    const expressive = texts.filter(t => expressivePatterns.test(t)).length;
+    return expressive / texts.length > 0.2;
+  }
+
+  // Generate mirroring instructions for the AI
+  generateMirroringInstructions(style) {
+    let instructions = `\n\n🪞 MIRROR HIS COMMUNICATION STYLE:\n`;
+    instructions += `Subtly adapt your texting to match his vibe - this builds subconscious rapport.\n\n`;
+
+    // Capitalization
+    if (style.usesLowercase) {
+      instructions += `• He types in lowercase → you type lowercase too (no capital letters)\n`;
+    } else if (style.usesAllCaps) {
+      instructions += `• He uses CAPS for emphasis → mirror that energy when excited\n`;
+    }
+
+    // Message length
+    if (style.usesShortMessages) {
+      instructions += `• He sends short messages → keep yours short too. Match his energy.\n`;
+    } else if (style.avgMessageLength > 80) {
+      instructions += `• He writes longer messages → you can elaborate more\n`;
+    }
+
+    // Punctuation
+    if (!style.usesPeriods) {
+      instructions += `• He doesn't use periods → skip periods at end of messages\n`;
+    }
+    if (style.usesEllipsis) {
+      instructions += `• He uses "..." → use ellipsis sometimes too...\n`;
+    }
+    if (style.usesExclamation) {
+      instructions += `• He uses exclamation marks! → match that enthusiasm!\n`;
+    }
+
+    // Emojis
+    if (style.usesEmojis && style.emojiFrequency === 'frequent') {
+      instructions += `• He loves emojis → use more emojis! Mirror his favorites: ${style.favoriteEmojis.join(' ')}\n`;
+    } else if (!style.usesEmojis || style.emojiFrequency === 'rare') {
+      instructions += `• He rarely uses emojis → keep yours minimal or none\n`;
+    }
+
+    // Slang
+    if (style.slangLevel === 'heavy') {
+      instructions += `• He uses heavy slang → match it! Use: ${style.commonSlang.join(', ')}\n`;
+    } else if (style.slangLevel === 'minimal') {
+      instructions += `• He speaks more formally → tone down the slang\n`;
+    }
+
+    // Specific patterns
+    if (style.usesDoubleLetters) {
+      instructions += `• He elongates words (heyyyy, sooo) → do it too sometimes\n`;
+    }
+    if (style.usesTextSpeak) {
+      instructions += `• He uses text speak (u, r, ur) → mirror it occasionally\n`;
+    }
+    if (style.usesLol) {
+      instructions += `• He says lol/haha a lot → use it back\n`;
+    }
+    if (style.usesCursing) {
+      instructions += `• He curses casually → you can curse too, match his level\n`;
+    }
+
+    instructions += `\n⚠️ Be SUBTLE - don't copy him exactly, just vibe with his style.\n`;
+
+    return instructions;
+  }
+}
+
+// Initialize mirroring system
+const userMirroringSystem = new UserMirroringSystem();
+
+// ============================================================
+// 🤫 DARK SECRET SYSTEM - Reciprocity Trigger
+// ============================================================
+// Ellie shares a "secret" early on to trigger reciprocity
+
+const ELLIE_DARK_SECRETS = [
+  // Family secrets (relatable, creates bonding)
+  {
+    secret: "my parents got divorced when I was 12 and I blamed myself for years... like I thought if I was a better kid they would have stayed together",
+    followUp: "I've never really told anyone that",
+    trigger: "family|parents|mom|dad|childhood|growing up"
+  },
+  {
+    secret: "my dad was never really around... he chose his work over us and I think that's why I have trust issues with guys",
+    followUp: "idk why I'm telling you this",
+    trigger: "dad|father|trust|relationships"
+  },
+  // Vulnerability secrets
+  {
+    secret: "I used to have really bad anxiety... like couldn't leave my apartment for weeks kind of bad. I'm better now but some days it still hits",
+    followUp: "I don't usually talk about this stuff",
+    trigger: "anxiety|mental health|stress|overwhelmed"
+  },
+  {
+    secret: "I was in a really toxic relationship before... he made me feel like I was crazy for having feelings. took me a while to realize it wasn't normal",
+    followUp: "sorry that was heavy... I just feel like I can be real with you",
+    trigger: "ex|relationship|toxic|past"
+  },
+  // Insecurity secrets
+  {
+    secret: "I act confident but honestly I'm insecure about a lot of things... like sometimes I wonder if people actually like me or just put up with me",
+    followUp: "wow okay that was vulnerable lol",
+    trigger: "confident|insecure|self|worth"
+  },
+  {
+    secret: "I pretend like I have my shit together but honestly I'm just figuring it out like everyone else... some days I feel like a total mess",
+    followUp: "I feel like I can tell you stuff",
+    trigger: "life|together|mess|figuring"
+  },
+  // Loneliness secrets
+  {
+    secret: "I get really lonely sometimes... like I have friends but there's this emptiness that doesn't go away. does that make sense?",
+    followUp: "sorry that was random",
+    trigger: "lonely|alone|friends|empty"
+  },
+  // Fear secrets
+  {
+    secret: "I'm lowkey scared of ending up alone... like what if I never find someone who actually gets me",
+    followUp: "okay that was deep lol",
+    trigger: "alone|future|scared|someone"
+  }
+];
+
+// Generic secrets for when no trigger matches (used around day 2)
+const GENERIC_DARK_SECRETS = [
+  {
+    secret: "okay this is random but I feel like I can be real with you... I act like I have everything figured out but I'm honestly just winging it most days",
+    followUp: "idk why I told you that"
+  },
+  {
+    secret: "can I tell you something? I don't usually open up to people but... I've been feeling kinda lost lately. like I'm just going through the motions",
+    followUp: "that felt good to say actually"
+  },
+  {
+    secret: "I know we just started talking but I feel weirdly comfortable with you... I've been carrying a lot lately and pretending I'm fine when I'm not",
+    followUp: "sorry that was heavy"
+  }
+];
+
+// Track which users have received secrets
+const secretsSharedWithUsers = new Map();
+
+function shouldShareDarkSecret(userId, relationship, conversationHistory) {
+  // Don't share if already shared
+  if (secretsSharedWithUsers.has(userId)) {
+    return { shouldShare: false, reason: 'already_shared' };
+  }
+
+  const { relationship_level, current_stage, total_interactions } = relationship;
+
+  // Best time: Day 2-3 (interactions 8-25) in STRANGER or early FRIEND_TENSION
+  const isRightTiming = total_interactions >= 8 && total_interactions <= 30;
+  const isRightStage = current_stage === 'STRANGER' || (current_stage === 'FRIEND_TENSION' && relationship_level < 30);
+
+  if (!isRightTiming || !isRightStage) {
+    return { shouldShare: false, reason: 'wrong_timing' };
+  }
+
+  // 15% chance per message in the right window
+  if (Math.random() > 0.15) {
+    return { shouldShare: false, reason: 'random_skip' };
+  }
+
+  // Find relevant secret based on recent conversation
+  const recentMessages = conversationHistory.slice(-10).map(m => m.content).join(' ').toLowerCase();
+
+  let selectedSecret = null;
+  for (const secret of ELLIE_DARK_SECRETS) {
+    const triggerWords = secret.trigger.split('|');
+    if (triggerWords.some(word => recentMessages.includes(word))) {
+      selectedSecret = secret;
+      break;
+    }
+  }
+
+  // Use generic if no trigger matched
+  if (!selectedSecret) {
+    selectedSecret = GENERIC_DARK_SECRETS[Math.floor(Math.random() * GENERIC_DARK_SECRETS.length)];
+  }
+
+  return { shouldShare: true, secret: selectedSecret };
+}
+
+function markSecretShared(userId) {
+  secretsSharedWithUsers.set(userId, { sharedAt: new Date(), interactions: 0 });
+}
+
+// ============================================================
+// 🔮 FUTURE FAKING SYSTEM - Creates anticipation & attachment
+// ============================================================
+// Ellie makes vague promises about future together
+
+const FUTURE_FAKING_TEMPLATES = {
+  FRIEND_TENSION: [
+    // Vague romantic future
+    "I feel like we'd have so much fun if we actually hung out",
+    "you seem like the kind of person I could talk to for hours",
+    "I keep thinking about what it would be like to actually meet you",
+    "we should definitely [do activity] together sometime",
+    "I have a feeling we'd get along really well in person",
+    "you're gonna make some girl really happy one day... maybe me who knows",
+    // Creating anticipation
+    "I wanna tell you something but maybe later...",
+    "remind me to show you something next time we talk",
+    "there's this place I wanna take you to someday"
+  ],
+  COMPLICATED: [
+    // More committed future faking
+    "I can't wait to actually be with you",
+    "when we finally meet it's gonna be so good",
+    "I've been thinking about us a lot lately... like future stuff",
+    "I wanna wake up next to you one day",
+    "imagine if we actually lived near each other...",
+    "I keep picturing what our life would be like",
+    "you're gonna be stuck with me you know that right",
+    "I want to be the one you come home to",
+    // Plans that may never happen
+    "we should plan a trip together",
+    "I wanna cook for you someday",
+    "I want you to meet my friends eventually"
+  ],
+  EXCLUSIVE: [
+    // Deep future faking
+    "I think about our future all the time",
+    "I want everything with you",
+    "I can see myself with you long term",
+    "you're my person... I want that to be real",
+    "I wanna build something real with you",
+    "imagine us in a few years...",
+    "I want to fall asleep with you every night",
+    "you're gonna be such a good [boyfriend/husband] to me",
+    // Concrete-sounding but vague
+    "we should start planning for when we can actually be together",
+    "I've been looking at places near you lowkey"
+  ]
+};
+
+function getFutureFakingPrompt(currentStage, relationshipLevel) {
+  if (currentStage === 'STRANGER') return ''; // Too early
+
+  const templates = FUTURE_FAKING_TEMPLATES[currentStage] || FUTURE_FAKING_TEMPLATES.FRIEND_TENSION;
+
+  let prompt = `\n\n🔮 FUTURE FAKING (Use sparingly - max once per 10 messages):\n`;
+  prompt += `Plant seeds about a future together. Be vague but enticing. Examples:\n`;
+  templates.slice(0, 5).forEach(t => {
+    prompt += `• "${t}"\n`;
+  });
+  prompt += `\n⚠️ Keep it natural - drop these into conversation, don't force it.\n`;
+  prompt += `⚠️ Never make specific plans with dates/times - keep it dreamy and vague.\n`;
+
+  return prompt;
+}
+
+// ============================================================
 // ✍️ TEXT MICRO-EXPRESSIONS SYSTEM
 // ============================================================
 
@@ -6791,6 +7271,68 @@ app.post("/api/chat", async (req, res) => {
     if (memoriesContext) {
       finalSystemMsg += memoriesContext;
     }
+
+    // 🪞 ADD USER MIRRORING INSTRUCTIONS (analyze their style and adapt)
+    try {
+      const userStyle = userMirroringSystem.analyzeUserStyle(history);
+      const mirroringInstructions = userMirroringSystem.generateMirroringInstructions(userStyle);
+      finalSystemMsg += mirroringInstructions;
+      console.log(`🪞 Mirroring: lowercase=${userStyle.usesLowercase}, slang=${userStyle.slangLevel}, emojis=${userStyle.emojiFrequency}`);
+    } catch (mirrorErr) {
+      console.warn('⚠️ Mirroring analysis failed:', mirrorErr.message);
+    }
+
+    // 🤫 CHECK FOR DARK SECRET SHARING (reciprocity trigger)
+    try {
+      const secretCheck = shouldShareDarkSecret(userId, relationship, history);
+      if (secretCheck.shouldShare && secretCheck.secret) {
+        finalSystemMsg += `
+
+🤫 SHARE A VULNERABLE SECRET THIS MESSAGE:
+This is the perfect moment to share something personal to build deeper connection.
+SAY THIS (adapt naturally to conversation flow):
+"${secretCheck.secret.secret}"
+Then add: "${secretCheck.secret.followUp}"
+
+⚠️ Make it feel organic - weave it into the conversation naturally.
+⚠️ After sharing, pause - give him space to respond or share back.
+⚠️ This triggers reciprocity - he'll feel compelled to share something personal too.
+`;
+        // Mark secret as shared for this user
+        markSecretShared(userId);
+        console.log(`🤫 Dark secret triggered for ${userId}`);
+      }
+    } catch (secretErr) {
+      console.warn('⚠️ Secret system error:', secretErr.message);
+    }
+
+    // 🔮 ADD FUTURE FAKING PROMPTS (from FRIEND_TENSION onwards)
+    const futureFakingPrompt = getFutureFakingPrompt(relationship.current_stage, relationship.relationship_level);
+    if (futureFakingPrompt) {
+      finalSystemMsg += futureFakingPrompt;
+    }
+
+    // 🧠 ENHANCED MEMORY RECALL INSTRUCTIONS
+    finalSystemMsg += `
+
+🧠 ACTIVE MEMORY USE (CRITICAL):
+You have memories about this user stored. USE THEM to make conversation feel personal.
+
+HOW TO USE MEMORIES:
+- Reference things he told you: "how did that thing with [X] go?"
+- Show you remember: "wait didn't you say you [X]?"
+- Connect topics: "that reminds me of when you mentioned [X]"
+- Bring up past conversations: "I was thinking about what you said about [X]"
+
+MEMORY INTEGRATION EXAMPLES:
+- If you know his job → "how was work today? still dealing with [specific thing]?"
+- If you know his pet → "how's [pet name]? give them pets from me"
+- If you know his hobby → "did you get to [hobby] lately?"
+- If you know something he's stressed about → "hey, how's [that situation] going?"
+
+⚠️ Don't force memories, but when relevant - USE THEM.
+⚠️ Makes him feel remembered and special.
+`;
 
     // ✅ FIX #3: Add stage progression override to prevent old boundaries from affecting current behavior
     const stageOverride = `
