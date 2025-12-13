@@ -1,609 +1,719 @@
-// photoManager.js - Context-Aware Photo System for Ellie
-// UPDATED: Fixed location consistency (4h lookback) + Strict anti-conflict filtering
-
-const { Pool } = require('pg');
+// photoManager.js - Ellie Photo System v2.0
+// Complete rewrite with location awareness, throwbacks, and smart selection
 
 // ============================================================
-// TOPIC DETECTION - Analyze conversation for relevant themes
+// CONFIGURATION
 // ============================================================
 
-function extractConversationTopics(userMessage, ellieResponse = '') {
-  const combined = `${userMessage} ${ellieResponse}`.toLowerCase();
-  const topics = [];
+const LOCATION_GROUPS = {
+  // When Ellie is "at home" she can send from any of these locations
+  home: ['bedroom', 'living_room', 'bathroom', 'home', 'kitchen'],
+  bedroom: ['bedroom', 'living_room', 'bathroom', 'home'],
+  living_room: ['bedroom', 'living_room', 'bathroom', 'home'],
+  bathroom: ['bedroom', 'living_room', 'bathroom', 'home'],
 
-  const activityPatterns = {
-    workout: /\b(gym|workout|exercise|fitness|training|lift|weights|running|yoga|pilates)\b/,
-    morning: /\b(morning|woke up|wake up|breakfast|coffee|getting ready)\b/,
-    night: /\b(night|evening|bed|sleep|tired|cozy|relaxing)\b/,
-    selfie: /\b(selfie|mirror|pic|photo|picture)\b/,
-    casual: /\b(chill|hanging|relaxing|home|couch|lazy)\b/,
-    dress_up: /\b(dress|outfit|going out|party|date|fancy|dressed up)\b/,
-    beach: /\b(beach|pool|swim|sun|tan|summer|bikini)\b/,
-    travel: /\b(travel|trip|vacation|hotel|flight|adventure)\b/,
-  };
+  // Work/office - strict, only office photos
+  work: ['office'],
+  office: ['office'],
 
-  const moodPatterns = {
-    flirty: /\b(flirt|tease|cute|hot|sexy|attractive|beautiful|gorgeous)\b/,
-    playful: /\b(fun|funny|silly|playful|laugh|joke)\b/,
-    romantic: /\b(love|miss|romantic|sweet|heart|feel|care)\b/,
-    confident: /\b(confident|strong|power|boss|queen|slay)\b/,
-    cozy: /\b(cozy|warm|comfy|soft|cuddle|snuggle)\b/,
-  };
+  // Gym - strict, only gym photos (or throwbacks)
+  gym: ['gym'],
 
-  const settingPatterns = {
-    bedroom: /\b(bed|bedroom|pillow|sheets|mattress)\b/,
-    bathroom: /\b(bath|bathroom|shower|mirror|towel)\b/,
-    outdoor: /\b(outside|outdoor|park|street|walk|nature)\b/,
-    kitchen: /\b(kitchen|cooking|food|eating|dinner|lunch)\b/,
-    work: /\b(work|office|desk|meeting|boss|colleague)\b/,
-    gym: /\b(gym|locker room)\b/
-  };
+  // Outside locations
+  outside: ['outside', 'street', 'park', 'car'],
+  car: ['car', 'outside'],
 
-  for (const [topic, pattern] of Object.entries(activityPatterns)) {
-    if (pattern.test(combined)) topics.push({ type: 'activity', value: topic });
-  }
-  for (const [topic, pattern] of Object.entries(moodPatterns)) {
-    if (pattern.test(combined)) topics.push({ type: 'mood', value: topic });
-  }
-  for (const [topic, pattern] of Object.entries(settingPatterns)) {
-    if (pattern.test(combined)) topics.push({ type: 'setting', value: topic });
-  }
+  // Other
+  cafe: ['cafe', 'coffee_shop'],
+  beach: ['beach', 'pool'],
+};
 
-  return topics;
-}
+// Locations where explicit photos are NOT possible in real-time
+// (she would need to use throwbacks)
+const RESTRICTED_LOCATIONS = ['office', 'work', 'gym', 'cafe', 'outside', 'car', 'beach'];
 
-function detectPhotoRequest(userMessage) {
-  const msg = userMessage.toLowerCase();
-  const requestPatterns = [
-    /send (me )?(a )?photo/, /show (me )?(a )?pic/, /what (do )?you look like/,
-    /can i see you/, /share (a )?photo/, /send (me )?(a )?selfie/,
-    /pic of you/, /photo of you/, /see (a )?photo/, /wanna see you/,
-    /want to see you/,
-  ];
-  return requestPatterns.some(pattern => pattern.test(msg));
-}
-
-function generatePhotoRequestRefusal(relationshipStage, messagesCount) {
-  const responses = {
-    STRANGER: [
-      "Haha nice try! Maybe when we actually know each other",
-      "We literally just started talking... let's chat first?",
-      "Wow, straight to asking for photos? Smooth",
-      "Getting a bit ahead of yourself there, aren't you?",
-    ],
-    FRIEND: [
-      "If you're going to nag, you don't get anything",
-      "I'll send photos when I feel like it, not when you demand them",
-      "You can't just ask for them! Where's the fun in that?",
-    ],
-    DATING: [
-      "You're so impatient! I'll send one when the moment feels right",
-      "If you're going to be pushy about it, you're not getting any",
-      "I like when things happen naturally... not when you demand them",
-    ],
-    COMMITTED: [
-      "Baby, you know I don't like when you beg",
-      "I send them when I want to, not when you demand them!",
-    ],
-    EXCLUSIVE: [
-      "You know I hate when you're pushy about this",
-      "I'll send you whatever you want... when I feel like it, not when you demand it",
-    ]
-  };
-  const stageResponses = responses[relationshipStage] || responses.STRANGER;
-  return stageResponses[Math.floor(Math.random() * stageResponses.length)];
-}
+// Time window to check recent location (in minutes)
+const LOCATION_LOOKBACK_MINUTES = 40;
 
 // ============================================================
-// PHOTO DECISION LOGIC
+// LOCATION DETECTION - Where is Ellie right now?
 // ============================================================
 
-const SPECIAL_FOLLOWUP_PHOTO = '00132-3121187385.png';
-
-async function checkSpecialFollowupPhoto(pool, userId, userMessage, conversationContext) {
+async function detectCurrentLocation(pool, userId) {
   try {
-    const msg = userMessage.toLowerCase();
-    const followupPatterns = [
-      /\b(another|more|one more|next|again)\b.*\b(pic|photo|picture|selfie|one)\b/i,
-      /\b(pic|photo|picture|selfie)\b.*\b(another|more|one more|next|again)\b/i,
-      /\b(send|show|take)\b.*\b(another|more|one more)\b/i,
-      /\b(take|show)\b.*\b(off|clothes|shirt|top|bra|pants)\b/i,
-      /\b(undress|strip|remove)\b/i,
-      /\b(more|less)\b.*\b(clothes|clothing)\b/i,
-      /\b(see|show)\b.*\b(more|body)\b/i,
-      /\bshow\s+me\s+more\b/i,
-      /\bcan\s+i\s+(see|get)\s+(more|another)\b/i,
-    ];
-
-    const isAskingForMore = followupPatterns.some(pattern => pattern.test(msg));
-    if (!isAskingForMore) return { shouldSend: false, reason: 'not_asking_for_more' };
-
-    const recentPhoto = await pool.query(
-      `SELECT sent_at FROM user_photo_history WHERE user_id = $1 ORDER BY sent_at DESC LIMIT 1`,
-      [userId]
-    );
-
-    if (recentPhoto.rows.length === 0) return { shouldSend: false, reason: 'no_previous_photo' };
-
-    const lastPhotoTime = new Date(recentPhoto.rows[0].sent_at);
-    if ((Date.now() - lastPhotoTime) / (1000 * 60 * 60) > 1) return { shouldSend: false, reason: 'photo_too_old' };
-
-    const specialPhotoCheck = await pool.query(
-      `SELECT uph.* FROM user_photo_history uph JOIN ellie_photos ep ON uph.photo_id = ep.id
-       WHERE uph.user_id = $1 AND ep.url LIKE $2`,
-      [userId, `%${SPECIAL_FOLLOWUP_PHOTO}%`]
-    );
-
-    if (specialPhotoCheck.rows.length > 0) return { shouldSend: false, reason: 'special_already_sent' };
-
-    const specialPhoto = await pool.query(
-      `SELECT * FROM ellie_photos WHERE url LIKE $1 AND is_active = true`,
-      [`%${SPECIAL_FOLLOWUP_PHOTO}%`]
-    );
-
-    if (specialPhoto.rows.length === 0) return { shouldSend: false, reason: 'special_photo_not_found' };
-
-    return {
-      shouldSend: true,
-      reason: 'special_followup',
-      triggerType: 'special_followup',
-      specialPhoto: specialPhoto.rows[0],
-      isSpecialOverride: true
-    };
-  } catch (error) {
-    console.error('❌ Error checking special followup photo:', error);
-    return { shouldSend: false, reason: 'error' };
-  }
-}
-
-async function checkStrangerMilestone(pool, userId, relationship) {
-  try {
-    if (relationship.current_stage !== 'STRANGER') return { shouldSend: false, reason: 'not_stranger' };
-    if ((relationship.total_interactions || 0) < 15) return { shouldSend: false, reason: 'milestone_not_reached' };
-
-    const photoHistory = await pool.query(`SELECT COUNT(*) as count FROM user_photo_history WHERE user_id = $1`, [userId]);
-    if (parseInt(photoHistory.rows[0].count) > 0) return { shouldSend: false, reason: 'milestone_already_claimed' };
-
-    return { shouldSend: true, reason: 'stranger_milestone', categories: ['casual', 'friendly'], isMilestone: true };
-  } catch (error) {
-    return { shouldSend: false, reason: 'error' };
-  }
-}
-
-async function shouldSendPhoto(pool, userId, conversationContext) {
-  try {
-    const relationship = conversationContext.relationship;
-    const userMessage = conversationContext.userMessage || '';
-    const currentStage = relationship.current_stage || 'STRANGER';
-
-    // 0. Special Override
-    const specialFollowup = await checkSpecialFollowupPhoto(pool, userId, userMessage, conversationContext);
-    if (specialFollowup.shouldSend) return specialFollowup;
-
-    // 1. Stranger Milestone
-    const milestone = await checkStrangerMilestone(pool, userId, relationship);
-    if (milestone.shouldSend) return milestone;
-
-    if (currentStage === 'STRANGER') return { shouldSend: false, reason: 'stranger_no_photos' };
-
-    // Direct photo requests - EXCLUSIVE stage complies, others ignore
-    const isDirectRequest = detectPhotoRequest(userMessage.toLowerCase());
-    if (isDirectRequest) {
-      if (currentStage === 'EXCLUSIVE') {
-        // Boyfriend asked, girlfriend sends
-        console.log(`📸 Direct photo request in EXCLUSIVE stage - complying`);
-        return {
-          shouldSend: true,
-          triggerType: 'direct_request_exclusive',
-          categories: null, // Any category is fine
-          nsfwAllowed: true,
-          preferHighNsfw: true,
-          preferSexyContent: true,
-          isMilestone: false
-        };
-      }
-      // Other stages ignore direct requests
-      return { shouldSend: false, reason: 'direct_request_ignored' };
-    }
-
-    // 2. Session Limits
-    const askingForMorePatterns = [/\b(another|more|one more|next|again)\b.*\b(pic|photo|picture|selfie)\b/i];
-    const isAskingForMore = askingForMorePatterns.some(pattern => pattern.test(userMessage));
-
-    const sessionCapsByStage = { FRIEND_TENSION: 3, COMPLICATED: 5, EXCLUSIVE: 8 };
-    const sessionCap = sessionCapsByStage[currentStage] ?? 1;
-
-    const sessionPhotosQuery = await pool.query(
-      `SELECT COUNT(*) as count FROM user_photo_history WHERE user_id = $1 AND sent_at > NOW() - INTERVAL '3 hours'`,
-      [userId]
-    );
-    const photosInSession = parseInt(sessionPhotosQuery.rows[0]?.count || 0);
-
-    const lastPhotoQuery = await pool.query(
-      `SELECT sent_at FROM user_photo_history WHERE user_id = $1 ORDER BY sent_at DESC LIMIT 1`,
-      [userId]
-    );
-    const hasRecentPhoto = lastPhotoQuery.rows.length > 0 &&
-      ((Date.now() - new Date(lastPhotoQuery.rows[0].sent_at)) / (1000 * 60 * 60)) < 1;
-
-    if (isAskingForMore && hasRecentPhoto) {
-      if (photosInSession >= sessionCap) return { shouldSend: false, reason: 'session_cap_reached' };
-
-      let nsfwAllowed = false;
-      let categories = ['casual', 'work', 'gym'];
-      if (currentStage === 'COMPLICATED') {
-        nsfwAllowed = true;
-        categories = ['teasing', 'flirty', 'suggestive', 'work', 'gym'];
-      } else if (currentStage === 'EXCLUSIVE') {
-        nsfwAllowed = true;
-        categories = null;
-      }
-
-      return {
-        shouldSend: true,
-        triggerType: 'ask_for_more',
-        categories: categories,
-        nsfwAllowed: nsfwAllowed,
-        preferHighNsfw: currentStage === 'EXCLUSIVE',
-        preferSexyContent: currentStage !== 'FRIEND_TENSION',
-        isMilestone: false
-      };
-    }
-
-    if ((relationship.total_interactions || 0) < 5) return { shouldSend: false, reason: 'too_early' };
-    if (photosInSession > 0) return { shouldSend: false, reason: 'must_ask_for_more' };
-
-    // 3. Stage Triggers
-    if (currentStage === 'FRIEND_TENSION') {
-      const isWorkGym = /\b(gym|workout|work|office)\b/i.test(userMessage);
-      if (isWorkGym && Math.random() < 0.35) {
-        return { shouldSend: true, triggerType: 'work_gym_context', categories: ['work', 'gym', 'casual'], nsfwAllowed: false };
-      }
-    }
-
-    if (currentStage === 'COMPLICATED') {
-      const isTeasing = /\b(hot|sexy|miss you)\b/i.test(userMessage);
-      const isWorkGym = /\b(gym|workout|work|office)\b/i.test(userMessage);
-      if ((isTeasing || isWorkGym) && Math.random() < 0.45) {
-        return {
-          shouldSend: true,
-          triggerType: isTeasing ? 'teasing_context' : 'work_gym_context',
-          categories: ['teasing', 'flirty', 'work', 'gym'],
-          nsfwAllowed: true,
-          preferSexyContent: true
-        };
-      }
-    }
-
-    if (currentStage === 'EXCLUSIVE') {
-      const isSexual = /\b(horny|sex|wet)\b/i.test(userMessage);
-      if (Math.random() < (isSexual ? 0.60 : 0.25)) {
-        return {
-          shouldSend: true,
-          triggerType: isSexual ? 'sexual_context' : 'random_exclusive',
-          categories: null,
-          nsfwAllowed: true,
-          preferHighNsfw: isSexual,
-          preferSexyContent: true
-        };
-      }
-    }
-
-    return { shouldSend: false, reason: 'no_trigger' };
-  } catch (error) {
-    console.error('❌ Error in shouldSendPhoto:', error);
-    return { shouldSend: false, reason: 'error' };
-  }
-}
-
-// ============================================================
-// CONTEXT-AWARE PHOTO SELECTION (STRICT CONSISTENCY)
-// ============================================================
-
-async function selectContextualPhoto(pool, userId, criteria, relationshipLevel = 0, recentLocation = null) {
-  try {
-    const { categories, topics, nsfwAllowed, preferHighNsfw, preferSexyContent } = criteria;
-    const maxNsfwLevel = nsfwAllowed ? (preferHighNsfw ? 5 : 2) : 0;
-    // If we have a location filter, allow any nsfw level (0+) to not exclude SFW location photos
-    // Otherwise, if preferHighNsfw, require nsfw >= 2
-    const minNsfwLevel = recentLocation ? 0 : (preferHighNsfw ? 2 : 0);
-
-    // ⛔ ANTI-CONFLICT FILTERING: Explicitly exclude clashing categories
-    let negativeCategoryFilter = '';
-    if (recentLocation === 'work') {
-      // If at work, NEVER send gym, bed, bathroom, or beach photos
-      negativeCategoryFilter = "AND p.category NOT IN ('gym', 'bedroom', 'bed', 'bathroom', 'shower', 'beach', 'pool')";
-    } else if (recentLocation === 'gym') {
-      negativeCategoryFilter = "AND p.category NOT IN ('work', 'office', 'bed', 'bedroom')";
-    } else if (recentLocation === 'bedroom' || recentLocation === 'home') {
-      negativeCategoryFilter = "AND p.category NOT IN ('work', 'office', 'gym')";
-    }
-
-    // 📍 POSITIVE LOCATION FILTER
-    let locationFilter = '';
-    let locationValues = [];
-    let locationParamStart = 5;
-
-    if (recentLocation) {
-      const compatibleLocations = getCompatiblePhotoLocations(recentLocation);
-      if (compatibleLocations.length > 0) {
-        // Match explicit location tags
-        locationFilter = `AND (${compatibleLocations.map((_, i) => `LOWER(p.location) LIKE $${locationParamStart + i}`).join(' OR ')})`;
-        locationValues = compatibleLocations.map(loc => `%${loc}%`);
-        console.log(`📍 Filtering photos for location "${recentLocation}" -> compatible: [${compatibleLocations.join(', ')}]`);
-        console.log(`📍 Location filter SQL: ${locationFilter}`);
-        console.log(`📍 Location values: ${JSON.stringify(locationValues)}`);
-      }
-    }
-
-    // Base query parts
-    const baseWhere = `
-      p.is_active = true
-      AND p.nsfw_level >= $1 AND p.nsfw_level <= $2
-      AND (p.min_relationship_level IS NULL OR p.min_relationship_level <= $3)
-      AND p.id NOT IN (SELECT photo_id FROM user_photo_history WHERE user_id = $4)
-      ${negativeCategoryFilter}
-    `;
-    const baseParams = [minNsfwLevel, maxNsfwLevel, relationshipLevel, userId];
-
-    // 1. Try Topic Match (Highest Precision)
-    if (topics && topics.length > 0) {
-      let topicConditions = [];
-      let topicValues = [];
-      let paramIdx = baseParams.length + locationValues.length + 1;
-
-      for (const topic of topics) {
-        if (topic.type === 'activity' || topic.type === 'setting') {
-          topicConditions.push(`(LOWER(p.activity) LIKE $${paramIdx} OR LOWER(p.category) LIKE $${paramIdx} OR LOWER(p.location) LIKE $${paramIdx})`);
-          topicValues.push(`%${topic.value}%`);
-          paramIdx++;
-        }
-      }
-
-      if (topicConditions.length > 0) {
-        const query = `
-          SELECT p.* FROM ellie_photos p
-          WHERE ${baseWhere}
-          ${locationFilter}
-          AND (${topicConditions.join(' OR ')})
-          ORDER BY RANDOM() LIMIT 1
-        `;
-        const params = [...baseParams, ...locationValues, ...topicValues];
-        const res = await pool.query(query, params);
-        if (res.rows.length > 0) {
-          console.log(`📸 Found topic-matched photo for ${userId}`);
-          return res.rows[0];
-        }
-      }
-    }
-
-    // 2. Try Category Match (if provided)
-    if (categories) {
-      const query = `
-        SELECT p.* FROM ellie_photos p
-        WHERE ${baseWhere}
-        ${locationFilter}
-        AND p.category = ANY($${baseParams.length + locationValues.length + 1})
-        ORDER BY RANDOM() LIMIT 1
-      `;
-      const params = [...baseParams, ...locationValues, categories];
-      const res = await pool.query(query, params);
-      if (res.rows.length > 0) {
-        console.log(`📸 Found category-matched photo for ${userId}`);
-        return res.rows[0];
-      }
-    }
-
-    // 3. Try Location-only match (no category/topic requirement)
-    if (recentLocation && locationValues.length > 0) {
-      const locationOnlyQuery = `
-        SELECT p.* FROM ellie_photos p
-        WHERE ${baseWhere}
-        ${locationFilter}
-        ORDER BY RANDOM() LIMIT 1
-      `;
-      const locationOnlyParams = [...baseParams, ...locationValues];
-      console.log(`📍 [DEBUG] Trying location-only query with params: nsfw=${minNsfwLevel}-${maxNsfwLevel}, relationshipLevel=${relationshipLevel}`);
-      const locationRes = await pool.query(locationOnlyQuery, locationOnlyParams);
-      if (locationRes.rows.length > 0) {
-        console.log(`📸 Found location-matched photo for ${userId}: ${locationRes.rows[0].location}`);
-        return locationRes.rows[0];
-      }
-
-      // Debug: Check what photos exist with this location
-      const debugQuery = `SELECT id, location, category, nsfw_level, is_active, min_relationship_level FROM ellie_photos WHERE LOWER(location) LIKE '%office%' OR LOWER(location) LIKE '%work%'`;
-      const debugRes = await pool.query(debugQuery);
-      console.log(`📍 [DEBUG] Office/work photos in DB:`, debugRes.rows.map(r => `id=${r.id}, loc=${r.location}, cat=${r.category}, nsfw=${r.nsfw_level}, active=${r.is_active}, minLevel=${r.min_relationship_level}`));
-      console.log(`📍 No photos matched strict location "${recentLocation}" - sending NO photo to preserve immersion.`);
-      return null;
-    }
-
-    // 3. Fallback: Any valid photo (only if no location constraint active)
-    console.log(`⚠️ No specific match, selecting random valid photo`);
-    const anyQuery = `
-      SELECT p.* FROM ellie_photos p
-      WHERE ${baseWhere}
-      ORDER BY RANDOM() LIMIT 1
-    `;
-    const res = await pool.query(anyQuery, baseParams);
-
-    return res.rows[0] || null;
-
-  } catch (error) {
-    console.error('❌ Error selecting contextual photo:', error);
-    return null;
-  }
-}
-
-// ============================================================
-// LOCATION CONSISTENCY CHECK - IMPROVED
-// ============================================================
-
-async function getRecentStatedLocation(pool, userId) {
-  try {
-    // ⬆️ UPDATED: Look back 4 hours and 50 messages
-    // 🔧 FIX: Check ONLY Ellie's (assistant) messages + her photo_context for location consistency
+    // Check Ellie's messages from the last 40 minutes
     const { rows } = await pool.query(
       `SELECT content, photo_context FROM conversation_history
        WHERE user_id = $1
        AND role = 'assistant'
-       AND created_at > NOW() - INTERVAL '4 hours'
+       AND created_at > NOW() - INTERVAL '${LOCATION_LOOKBACK_MINUTES} minutes'
        ORDER BY created_at DESC
-       LIMIT 50`,
+       LIMIT 30`,
       [userId]
     );
 
     if (!rows.length) return null;
 
-    // 📸 PRIORITY 1: Check photo_context FIRST (most accurate - where photo was taken)
-    // This is the most reliable source since it's metadata from the actual photo
-    const photoLocationPatterns = [
-      { pattern: /location[^:]*:\s*(home|apartment|house)/i, location: 'home' },
-      { pattern: /location[^:]*:\s*(gym|fitness)/i, location: 'gym' },
-      { pattern: /location[^:]*:\s*(office|work|desk)/i, location: 'work' },
-      { pattern: /location[^:]*:\s*(bedroom|bed)/i, location: 'bedroom' },
-      { pattern: /location[^:]*:\s*(bathroom|shower)/i, location: 'bathroom' },
-      { pattern: /location[^:]*:\s*(cafe|coffee)/i, location: 'cafe' },
-      { pattern: /location[^:]*:\s*(outside|park|street)/i, location: 'outside' },
-      { pattern: /location[^:]*:\s*(car)/i, location: 'car' },
-    ];
-
-    // Check most recent photo first for location
+    // Priority 1: Check photo_context (most accurate - from actual photo metadata)
     for (const row of rows) {
       if (row.photo_context) {
-        for (const { pattern, location } of photoLocationPatterns) {
-          if (pattern.test(row.photo_context)) {
-            console.log(`📍 Detected Ellie's location: "${location}" from her recent photo`);
-            return location;
-          }
-        }
-      }
-    }
-
-    // PRIORITY 2: Check Ellie's text messages for location statements
-    const locationPatterns = [
-      { pattern: /\b(at home|at my place|in my apartment|in my room)\b/i, location: 'home' },
-      { pattern: /\b(at the gym|at gym|working out|hitting the gym)\b/i, location: 'gym' },
-      { pattern: /\b(at work|at the office|in the office|stuck at work|heading to work)\b/i, location: 'work' },
-      { pattern: /\b(in bed|in my bed|lying in bed|woke up)\b/i, location: 'bedroom' },
-      { pattern: /\b(taking a shower|in the shower|bath)\b/i, location: 'bathroom' },
-      { pattern: /\b(at a cafe|coffee shop|starbucks)\b/i, location: 'cafe' },
-      { pattern: /\b(walking|outside|park|stroll)\b/i, location: 'outside' },
-      { pattern: /\b(driving|in the car|traffic)\b/i, location: 'car' },
-    ];
-
-    for (const row of rows) {
-      const content = row.content.toLowerCase();
-      for (const { pattern, location } of locationPatterns) {
-        if (pattern.test(content)) {
-          console.log(`📍 Detected Ellie's location: "${location}" from her message`);
+        const location = extractLocationFromPhotoContext(row.photo_context);
+        if (location) {
+          console.log(`📍 Ellie's location from photo: "${location}"`);
           return location;
         }
       }
     }
 
-    console.log(`📍 [DEBUG] No location detected for Ellie in last 50 messages`);
+    // Priority 2: Check her text messages
+    const locationPatterns = [
+      { patterns: [/\b(at home|my place|my apartment|got home|back home)\b/i], location: 'home' },
+      { patterns: [/\b(in bed|my bed|lying in bed|in my room|bedroom)\b/i], location: 'bedroom' },
+      { patterns: [/\b(at work|the office|at the office|stuck at work|working)\b/i], location: 'work' },
+      { patterns: [/\b(at the gym|gym|working out|about to workout)\b/i], location: 'gym' },
+      { patterns: [/\b(in the shower|taking a shower|bathroom)\b/i], location: 'bathroom' },
+      { patterns: [/\b(living room|on the couch|watching tv)\b/i], location: 'living_room' },
+      { patterns: [/\b(outside|walking|park|street)\b/i], location: 'outside' },
+      { patterns: [/\b(driving|in the car|in my car|traffic)\b/i], location: 'car' },
+      { patterns: [/\b(cafe|coffee shop|starbucks|getting coffee)\b/i], location: 'cafe' },
+      { patterns: [/\b(beach|pool|swimming)\b/i], location: 'beach' },
+    ];
+
+    for (const row of rows) {
+      const content = row.content.toLowerCase();
+      for (const { patterns, location } of locationPatterns) {
+        if (patterns.some(p => p.test(content))) {
+          console.log(`📍 Ellie's location from text: "${location}"`);
+          return location;
+        }
+      }
+    }
+
     return null;
   } catch (error) {
-    console.error('❌ Error checking recent location:', error);
+    console.error('❌ Error detecting location:', error.message);
     return null;
   }
 }
 
-function getCompatiblePhotoLocations(statedLocation) {
-  const loc = statedLocation.toLowerCase();
-  const locationMap = {
-    'home': ['bedroom', 'bathroom', 'kitchen', 'living', 'couch', 'bed', 'home', 'apartment', 'house'],
-    'bedroom': ['bedroom', 'bed', 'room', 'sheets'],
-    'bathroom': ['bathroom', 'shower', 'mirror'],
-    'kitchen': ['kitchen', 'cooking'],
-    'gym': ['gym', 'fitness', 'workout'],
-    'work': ['office', 'work', 'desk'],
-    'outside': ['outside', 'park', 'street', 'nature', 'car'],
-    'car': ['car', 'driving'],
-    'cafe': ['cafe', 'coffee', 'restaurant'],
-  };
-  return locationMap[loc] || [loc];
+function extractLocationFromPhotoContext(photoContext) {
+  if (!photoContext) return null;
+
+  const ctx = photoContext.toLowerCase();
+
+  // Check for location mentions in photo context
+  if (/office|work|desk/.test(ctx)) return 'office';
+  if (/gym|fitness|workout/.test(ctx)) return 'gym';
+  if (/bedroom|bed/.test(ctx)) return 'bedroom';
+  if (/bathroom|shower/.test(ctx)) return 'bathroom';
+  if (/living|couch/.test(ctx)) return 'living_room';
+  if (/kitchen/.test(ctx)) return 'kitchen';
+  if (/outside|park|street/.test(ctx)) return 'outside';
+  if (/car/.test(ctx)) return 'car';
+  if (/beach|pool/.test(ctx)) return 'beach';
+  if (/cafe|coffee/.test(ctx)) return 'cafe';
+  if (/home|apartment/.test(ctx)) return 'home';
+
+  return null;
 }
+
+function getCompatibleLocations(currentLocation) {
+  if (!currentLocation) return null; // No location restriction
+  return LOCATION_GROUPS[currentLocation.toLowerCase()] || [currentLocation.toLowerCase()];
+}
+
+function isRestrictedLocation(location) {
+  if (!location) return false;
+  return RESTRICTED_LOCATIONS.includes(location.toLowerCase());
+}
+
+// ============================================================
+// PHOTO REQUEST DETECTION
+// ============================================================
+
+function detectPhotoRequest(userMessage) {
+  const msg = userMessage.toLowerCase();
+  const patterns = [
+    /send (me )?(a )?(photo|pic|picture|selfie)/i,
+    /show (me )?(a )?(photo|pic|picture|selfie)/i,
+    /can i see (you|a photo|a pic)/i,
+    /want to see (you|a photo)/i,
+    /let me see/i,
+    /pic of you/i,
+    /photo of you/i,
+  ];
+  return patterns.some(p => p.test(msg));
+}
+
+function detectExplicitRequest(userMessage) {
+  const msg = userMessage.toLowerCase();
+  const patterns = [
+    /\b(nude|naked|tits|boobs|ass|pussy|nipple)/i,
+    /\b(show me (your|more)|take (it )?off|undress|strip)\b/i,
+    /\b(something sexy|something naughty|something hot)\b/i,
+    /\b(more revealing|less clothes)\b/i,
+    /\bsee (your )?(body|boobs|tits|ass)\b/i,
+  ];
+  return patterns.some(p => p.test(msg));
+}
+
+function detectPositionRequest(userMessage) {
+  const msg = userMessage.toLowerCase();
+
+  // Check for specific position requests
+  const positions = {
+    'bent_over': /\b(bend over|bent over|from behind|doggy)\b/i,
+    'on_knees': /\b(on (your )?knees|kneeling)\b/i,
+    'laying_down': /\b(lay(ing)? down|on (the |your )?bed|lying)\b/i,
+    'standing': /\b(standing|stand up)\b/i,
+    'sitting': /\b(sitting|sit down)\b/i,
+    'mirror': /\b(mirror (pic|selfie|photo))\b/i,
+    'back_view': /\b(from (the )?back|back view|turn around)\b/i,
+  };
+
+  for (const [position, pattern] of Object.entries(positions)) {
+    if (pattern.test(msg)) return position;
+  }
+
+  return null;
+}
+
+function detectThrowbackRequest(userMessage) {
+  const msg = userMessage.toLowerCase();
+  const patterns = [
+    /\b(old|older) (photo|pic|picture)/i,
+    /\b(throwback|from before|saved|on your phone)\b/i,
+    /\b(one you (have|took) before)\b/i,
+  ];
+  return patterns.some(p => p.test(msg));
+}
+
+// ============================================================
+// PHOTO REFUSAL RESPONSES
+// ============================================================
+
+function generatePhotoRefusal(stage, reason) {
+  const refusals = {
+    too_early: {
+      STRANGER: [
+        "lol we literally just started talking",
+        "slow down there, we just met",
+        "maybe when I actually know you better",
+      ],
+      FRIEND_TENSION: [
+        "patience... good things come to those who wait",
+        "I'll send something when I feel like it",
+      ],
+    },
+    already_sent: [
+      "I already sent you one! greedy much?",
+      "you just got one, chill",
+      "one wasn't enough? lol",
+    ],
+    restricted_location: {
+      work: [
+        "I'm at work rn... can't exactly take pics here lol",
+        "my coworkers would see me 💀",
+        "wait till I get home",
+      ],
+      gym: [
+        "I'm literally at the gym, people would see",
+        "let me finish my workout first",
+        "maybe after... if you're good",
+      ],
+      default: [
+        "I can't really take one right now",
+        "bad timing, I'm out",
+        "later when I'm somewhere more private",
+      ],
+    },
+    explicit_too_early: [
+      "lol you wish",
+      "we're not there yet",
+      "earn it first",
+      "someone's eager... too bad",
+    ],
+    nsfw_restricted: [
+      "you're getting ahead of yourself",
+      "we're not there yet babe",
+      "maybe someday if you're lucky",
+    ],
+  };
+
+  if (reason === 'too_early') {
+    const stageRefusals = refusals.too_early[stage] || refusals.too_early.STRANGER;
+    return stageRefusals[Math.floor(Math.random() * stageRefusals.length)];
+  }
+
+  if (reason === 'restricted_location') {
+    return null; // Let the system offer throwback instead
+  }
+
+  if (reason === 'explicit_too_early') {
+    return refusals.explicit_too_early[Math.floor(Math.random() * refusals.explicit_too_early.length)];
+  }
+
+  if (reason === 'already_sent') {
+    return refusals.already_sent[Math.floor(Math.random() * refusals.already_sent.length)];
+  }
+
+  if (reason === 'nsfw_restricted') {
+    return refusals.nsfw_restricted[Math.floor(Math.random() * refusals.nsfw_restricted.length)];
+  }
+
+  return "not right now";
+}
+
+// ============================================================
+// MAIN PHOTO DECISION LOGIC
+// ============================================================
+
+async function shouldSendPhoto(pool, userId, context) {
+  const { userMessage, relationship, recentMessageCount } = context;
+  const stage = relationship?.current_stage || 'STRANGER';
+  const level = relationship?.relationship_level || 0;
+  const totalInteractions = relationship?.total_interactions || 0;
+
+  // Get current location
+  const currentLocation = await detectCurrentLocation(pool, userId);
+  const isRestricted = isRestrictedLocation(currentLocation);
+
+  // Check what kind of request this is
+  const isDirectRequest = detectPhotoRequest(userMessage);
+  const isExplicitRequest = detectExplicitRequest(userMessage);
+  const requestedPosition = detectPositionRequest(userMessage);
+  const isThrowbackRequest = detectThrowbackRequest(userMessage);
+
+  // Check recent photo history
+  const recentPhotos = await getRecentPhotoCount(pool, userId, 60); // last hour
+  const sessionPhotos = await getRecentPhotoCount(pool, userId, 180); // last 3 hours
+
+  // ============================================================
+  // STRANGER PHASE - Very limited
+  // ============================================================
+  if (stage === 'STRANGER') {
+    // Milestone: First photo at 15+ interactions
+    if (totalInteractions >= 15 && recentPhotos === 0) {
+      const hasEverReceivedPhoto = await hasReceivedAnyPhoto(pool, userId);
+      if (!hasEverReceivedPhoto) {
+        return {
+          shouldSend: true,
+          type: 'milestone',
+          maxNsfw: 1, // Very SFW only
+          categories: ['casual', 'selfie'],
+          currentLocation,
+        };
+      }
+    }
+
+    // No other photos for strangers
+    if (isDirectRequest) {
+      return { shouldSend: false, reason: 'too_early', stage };
+    }
+
+    return { shouldSend: false, reason: 'stranger_no_photos' };
+  }
+
+  // ============================================================
+  // NSFW LEVEL LIMITS BY STAGE
+  // ============================================================
+  let maxNsfw = 0;
+  let minNsfw = 0;
+
+  if (stage === 'FRIEND_TENSION') {
+    maxNsfw = 2; // Suggestive max
+  } else if (stage === 'COMPLICATED') {
+    maxNsfw = 3; // Teasing/revealing
+  } else if (stage === 'EXCLUSIVE') {
+    maxNsfw = 5; // Full access
+    if (isExplicitRequest) minNsfw = 3; // If they ask explicit, give explicit
+  }
+
+  // ============================================================
+  // EXPLICIT REQUEST HANDLING
+  // ============================================================
+  if (isExplicitRequest) {
+    // Too early for explicit
+    if (stage === 'FRIEND_TENSION') {
+      return { shouldSend: false, reason: 'explicit_too_early', stage };
+    }
+
+    // At restricted location - offer throwback
+    if (isRestricted && (stage === 'COMPLICATED' || stage === 'EXCLUSIVE')) {
+      return {
+        shouldSend: true,
+        type: 'throwback_explicit',
+        useThrowback: true,
+        requireExplicit: true, // Must have breasts_visible, ass_visible, or pussy_visible
+        maxNsfw: maxNsfw,
+        minNsfw: 2,
+        currentLocation,
+        offerThrowback: true, // AI should mention "I have an old one on my phone..."
+      };
+    }
+
+    // Can send explicit from current location
+    if (stage === 'COMPLICATED' || stage === 'EXCLUSIVE') {
+      return {
+        shouldSend: true,
+        type: 'explicit_request',
+        requireExplicit: true,
+        maxNsfw: maxNsfw,
+        minNsfw: 2,
+        currentLocation,
+        compatibleLocations: getCompatibleLocations(currentLocation),
+      };
+    }
+  }
+
+  // ============================================================
+  // POSITION REQUEST HANDLING
+  // ============================================================
+  if (requestedPosition) {
+    if (stage === 'STRANGER' || stage === 'FRIEND_TENSION') {
+      return { shouldSend: false, reason: 'too_early', stage };
+    }
+
+    // At restricted location - use throwback with position
+    if (isRestricted) {
+      return {
+        shouldSend: true,
+        type: 'throwback_position',
+        useThrowback: true,
+        bodyPosition: requestedPosition,
+        maxNsfw: maxNsfw,
+        currentLocation,
+        offerThrowback: true,
+      };
+    }
+
+    return {
+      shouldSend: true,
+      type: 'position_request',
+      bodyPosition: requestedPosition,
+      maxNsfw: maxNsfw,
+      currentLocation,
+      compatibleLocations: getCompatibleLocations(currentLocation),
+    };
+  }
+
+  // ============================================================
+  // DIRECT PHOTO REQUEST (non-explicit)
+  // ============================================================
+  if (isDirectRequest || isThrowbackRequest) {
+    // Session limits
+    const sessionLimits = { FRIEND_TENSION: 3, COMPLICATED: 5, EXCLUSIVE: 10 };
+    const limit = sessionLimits[stage] || 2;
+
+    if (sessionPhotos >= limit) {
+      return { shouldSend: false, reason: 'session_limit', stage };
+    }
+
+    // At restricted location - throwback only
+    if (isRestricted && !isThrowbackRequest) {
+      return {
+        shouldSend: true,
+        type: 'throwback_offer',
+        useThrowback: true,
+        maxNsfw: maxNsfw,
+        currentLocation,
+        offerThrowback: true,
+      };
+    }
+
+    // Explicit throwback request
+    if (isThrowbackRequest) {
+      return {
+        shouldSend: true,
+        type: 'throwback_request',
+        useThrowback: true,
+        maxNsfw: maxNsfw,
+        currentLocation,
+      };
+    }
+
+    // Normal request from compatible location
+    return {
+      shouldSend: true,
+      type: 'direct_request',
+      maxNsfw: maxNsfw,
+      currentLocation,
+      compatibleLocations: getCompatibleLocations(currentLocation),
+    };
+  }
+
+  // ============================================================
+  // ORGANIC/RANDOM PHOTO TRIGGERS
+  // ============================================================
+
+  // No organic photos if already sent recently
+  if (recentPhotos > 0) {
+    return { shouldSend: false, reason: 'recent_photo_sent' };
+  }
+
+  // Organic triggers based on conversation
+  const organicChance = getOrganicPhotoChance(stage, userMessage);
+
+  if (Math.random() < organicChance) {
+    // At restricted location - can still send SFW photo from that location
+    return {
+      shouldSend: true,
+      type: 'organic',
+      maxNsfw: isRestricted ? 1 : Math.min(maxNsfw, 2), // Keep organic photos tasteful
+      currentLocation,
+      compatibleLocations: getCompatibleLocations(currentLocation),
+    };
+  }
+
+  return { shouldSend: false, reason: 'no_trigger' };
+}
+
+function getOrganicPhotoChance(stage, userMessage) {
+  const msg = userMessage.toLowerCase();
+
+  // Base chances by stage
+  let chance = 0;
+  if (stage === 'FRIEND_TENSION') chance = 0.08;
+  else if (stage === 'COMPLICATED') chance = 0.12;
+  else if (stage === 'EXCLUSIVE') chance = 0.15;
+
+  // Boost for certain keywords
+  if (/\b(miss you|thinking about you|wish you were here)\b/i.test(msg)) chance += 0.10;
+  if (/\b(what are you doing|wyd|what's up)\b/i.test(msg)) chance += 0.05;
+  if (/\b(you're (hot|cute|beautiful|gorgeous))\b/i.test(msg)) chance += 0.08;
+  if (/\b(good morning|good night|gm|gn)\b/i.test(msg)) chance += 0.05;
+
+  return Math.min(chance, 0.30); // Cap at 30%
+}
+
+async function getRecentPhotoCount(pool, userId, minutes) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT COUNT(*) as count FROM user_photo_history
+       WHERE user_id = $1 AND sent_at > NOW() - INTERVAL '${minutes} minutes'`,
+      [userId]
+    );
+    return parseInt(rows[0]?.count || 0);
+  } catch {
+    return 0;
+  }
+}
+
+async function hasReceivedAnyPhoto(pool, userId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT COUNT(*) as count FROM user_photo_history WHERE user_id = $1`,
+      [userId]
+    );
+    return parseInt(rows[0]?.count || 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+// ============================================================
+// PHOTO SELECTION FROM DATABASE
+// ============================================================
+
+async function selectPhoto(pool, userId, criteria) {
+  try {
+    const {
+      maxNsfw = 2,
+      minNsfw = 0,
+      useThrowback = false,
+      requireExplicit = false,
+      bodyPosition = null,
+      compatibleLocations = null,
+      currentLocation = null,
+    } = criteria;
+
+    // Build the query
+    let conditions = [
+      'p.is_active = true',
+      'p.nsfw_level >= $1',
+      'p.nsfw_level <= $2',
+      'p.id NOT IN (SELECT photo_id FROM user_photo_history WHERE user_id = $3)',
+    ];
+    let params = [minNsfw, maxNsfw, userId];
+    let paramIndex = 4;
+
+    // Throwback filter
+    if (useThrowback) {
+      conditions.push(`p.photo_type = 'throwback'`);
+    }
+
+    // Explicit content filter
+    if (requireExplicit) {
+      conditions.push(`(p.breasts_visible = true OR p.ass_visible = true OR p.pussy_visible = true)`);
+    }
+
+    // Body position filter
+    if (bodyPosition) {
+      conditions.push(`LOWER(p.body_position) LIKE $${paramIndex}`);
+      params.push(`%${bodyPosition}%`);
+      paramIndex++;
+    }
+
+    // Location filter (only if not throwback)
+    if (!useThrowback && compatibleLocations && compatibleLocations.length > 0) {
+      const locationConditions = compatibleLocations.map((_, i) =>
+        `LOWER(p.location) = $${paramIndex + i}`
+      ).join(' OR ');
+      conditions.push(`(${locationConditions})`);
+      params.push(...compatibleLocations.map(l => l.toLowerCase()));
+      paramIndex += compatibleLocations.length;
+    }
+
+    const query = `
+      SELECT p.* FROM ellie_photos p
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY RANDOM()
+      LIMIT 1
+    `;
+
+    console.log(`📸 Photo query: nsfw=${minNsfw}-${maxNsfw}, throwback=${useThrowback}, explicit=${requireExplicit}, position=${bodyPosition}, locations=${compatibleLocations?.join(',')}`);
+
+    const { rows } = await pool.query(query, params);
+
+    if (rows.length > 0) {
+      console.log(`📸 Selected photo: id=${rows[0].id}, location=${rows[0].location}, nsfw=${rows[0].nsfw_level}`);
+      return rows[0];
+    }
+
+    // Fallback: Try without location restriction
+    if (compatibleLocations && !useThrowback) {
+      console.log(`📸 No location-matched photo, trying throwback fallback`);
+      return selectPhoto(pool, userId, { ...criteria, useThrowback: true, compatibleLocations: null });
+    }
+
+    // Fallback: Try with looser criteria
+    if (requireExplicit) {
+      console.log(`📸 No explicit photo found, trying without explicit requirement`);
+      return selectPhoto(pool, userId, { ...criteria, requireExplicit: false });
+    }
+
+    console.log(`📸 No photo found matching criteria`);
+    return null;
+
+  } catch (error) {
+    console.error('❌ Error selecting photo:', error.message);
+    return null;
+  }
+}
+
+// ============================================================
+// PHOTO CONTEXT BUILDER - Tell AI what photo is being sent
+// ============================================================
 
 function buildPhotoContext(photo) {
   if (!photo) return null;
+
   const parts = [];
+
   if (photo.description) parts.push(`Photo shows: ${photo.description}`);
+  if (photo.location) parts.push(`Location: ${photo.location}`);
+  if (photo.tags) parts.push(`Style: ${photo.tags}`);
+  if (photo.body_position) parts.push(`Position: ${photo.body_position}`);
 
-  let locationStr = photo.location || photo.setting || photo.category || 'somewhere';
-  parts.push(`Location in photo: ${locationStr}`);
-
-  if (photo.top_description || photo.top_type) parts.push(`Wearing: ${photo.top_description || photo.top_type}`);
-  if (photo.pose_type) parts.push(`Pose: ${photo.pose_type}`);
-  if (photo.activity) parts.push(`Action: ${photo.activity}`);
+  // What's visible (for AI awareness)
+  const visible = [];
+  if (photo.breasts_visible) visible.push('breasts');
+  if (photo.ass_visible) visible.push('ass');
+  if (photo.pussy_visible) visible.push('pussy');
+  if (visible.length > 0) parts.push(`Showing: ${visible.join(', ')}`);
 
   return parts.join('. ');
 }
 
-function createPhotoAwarePrompt(photo, triggerType, isMilestone = false) {
+function createPhotoAIPrompt(photo, criteria) {
   const context = buildPhotoContext(photo);
-  const location = photo.location || photo.setting || 'unknown';
+  const isThrowback = criteria.useThrowback || photo.photo_type === 'throwback';
 
-  return `
+  let prompt = `
 ═══════════════════════════════════════════════════════════════
-📸 PHOTO AWARENESS - YOU ARE SENDING A PHOTO
+📸 YOU ARE SENDING A PHOTO
 ═══════════════════════════════════════════════════════════════
 
-You are currently sending the photo described below.
-Your text MUST match the content of this photo.
-
-👀 PHOTO DETAILS:
 ${context}
 
-⚠️ INSTRUCTIONS:
-1. Acknowledge what is in the photo (e.g., if holding coffee, mention the coffee).
-2. Be consistent with the location: You are at ${location}.
-3. Keep the caption short and natural (e.g., "Thoughts?" or "Look what I'm doing").
-4. Do NOT say "I am sending a photo". Just send it like a real person sharing a moment.
+`;
 
+  if (isThrowback) {
+    prompt += `⚠️ THIS IS A THROWBACK PHOTO (old photo from your phone)
+- Mention it's an older photo you have saved
+- Examples: "I have this one from a while ago...", "found this on my phone", "here's one I took before"
+- The photo location may not match where you are NOW - that's fine, it's old
+
+`;
+  } else {
+    prompt += `⚠️ THIS IS A LIVE PHOTO (you're taking it now)
+- Your caption should match where you are: ${photo.location || 'unknown'}
+- React naturally to what's in the photo
+
+`;
+  }
+
+  prompt += `CAPTION RULES:
+- Keep it SHORT and natural (1 sentence max)
+- Don't describe the photo in detail - they can see it
+- Be flirty/teasing if it's sexy, casual if it's SFW
+- NEVER say "I'm sending you a photo" - just send it with a caption
 ═══════════════════════════════════════════════════════════════
 `;
+
+  return prompt;
 }
 
-async function preparePhotoForMessage(pool, userId, conversationContext) {
-  try {
-    const decision = await shouldSendPhoto(pool, userId, conversationContext);
-    if (!decision.shouldSend) return null;
+// ============================================================
+// MAIN ENTRY POINT
+// ============================================================
 
-    let photo;
-    if (decision.isSpecialOverride && decision.specialPhoto) {
-      photo = decision.specialPhoto;
-    } else {
-      const recentLocation = await getRecentStatedLocation(pool, userId);
-      const relationshipLevel = conversationContext.relationship?.relationship_level || 0;
-      photo = await selectContextualPhoto(pool, userId, decision, relationshipLevel, recentLocation);
+async function preparePhotoForMessage(pool, userId, context) {
+  try {
+    const decision = await shouldSendPhoto(pool, userId, context);
+
+    if (!decision.shouldSend) {
+      // Check if we should return a refusal message
+      if (decision.reason === 'too_early' || decision.reason === 'explicit_too_early') {
+        return {
+          photo: null,
+          refusalMessage: generatePhotoRefusal(decision.stage, decision.reason),
+        };
+      }
+      return null;
     }
 
-    if (!photo) return null;
+    // Select the photo
+    const photo = await selectPhoto(pool, userId, decision);
 
-    await recordPhotoSent(pool, userId, photo.id, decision.triggerType || decision.reason);
+    if (!photo) {
+      console.log(`📸 No suitable photo found for ${userId}`);
+      return null;
+    }
+
+    // Record that we sent this photo
+    await recordPhotoSent(pool, userId, photo.id, decision.type);
 
     return {
       photo: {
         id: photo.id,
         url: photo.url,
-        category: photo.category,
-        mood: photo.mood,
-        activity: photo.activity,
-        setting: photo.setting,
-        outfit: photo.outfit,
+        location: photo.location,
         description: photo.description,
-        nsfwLevel: photo.nsfw_level
+        tags: photo.tags,
+        nsfwLevel: photo.nsfw_level,
+        bodyPosition: photo.body_position,
+        isThrowback: decision.useThrowback || photo.photo_type === 'throwback',
       },
-      aiPromptInjection: createPhotoAwarePrompt(photo, decision.triggerType),
-      triggerType: decision.triggerType || decision.reason,
-      isMilestone: decision.isMilestone || false,
-      isSpecialOverride: decision.isSpecialOverride || false,
-      photoContext: buildPhotoContext(photo)
+      aiPromptInjection: createPhotoAIPrompt(photo, decision),
+      photoContext: buildPhotoContext(photo),
+      triggerType: decision.type,
+      offerThrowback: decision.offerThrowback || false,
+      currentLocation: decision.currentLocation,
     };
+
   } catch (error) {
-    console.error('❌ Error in preparePhotoForMessage:', error);
+    console.error('❌ Error preparing photo:', error.message);
     return null;
   }
 }
@@ -613,22 +723,35 @@ async function recordPhotoSent(pool, userId, photoId, context) {
     await pool.query(
       `INSERT INTO user_photo_history (user_id, photo_id, context, sent_at)
        VALUES ($1, $2, $3, NOW())
-       ON CONFLICT (user_id, photo_id) DO UPDATE SET sent_at = NOW()`,
+       ON CONFLICT (user_id, photo_id) DO UPDATE SET sent_at = NOW(), context = $3`,
       [userId, photoId, context]
     );
   } catch (error) {
-    console.error('❌ Error recording photo history:', error);
+    console.error('❌ Error recording photo:', error.message);
   }
 }
 
+// ============================================================
+// EXPORTS
+// ============================================================
+
 module.exports = {
-  detectPhotoRequest,
-  generatePhotoRequestRefusal,
-  shouldSendPhoto,
+  // Main functions
   preparePhotoForMessage,
-  selectContextualPhoto,
+  shouldSendPhoto,
+  selectPhoto,
+
+  // Detection functions
+  detectPhotoRequest,
+  detectExplicitRequest,
+  detectPositionRequest,
+  detectThrowbackRequest,
+  detectCurrentLocation,
+
+  // Helper functions
+  generatePhotoRefusal,
   buildPhotoContext,
-  createPhotoAwarePrompt,
-  extractConversationTopics,
-  recordPhotoSent
+  createPhotoAIPrompt,
+  getCompatibleLocations,
+  isRestrictedLocation,
 };
