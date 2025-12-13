@@ -320,18 +320,16 @@ async function shouldSendPhoto(pool, userId, context) {
   //   return { shouldSend: false, reason: 'stranger_no_photos' };
   // }
 
-  // TESTING: Allow STRANGER to get photos like FRIEND_TENSION
-  if (stage === 'STRANGER') {
-    maxNsfw = 2; // Same as FRIEND_TENSION for testing
-  }
-
   // ============================================================
   // NSFW LEVEL LIMITS BY STAGE
   // ============================================================
   let maxNsfw = 0;
   let minNsfw = 0;
 
-  if (stage === 'FRIEND_TENSION') {
+  // TESTING: Allow STRANGER to get photos like FRIEND_TENSION
+  if (stage === 'STRANGER') {
+    maxNsfw = 2; // Same as FRIEND_TENSION for testing
+  } else if (stage === 'FRIEND_TENSION') {
     maxNsfw = 2; // Suggestive max
   } else if (stage === 'COMPLICATED') {
     maxNsfw = 3; // Teasing/revealing
