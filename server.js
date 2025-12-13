@@ -7576,11 +7576,13 @@ Your job is to keep things moving and fun, not to interview them.`;
         recentMessageCount: recentMessageCount
       });
 
-      if (photoPrep) {
-        console.log(`📸 Photo prepared for ${userId}: ${photoPrep.photo.category} (${photoPrep.triggerType})`);
-        console.log(`📸 Photo injection length: ${photoPrep.aiPromptInjection.length} chars`);
+      if (photoPrep && photoPrep.photo) {
+        console.log(`📸 Photo prepared for ${userId}: ${photoPrep.photo.location || 'unknown'} (${photoPrep.triggerType})`);
+        console.log(`📸 Photo injection length: ${photoPrep.aiPromptInjection?.length || 0} chars`);
         // Inject photo context into system message so AI knows about the photo
-        finalSystemMsg += photoPrep.aiPromptInjection;
+        if (photoPrep.aiPromptInjection) {
+          finalSystemMsg += photoPrep.aiPromptInjection;
+        }
       }
     } catch (photoErr) {
       console.error('Photo preparation error:', photoErr);
@@ -7858,8 +7860,8 @@ BREAKING CHARACTER = COMPLETE FAILURE. STAY IN CHARACTER AS ELLIE.`;
     const updatedRelationship = await getUserRelationship(userId);
 
     // 📸 PHOTO LOGGING (photo data is stored with the assistant message above)
-    if (photoPrep) {
-      console.log(`📸 Photo sent to ${userId}: ${photoPrep.isMilestone ? 'MILESTONE!' : photoPrep.photo.category} (${photoPrep.photo.url})`);
+    if (photoPrep && photoPrep.photo) {
+      console.log(`📸 Photo sent to ${userId}: ${photoPrep.isMilestone ? 'MILESTONE!' : photoPrep.photo.location || 'unknown'} (${photoPrep.photo.url})`);
     }
 
     // ⚡ PERFORMANCE MONITORING
@@ -7996,13 +7998,14 @@ Output ONLY the follow-up text, nothing else.` },
       // 💬 Include follow-up if generated
       ...(followUp && { followUp }),
       // 📸 Add photo to response if prepared (Ellie's message already references it)
-      ...(photoPrep && {
+      ...(photoPrep && photoPrep.photo && {
         photo: {
           url: photoPrep.photo.url,
           id: photoPrep.photo.id,
-          category: photoPrep.photo.category,
-          mood: photoPrep.photo.mood,
-          setting: photoPrep.photo.setting,
+          location: photoPrep.photo.location,
+          description: photoPrep.photo.description,
+          tags: photoPrep.photo.tags,
+          isThrowback: photoPrep.photo.isThrowback || false,
           isMilestone: photoPrep.isMilestone || false
         }
       })
