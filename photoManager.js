@@ -401,13 +401,12 @@ async function shouldSendPhoto(pool, userId, context) {
   // DIRECT PHOTO REQUEST (non-explicit)
   // ============================================================
   if (isDirectRequest || isThrowbackRequest) {
-    // Session limits
-    const sessionLimits = { FRIEND_TENSION: 3, COMPLICATED: 5, EXCLUSIVE: 10 };
-    const limit = sessionLimits[stage] || 2;
-
-    if (sessionPhotos >= limit) {
-      return { shouldSend: false, reason: 'session_limit', stage };
-    }
+    // Session limits - DISABLED FOR TESTING
+    // const sessionLimits = { FRIEND_TENSION: 3, COMPLICATED: 5, EXCLUSIVE: 10 };
+    // const limit = sessionLimits[stage] || 2;
+    // if (sessionPhotos >= limit) {
+    //   return { shouldSend: false, reason: 'session_limit', stage };
+    // }
 
     // At restricted location - throwback only
     if (isRestricted && !isThrowbackRequest) {
@@ -446,10 +445,10 @@ async function shouldSendPhoto(pool, userId, context) {
   // ORGANIC/RANDOM PHOTO TRIGGERS
   // ============================================================
 
-  // No organic photos if already sent recently
-  if (recentPhotos > 0) {
-    return { shouldSend: false, reason: 'recent_photo_sent' };
-  }
+  // No organic photos if already sent recently - DISABLED FOR TESTING
+  // if (recentPhotos > 0) {
+  //   return { shouldSend: false, reason: 'recent_photo_sent' };
+  // }
 
   // Organic triggers based on conversation
   const organicChance = getOrganicPhotoChance(stage, userMessage);
