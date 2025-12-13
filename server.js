@@ -7128,22 +7128,9 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    // 📸 CHECK FOR PHOTO REQUESTS - Refuse with personality
-    if (photoManager.detectPhotoRequest(message)) {
-      const relationship = await getUserRelationship(userId);
-      const refusal = photoManager.generatePhotoRequestRefusal(
-        relationship.current_stage,
-        relationship.total_interactions || 0
-      );
-      
-      console.log(`🚫 User ${userId} asked for photo, refusing with personality`);
-      
-      return res.json({
-        reply: refusal,
-        language: await getPreferredLanguage(userId),
-        photoRefused: true
-      });
-    }
+    // 📸 PHOTO REQUESTS - Now handled by photo system in preparePhotoForMessage()
+    // Old code that refused all photo requests has been removed
+    // The new photo system decides whether to send, offer throwback, or refuse
 
     // 🎮 CHECK FOR MANUAL OVERRIDE FIRST
     if (isInManualOverride(userId)) {
