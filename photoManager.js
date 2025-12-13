@@ -141,6 +141,12 @@ function detectPhotoRequest(userMessage) {
     /let me see/i,
     /pic of you/i,
     /photo of you/i,
+    // "More" requests (after receiving a photo)
+    /\b(send|show) (me )?more\b/i,
+    /\banother (one|photo|pic|picture)\b/i,
+    /\bmore (photos?|pics?|pictures?)\b/i,
+    /\bone more\b/i,
+    /\bagain\b/i,
   ];
   return patterns.some(p => p.test(msg));
 }
@@ -289,29 +295,34 @@ async function shouldSendPhoto(pool, userId, context) {
   const sessionPhotos = await getRecentPhotoCount(pool, userId, 180); // last 3 hours
 
   // ============================================================
-  // STRANGER PHASE - Very limited
+  // STRANGER PHASE - Very limited (DISABLED FOR TESTING)
   // ============================================================
+  // if (stage === 'STRANGER') {
+  //   // Milestone: First photo at 15+ interactions
+  //   if (totalInteractions >= 15 && recentPhotos === 0) {
+  //     const hasEverReceivedPhoto = await hasReceivedAnyPhoto(pool, userId);
+  //     if (!hasEverReceivedPhoto) {
+  //       return {
+  //         shouldSend: true,
+  //         type: 'milestone',
+  //         maxNsfw: 1, // Very SFW only
+  //         categories: ['casual', 'selfie'],
+  //         currentLocation,
+  //       };
+  //     }
+  //   }
+  //
+  //   // No other photos for strangers
+  //   if (isDirectRequest) {
+  //     return { shouldSend: false, reason: 'too_early', stage };
+  //   }
+  //
+  //   return { shouldSend: false, reason: 'stranger_no_photos' };
+  // }
+
+  // TESTING: Allow STRANGER to get photos like FRIEND_TENSION
   if (stage === 'STRANGER') {
-    // Milestone: First photo at 15+ interactions
-    if (totalInteractions >= 15 && recentPhotos === 0) {
-      const hasEverReceivedPhoto = await hasReceivedAnyPhoto(pool, userId);
-      if (!hasEverReceivedPhoto) {
-        return {
-          shouldSend: true,
-          type: 'milestone',
-          maxNsfw: 1, // Very SFW only
-          categories: ['casual', 'selfie'],
-          currentLocation,
-        };
-      }
-    }
-
-    // No other photos for strangers
-    if (isDirectRequest) {
-      return { shouldSend: false, reason: 'too_early', stage };
-    }
-
-    return { shouldSend: false, reason: 'stranger_no_photos' };
+    maxNsfw = 2; // Same as FRIEND_TENSION for testing
   }
 
   // ============================================================
