@@ -7591,7 +7591,7 @@ Your job is to keep things moving and fun, not to interview them.`;
       const photoLocation = photoPrep.photoContext?.match(/Location: ([^(.\n]+)/)?.[1]?.trim() || 'somewhere';
       photoReminder = {
         role: "system",
-        content: `📸 You're sharing a photo naturally. You're at: ${photoLocation}. Share it casually like "what do you think?", "me rn 😊", or "how's this look?" - NOT "hey I sent you a pic". Keep it to 1 short sentence.`
+        content: `📸 You're sharing a photo naturally. Share it casually like "what do you think?", "me rn 😊", or "how's this look?" - NOT "hey I sent you a pic". Keep it to 1 short sentence. DO NOT write "[You sent a photo: ...]" - that's system metadata, not your response.`
       };
     } else {
       photoReminder = {

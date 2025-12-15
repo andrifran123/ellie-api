@@ -588,9 +588,21 @@ async function selectPhoto(pool, userId, criteria) {
       return rows[0];
     }
 
-    // Fallback: Try without location restriction
+    // Fallback: Try throwback from home locations (not gym/office/etc)
     if (compatibleLocations && !useThrowback) {
-      console.log(`📸 No location-matched photo, trying throwback fallback`);
+      console.log(`📸 No location-matched photo, trying throwback from home locations`);
+      // Prefer home-based throwbacks (bedroom, living room, bathroom) over gym/office
+      const homeLocations = ['bedroom', 'living_room', 'bathroom', 'home', 'kitchen'];
+      return selectPhoto(pool, userId, {
+        ...criteria,
+        useThrowback: true,
+        compatibleLocations: homeLocations
+      });
+    }
+
+    // Final fallback: Any throwback if no home-based ones exist
+    if (compatibleLocations && useThrowback) {
+      console.log(`📸 No home throwback found, trying any throwback`);
       return selectPhoto(pool, userId, { ...criteria, useThrowback: true, compatibleLocations: null });
     }
 
@@ -666,6 +678,8 @@ ${context}
 - Don't describe the photo in detail - they can see it
 - Be flirty/teasing if it's sexy, casual if it's SFW
 - NEVER say "I'm sending you a photo" - just send it with a caption
+- NEVER write "[You sent a photo: ...]" - that's a system annotation, not your response
+- Just write a normal caption like "here you go 😏" or "what do you think?"
 ═══════════════════════════════════════════════════════════════
 `;
 
