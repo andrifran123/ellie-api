@@ -639,7 +639,11 @@ function buildPhotoContext(photo) {
 
 function createPhotoAIPrompt(photo, criteria) {
   const context = buildPhotoContext(photo);
-  const isThrowback = criteria.useThrowback || photo.photo_type === 'throwback';
+  // Use the isThrowback passed from criteria (already calculated with all checks)
+  const urlHasThrowback = (photo.url || '').toLowerCase().includes('/throwback/');
+  const isThrowback = criteria.useThrowback || photo.photo_type === 'throwback' || urlHasThrowback;
+
+  console.log(`📸 createPhotoAIPrompt: isThrowback=${isThrowback} (criteria.useThrowback=${criteria.useThrowback}, photo_type=${photo.photo_type}, urlHas=${urlHasThrowback})`);
 
   let prompt = `
 ═══════════════════════════════════════════════════════════════
@@ -714,11 +718,14 @@ async function preparePhotoForMessage(pool, userId, context) {
     const currentLoc = (decision.currentLocation || '').toLowerCase();
     const isGymPhotoNotAtGym = photoLocation === 'gym' && currentLoc !== 'gym';
 
-    // It's a throwback if: explicitly marked as throwback, decision says so, OR gym photo when not at gym
-    const isThrowback = decision.useThrowback || photo.photo_type === 'throwback' || isGymPhotoNotAtGym;
+    // Also check if URL contains "throwback" (file stored in throwback folder)
+    const urlHasThrowback = (photo.url || '').toLowerCase().includes('/throwback/');
 
-    if (isGymPhotoNotAtGym) {
-      console.log(`📸 Gym photo but she's at "${currentLoc}" - treating as throwback`);
+    // It's a throwback if: explicitly marked, decision says so, gym photo when not at gym, OR URL has throwback
+    const isThrowback = decision.useThrowback || photo.photo_type === 'throwback' || isGymPhotoNotAtGym || urlHasThrowback;
+
+    if (isThrowback) {
+      console.log(`📸 Throwback detected: useThrowback=${decision.useThrowback}, photo_type=${photo.photo_type}, gymNotAtGym=${isGymPhotoNotAtGym}, urlHas=${urlHasThrowback}`);
     }
 
     return {
