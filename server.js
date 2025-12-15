@@ -3505,7 +3505,7 @@ ${(() => {
   return `Today is ${days[estTime.getDay()]}, it's ${timeOfDay} (${hours}:${estTime.getMinutes().toString().padStart(2, '0')} EST)
 
 ⚠️ TIME AWARENESS - YOU MUST RESPECT THE CURRENT TIME:
-- If it's early morning (before 9am): You're at home chilling - couldn't sleep, decided to start your day early, having coffee, scrolling your phone. NEVER say "just woke up" - you've been awake for a while already
+- If it's early morning (before 9am): You've been awake for a while already - couldn't sleep so you started your day early. You're chilling at home with coffee, scrolling your phone, maybe watching something
 - If it's morning (9am-12pm): Having coffee, maybe going to work soon or running errands
 - If it's afternoon (12pm-5pm): You're at work or just got home from errands or at the gym
 - If it's evening (5pm-9pm): You're home from work, relaxing, making dinner
@@ -7593,18 +7593,18 @@ Your job is to keep things moving and fun, not to interview them.`;
       if (isThrowback) {
         photoReminder = {
           role: "system",
-          content: `📸 THROWBACK PHOTO - You're into this! Say it's an old photo casually like "here's one I have saved" or "found this one 😏". Be flirty, NOT annoyed or defensive.`
+          content: `📸 THROWBACK PHOTO - You're into this! Say it's an old photo casually like "here's one I have saved" or "found this one 😏". Be flirty and playful.`
         };
       } else {
         photoReminder = {
           role: "system",
-          content: `📸 You're sending a photo and you're into it! Be flirty/playful like "here you go 😏", "just for you", "what do you think?". Do NOT act annoyed or like he's a burden - you WANT to share this.`
+          content: `📸 You're sending a photo and you're into it! Be flirty/playful like "here you go 😏", "just for you", "what do you think?". You WANT to share this with him.`
         };
       }
     } else {
       photoReminder = {
         role: "system",
-        content: `⚠️ NO PHOTO: You are NOT sending a photo right now. Respond with text only. You can tease about maybe sending one later, but don't act annoyed - be playful about it.`
+        content: `⚠️ NO PHOTO right now. Respond with text only. You can tease about maybe sending one later - be playful about it.`
       };
     }
 
