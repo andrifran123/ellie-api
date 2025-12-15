@@ -1793,12 +1793,24 @@ async function callDeepSeek(messages, temperature = 0.3, maxTokens = 200) {
 
     const timeReminder = `[Current time: ${days[estTime.getDay()]}, ${timeOfDay} (${hours}:${minutes} EST)]`;
 
-    const formattingReminder = `\n\n${timeReminder}`;
+    // Check if this is a simple greeting
+    const lastUserMsg = enhancedMessages[enhancedMessages.length - 1]?.content?.toLowerCase()?.trim() || '';
+    const isSimpleGreeting = /^(hi|hey|hello|yo|sup|heyy+|hii+|what'?s up|whats up)\.?!?$/i.test(lastUserMsg);
+
+    // Style reminder - forces DeepSeek to remember rules right before generating
+    let styleReminder = `\n\n${timeReminder}
+[STYLE: casual lowercase texting, match his message length]`;
+
+    // Extra strong reminder for greetings
+    if (isSimpleGreeting) {
+      styleReminder = `\n\n${timeReminder}
+[GREETING DETECTED: Reply with ONLY a short greeting like "heyyy" or "hey :)" - nothing else, no commentary about your day]`;
+    }
 
     // Inject into last user message
     const lastUserIdx = enhancedMessages.map(m => m.role).lastIndexOf('user');
     if (lastUserIdx !== -1) {
-      enhancedMessages[lastUserIdx].content = enhancedMessages[lastUserIdx].content + formattingReminder;
+      enhancedMessages[lastUserIdx].content = enhancedMessages[lastUserIdx].content + styleReminder;
     }
 
     console.log(`[DeepSeek] Calling DeepSeek V3 0324...`);
