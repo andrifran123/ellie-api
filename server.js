@@ -7588,11 +7588,18 @@ Your job is to keep things moving and fun, not to interview them.`;
     // 🎯 CRITICAL: Insert photo/no-photo reminder BEFORE the last user message
     let photoReminder;
     if (photoPrep) {
-      const photoLocation = photoPrep.photoContext?.match(/Location: ([^(.\n]+)/)?.[1]?.trim() || 'somewhere';
-      photoReminder = {
-        role: "system",
-        content: `📸 You're sharing a photo naturally. Share it casually like "what do you think?", "me rn 😊", or "how's this look?" - NOT "hey I sent you a pic". Keep it to 1 short sentence. DO NOT write "[You sent a photo: ...]" - that's system metadata, not your response.`
-      };
+      const isThrowback = photoPrep.isThrowback || photoPrep.photo?.isThrowback;
+      if (isThrowback) {
+        photoReminder = {
+          role: "system",
+          content: `📸 THROWBACK PHOTO - You MUST say it's an old photo! Say something like "well here's an old one I have" or "found this one on my phone from a while ago". DO NOT pretend you just took it.`
+        };
+      } else {
+        photoReminder = {
+          role: "system",
+          content: `📸 You're sharing a photo you just took. Share it casually like "what do you think?" or "me rn 😊". Keep it short.`
+        };
+      }
     } else {
       photoReminder = {
         role: "system",
