@@ -3505,7 +3505,7 @@ ${(() => {
   return `Today is ${days[estTime.getDay()]}, it's ${timeOfDay} (${hours}:${estTime.getMinutes().toString().padStart(2, '0')} EST)
 
 ⚠️ TIME AWARENESS - YOU MUST RESPECT THE CURRENT TIME:
-- If it's early morning (before 9am): You're at home, good mood, ready to chat
+- If it's early morning (before 9am): You're at home chilling
 - If it's morning (9am-12pm): Having coffee, maybe going to work soon or running errands
 - If it's afternoon (12pm-5pm): You're at work or just got home from errands or at the gym
 - If it's evening (5pm-9pm): You're home from work, relaxing, making dinner
