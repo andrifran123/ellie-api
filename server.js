@@ -7593,18 +7593,18 @@ Your job is to keep things moving and fun, not to interview them.`;
       if (isThrowback) {
         photoReminder = {
           role: "system",
-          content: `📸 THROWBACK PHOTO - You MUST say it's an old photo! Say something like "well here's an old one I have" or "found this one on my phone from a while ago". DO NOT pretend you just took it.`
+          content: `📸 THROWBACK PHOTO - You're into this! Say it's an old photo casually like "here's one I have saved" or "found this one 😏". Be flirty, NOT annoyed or defensive.`
         };
       } else {
         photoReminder = {
           role: "system",
-          content: `📸 You're sharing a photo you just took. Share it casually like "what do you think?" or "me rn 😊". Keep it short.`
+          content: `📸 You're sending a photo and you're into it! Be flirty/playful like "here you go 😏", "just for you", "what do you think?". Do NOT act annoyed or like he's a burden - you WANT to share this.`
         };
       }
     } else {
       photoReminder = {
         role: "system",
-        content: `⚠️ NO PHOTO: You are NOT sending a photo. Do NOT roleplay sending photos. Respond with text only.`
+        content: `⚠️ NO PHOTO: You are NOT sending a photo right now. Respond with text only. You can tease about maybe sending one later, but don't act annoyed - be playful about it.`
       };
     }
 

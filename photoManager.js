@@ -673,10 +673,11 @@ ${context}
   prompt += `CAPTION RULES:
 - Keep it SHORT and natural (1 sentence max)
 - Don't describe the photo in detail - they can see it
-- Be flirty/teasing if it's sexy, casual if it's SFW
-- NEVER say "I'm sending you a photo" - just send it with a caption
-- NEVER write "[You sent a photo: ...]" - that's a system annotation, not your response
-- Just write a normal caption like "here you go 😏" or "what do you think?"
+- Be flirty and INTO IT - you WANT to share this with him
+- DO NOT act annoyed, defensive, or like he's bothering you
+- DO NOT complain about the time, being tired, or make excuses
+- Good vibes: "here you go 😏", "just for you", "what do you think?", "you're welcome 😘"
+- NEVER write "[You sent a photo: ...]" - that's system metadata
 ═══════════════════════════════════════════════════════════════
 `;
 
