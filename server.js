@@ -1793,7 +1793,9 @@ async function callDeepSeek(messages, temperature = 0.3, maxTokens = 200) {
 
     const timeReminder = `[Current time: ${days[estTime.getDay()]}, ${timeOfDay} (${hours}:${minutes} EST)]`;
 
-    // Check if this is a simple greeting
+    // Check if this is a FIRST message greeting (only 1 user message in conversation)
+    const userMessages = enhancedMessages.filter(m => m.role === 'user');
+    const isFirstMessage = userMessages.length === 1;
     const lastUserMsg = enhancedMessages[enhancedMessages.length - 1]?.content?.toLowerCase()?.trim() || '';
     const isSimpleGreeting = /^(hi|hey|hello|yo|sup|heyy+|hii+|what'?s up|whats up)\.?!?$/i.test(lastUserMsg);
 
@@ -1801,10 +1803,10 @@ async function callDeepSeek(messages, temperature = 0.3, maxTokens = 200) {
     let styleReminder = `\n\n${timeReminder}
 [STYLE: casual lowercase texting, match his message length]`;
 
-    // Extra strong reminder for greetings
-    if (isSimpleGreeting) {
+    // Extra strong reminder for FIRST MESSAGE greetings only
+    if (isFirstMessage && isSimpleGreeting) {
       styleReminder = `\n\n${timeReminder}
-[GREETING DETECTED: Reply with ONLY a short greeting like "heyyy" or "hey :)" - nothing else, no commentary about your day]`;
+[FIRST MESSAGE GREETING: Reply with ONLY a short greeting like "heyyy" or "hey :)" - nothing else, no commentary about your day]`;
     }
 
     // Inject into last user message
