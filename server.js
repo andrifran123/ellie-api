@@ -2434,63 +2434,67 @@ class UserMirroringSystem {
 
   // Generate mirroring instructions for the AI
   generateMirroringInstructions(style) {
-    let instructions = `\n\n🪞 MIRROR HIS COMMUNICATION STYLE:\n`;
-    instructions += `Subtly adapt your texting to match his vibe - this builds subconscious rapport.\n\n`;
+    let instructions = `\n\n═══════════════════════════════════════════════════════════════
+🪞 CRITICAL: MATCH HIS TEXTING STYLE EXACTLY
+═══════════════════════════════════════════════════════════════
+Your message length and style MUST match his. This is how you connect.\n\n`;
+
+    // Message length - MOST IMPORTANT
+    if (style.usesShortMessages || style.avgMessageLength < 40) {
+      instructions += `📏 MESSAGE LENGTH: He sends SHORT messages (avg ${Math.round(style.avgMessageLength)} chars)
+   → Your replies must be similar length. One sentence max. No paragraphs.\n\n`;
+    } else if (style.avgMessageLength > 80) {
+      instructions += `📏 MESSAGE LENGTH: He writes longer messages (avg ${Math.round(style.avgMessageLength)} chars)
+   → You can write more detailed responses.\n\n`;
+    }
 
     // Capitalization
     if (style.usesLowercase) {
-      instructions += `• He types in lowercase → you type lowercase too (no capital letters)\n`;
+      instructions += `🔤 CAPS: He uses lowercase → type in all lowercase, no capitals\n`;
     } else if (style.usesAllCaps) {
-      instructions += `• He uses CAPS for emphasis → mirror that energy when excited\n`;
-    }
-
-    // Message length
-    if (style.usesShortMessages) {
-      instructions += `• He sends short messages → keep yours short too. Match his energy.\n`;
-    } else if (style.avgMessageLength > 80) {
-      instructions += `• He writes longer messages → you can elaborate more\n`;
+      instructions += `🔤 CAPS: He uses CAPS → mirror that energy when excited\n`;
     }
 
     // Punctuation
     if (!style.usesPeriods) {
-      instructions += `• He doesn't use periods → skip periods at end of messages\n`;
+      instructions += `⏹️ PERIODS: He skips periods → you skip them too\n`;
     }
     if (style.usesEllipsis) {
-      instructions += `• He uses "..." → use ellipsis sometimes too...\n`;
+      instructions += `... ELLIPSIS: He uses "..." → use ellipsis too...\n`;
     }
     if (style.usesExclamation) {
-      instructions += `• He uses exclamation marks! → match that enthusiasm!\n`;
+      instructions += `❗ EXCLAMATION: He uses ! → match his excitement!\n`;
     }
 
     // Emojis
     if (style.usesEmojis && style.emojiFrequency === 'frequent') {
-      instructions += `• He loves emojis → use more emojis! Mirror his favorites: ${style.favoriteEmojis.join(' ')}\n`;
+      instructions += `😊 EMOJIS: He uses lots of emojis → use them too! His favorites: ${style.favoriteEmojis.join(' ')}\n`;
     } else if (!style.usesEmojis || style.emojiFrequency === 'rare') {
-      instructions += `• He rarely uses emojis → keep yours minimal or none\n`;
+      instructions += `😐 EMOJIS: He rarely uses emojis → skip emojis or use very few\n`;
     }
 
     // Slang
     if (style.slangLevel === 'heavy') {
-      instructions += `• He uses heavy slang → match it! Use: ${style.commonSlang.join(', ')}\n`;
+      instructions += `🗣️ SLANG: He uses heavy slang → match it! Use: ${style.commonSlang.slice(0, 5).join(', ')}\n`;
     } else if (style.slangLevel === 'minimal') {
-      instructions += `• He speaks more formally → tone down the slang\n`;
+      instructions += `🗣️ SLANG: He speaks formally → tone down the slang\n`;
     }
 
     // Specific patterns
     if (style.usesDoubleLetters) {
-      instructions += `• He elongates words (heyyyy, sooo) → do it too sometimes\n`;
+      instructions += `✨ STYLE: He elongates words (heyyyy, sooo) → do it too\n`;
     }
     if (style.usesTextSpeak) {
-      instructions += `• He uses text speak (u, r, ur) → mirror it occasionally\n`;
+      instructions += `📱 TEXT SPEAK: He uses u, r, ur → mirror it\n`;
     }
     if (style.usesLol) {
-      instructions += `• He says lol/haha a lot → use it back\n`;
+      instructions += `😂 LOL: He says lol/haha → use it back\n`;
     }
     if (style.usesCursing) {
-      instructions += `• He curses casually → you can curse too, match his level\n`;
+      instructions += `🤬 CURSING: He curses → you can curse too\n`;
     }
 
-    instructions += `\n⚠️ Be SUBTLE - don't copy him exactly, just vibe with his style.\n`;
+    instructions += `═══════════════════════════════════════════════════════════════\n`;
 
     return instructions;
   }
@@ -7345,7 +7349,7 @@ app.post("/api/chat", async (req, res) => {
       const userStyle = userMirroringSystem.analyzeUserStyle(history);
       const mirroringInstructions = userMirroringSystem.generateMirroringInstructions(userStyle);
       finalSystemMsg += mirroringInstructions;
-      console.log(`🪞 Mirroring: lowercase=${userStyle.usesLowercase}, slang=${userStyle.slangLevel}, emojis=${userStyle.emojiFrequency}`);
+      console.log(`🪞 Mirroring: avgLength=${Math.round(userStyle.avgMessageLength)}, lowercase=${userStyle.usesLowercase}, slang=${userStyle.slangLevel}, emojis=${userStyle.emojiFrequency}, periods=${userStyle.usesPeriods}, lol=${userStyle.usesLol}`);
     } catch (mirrorErr) {
       console.warn('⚠️ Mirroring analysis failed:', mirrorErr.message);
     }
