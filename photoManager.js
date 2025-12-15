@@ -545,11 +545,9 @@ async function selectPhoto(pool, userId, criteria) {
     let params = [minNsfw, maxNsfw, userId];
     let paramIndex = 4;
 
-    // Throwback filter - only apply if photo_type column exists and we specifically want throwbacks
-    // Note: Photos from different locations than current are ALSO treated as throwbacks contextually
+    // Throwback filter - photo_type='throwback' OR gym photos (gym can be used as throwback)
     if (useThrowback) {
-      // Don't filter by photo_type - any photo can be a "throwback" if it's from a different location
-      // The AI prompt will tell her to say it's an old photo
+      conditions.push(`(p.photo_type = 'throwback' OR LOWER(p.location) = 'gym')`);
     }
 
     // Explicit content filter
@@ -590,14 +588,13 @@ async function selectPhoto(pool, userId, criteria) {
       return rows[0];
     }
 
-    // Fallback: No matching location photo - try ANY photo as throwback
-    // (she'll say it's an old photo from her phone)
+    // Fallback: No matching location photo - try throwback photos (includes gym)
     if (compatibleLocations && !useThrowback) {
-      console.log(`📸 No location-matched photo, trying ANY photo as throwback`);
+      console.log(`📸 No location-matched photo, trying throwback (photo_type=throwback OR gym)`);
       return selectPhoto(pool, userId, {
         ...criteria,
         useThrowback: true,
-        compatibleLocations: null  // Remove location filter - any photo works as "old photo"
+        compatibleLocations: null  // Throwbacks can be from anywhere
       });
     }
 
@@ -712,18 +709,16 @@ async function preparePhotoForMessage(pool, userId, context) {
     // Record that we sent this photo
     await recordPhotoSent(pool, userId, photo.id, decision.type);
 
-    // Check if this photo is from a different location than where she is now
-    // If so, it must be presented as a throwback (old photo)
+    // Check if this is a gym photo while not at gym - treat as throwback
     const photoLocation = (photo.location || '').toLowerCase();
     const currentLoc = (decision.currentLocation || '').toLowerCase();
-    const compatibleLocs = getCompatibleLocations(currentLoc) || [];
-    const locationMismatch = currentLoc && photoLocation && !compatibleLocs.includes(photoLocation);
+    const isGymPhotoNotAtGym = photoLocation === 'gym' && currentLoc !== 'gym';
 
-    // It's a throwback if: explicitly marked, decision says so, OR location doesn't match current
-    const isThrowback = decision.useThrowback || photo.photo_type === 'throwback' || locationMismatch;
+    // It's a throwback if: explicitly marked as throwback, decision says so, OR gym photo when not at gym
+    const isThrowback = decision.useThrowback || photo.photo_type === 'throwback' || isGymPhotoNotAtGym;
 
-    if (locationMismatch) {
-      console.log(`📸 Location mismatch: she's at "${currentLoc}" but photo is from "${photoLocation}" - treating as throwback`);
+    if (isGymPhotoNotAtGym) {
+      console.log(`📸 Gym photo but she's at "${currentLoc}" - treating as throwback`);
     }
 
     return {
