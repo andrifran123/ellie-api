@@ -4240,19 +4240,22 @@ const VEROTEL_PLANS = {
 
 /**
  * Calculate Verotel signature
- * Parameters must be sorted alphabetically, joined with ":"
- * signatureKey is always first
+ * Format: sha256(signatureKey:param1=value1:param2=value2:...)
+ * Parameters sorted alphabetically by name, email excluded
  */
 function calculateVerotelSignature(params) {
   const { signature, email, ...rest } = params;
   const sortedKeys = Object.keys(rest).sort();
+
+  // Build signature string: signatureKey:key1=val1:key2=val2:...
   const parts = [VEROTEL_SIGNATURE_KEY];
   for (const key of sortedKeys) {
     if (rest[key] !== undefined && rest[key] !== null && rest[key] !== '') {
-      parts.push(rest[key]);
+      parts.push(`${key}=${rest[key]}`);
     }
   }
   const signatureString = parts.join(':');
+  console.log('[verotel] Signature string:', signatureString);
   return crypto.createHash('sha256').update(signatureString, 'utf8').digest('hex');
 }
 
