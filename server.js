@@ -4215,6 +4215,189 @@ app.post(
 ); // â€¢Â exactly one closer here
 
 // ------------------------------------------------------------
+// VEROTEL FLEXPAY WEBHOOK & SUBSCRIPTION
+// ------------------------------------------------------------
+
+// Verotel credentials
+const VEROTEL_SHOP_ID = "135213";
+const VEROTEL_SIGNATURE_KEY = process.env.VEROTEL_SIGNATURE_KEY || "aYUKHtdEQZGD3a5Ked4Cptu6YRhwr8";
+
+// Verotel subscription plans
+const VEROTEL_PLANS = {
+  monthly: {
+    priceAmount: "12.00",
+    priceCurrency: "USD",
+    period: "P30D",
+    name: "Ellie Elite Monthly"
+  },
+  quarterly: {
+    priceAmount: "30.00",
+    priceCurrency: "USD",
+    period: "P90D",
+    name: "Ellie Elite Quarterly"
+  }
+};
+
+/**
+ * Calculate Verotel signature
+ * Parameters must be sorted alphabetically, joined with ":"
+ * signatureKey is always first
+ */
+function calculateVerotelSignature(params) {
+  const { signature, email, ...rest } = params;
+  const sortedKeys = Object.keys(rest).sort();
+  const parts = [VEROTEL_SIGNATURE_KEY];
+  for (const key of sortedKeys) {
+    if (rest[key] !== undefined && rest[key] !== null && rest[key] !== '') {
+      parts.push(rest[key]);
+    }
+  }
+  const signatureString = parts.join(':');
+  return crypto.createHash('sha256').update(signatureString, 'utf8').digest('hex');
+}
+
+/**
+ * Verify Verotel postback signature
+ */
+function verifyVerotelSignature(params) {
+  const providedSignature = params.signature;
+  if (!providedSignature) return false;
+  const calculatedSignature = calculateVerotelSignature(params);
+  return providedSignature.toLowerCase() === calculatedSignature.toLowerCase();
+}
+
+/**
+ * Generate Verotel FlexPay subscription URL
+ */
+function generateVerotelSubscriptionURL(plan, userEmail, referenceId) {
+  const planConfig = VEROTEL_PLANS[plan];
+  if (!planConfig) throw new Error(`Unknown plan: ${plan}`);
+
+  const params = {
+    version: "4",
+    shopID: VEROTEL_SHOP_ID,
+    type: "subscription",
+    subscriptionType: "recurring",
+    priceAmount: planConfig.priceAmount,
+    priceCurrency: planConfig.priceCurrency,
+    period: planConfig.period,
+    name: planConfig.name,
+    custom1: userEmail,
+    referenceID: referenceId || `ellie_${Date.now()}`
+  };
+
+  params.signature = calculateVerotelSignature(params);
+  params.email = userEmail;
+
+  const baseURL = "https://secure.verotel.com/startorder";
+  const queryString = Object.entries(params)
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join('&');
+
+  return `${baseURL}?${queryString}`;
+}
+
+// Verotel Postback Webhook (GET request)
+app.get("/api/verotel/webhook", async (req, res) => {
+  try {
+    console.log("[verotel] Postback received:", req.query);
+
+    if (!verifyVerotelSignature(req.query)) {
+      console.error("[verotel] Invalid signature");
+      return res.status(400).send("Invalid signature");
+    }
+
+    const { event, saleID, custom1, nextChargeOn, expiresOn } = req.query;
+    const email = custom1?.toLowerCase();
+
+    if (!email) {
+      console.error("[verotel] No email in postback (custom1)");
+      return res.status(200).send("OK");
+    }
+
+    console.log(`[verotel] Event: ${event} for ${email}, saleID: ${saleID}`);
+
+    const isPaymentSuccess = event === "initial" || event === "rebill";
+    const isCancellation = event === "cancel" || event === "expiry";
+
+    const { rows: userRows } = await pool.query(
+      `SELECT user_id FROM users WHERE email = $1`,
+      [email]
+    );
+
+    if (userRows.length > 0) {
+      const userId = userRows[0].user_id;
+
+      if (isPaymentSuccess) {
+        await pool.query(
+          `UPDATE users
+           SET paid = true,
+               verotel_sale_id = $1,
+               verotel_subscription_expires = $2,
+               updated_at = NOW()
+           WHERE user_id = $3`,
+          [saleID, nextChargeOn || expiresOn, userId]
+        );
+
+        await pool.query(
+          `INSERT INTO subscriptions (email, status, current_period_end, updated_at)
+           VALUES ($1, 'active', $2, NOW())
+           ON CONFLICT (email)
+           DO UPDATE SET status = 'active',
+                         current_period_end = EXCLUDED.current_period_end,
+                         updated_at = NOW()`,
+          [email, nextChargeOn || expiresOn]
+        );
+
+        if (event === "initial") {
+          const rel = await getUserRelationship(userId);
+          if (rel.relationship_level < 21) {
+            await updateRelationshipLevel(userId, 21 - rel.relationship_level, true);
+            console.log(`[verotel] Auto-upgraded ${email} to FRIEND_TENSION (level 21)`);
+          }
+        }
+
+        console.log(`[verotel] Payment success for ${email}, paid=true`);
+
+      } else if (isCancellation) {
+        await pool.query(
+          `UPDATE users SET paid = false, updated_at = NOW() WHERE user_id = $1`,
+          [userId]
+        );
+        await pool.query(
+          `UPDATE subscriptions SET status = 'cancelled', updated_at = NOW() WHERE email = $1`,
+          [email]
+        );
+        console.log(`[verotel] Subscription ${event} for ${email}, paid=false`);
+      }
+
+    } else {
+      if (isPaymentSuccess) {
+        await pool.query(
+          `INSERT INTO users (email, paid, verotel_sale_id, updated_at)
+           VALUES ($1, true, $2, NOW())
+           ON CONFLICT (email) DO UPDATE SET paid = true, verotel_sale_id = $2, updated_at = NOW()`,
+          [email, saleID]
+        );
+        console.log(`[verotel] Created new paid user: ${email}`);
+      }
+    }
+
+    return res.status(200).send("OK");
+
+  } catch (e) {
+    console.error("[verotel] Webhook error:", e);
+    return res.status(200).send("OK");
+  }
+});
+
+// Handle POST postbacks too
+app.post("/api/verotel/webhook", express.urlencoded({ extended: true }), async (req, res) => {
+  req.query = { ...req.query, ...req.body };
+  return res.redirect(307, `/api/verotel/webhook?${new URLSearchParams(req.body).toString()}`);
+});
+
+// ------------------------------------------------------------
 // After webhook: JSON & cookies for all other routes
 // ------------------------------------------------------------
 
@@ -6766,12 +6949,82 @@ app.post("/api/admin/add-minutes", adminLimiter, requireAdmin, async (req, res) 
 });
 
 app.post("/api/billing/checkout", async (_req, res) => {
-  return res.status(501).json({ message: "Billing disabled" });
+  return res.status(501).json({ message: "Use /api/verotel/subscribe instead" });
 });
 
 // Portal placeholder
 app.post("/api/billing/portal", async (_req, res) => {
-  return res.status(501).json({ message: "Billing disabled" });
+  return res.status(501).json({ message: "Manage subscription at Verotel" });
+});
+
+// ------------------------------------------------------------
+// VEROTEL SUBSCRIPTION ENDPOINT
+// ------------------------------------------------------------
+app.post("/api/verotel/subscribe", async (req, res) => {
+  try {
+    const { plan } = req.body; // "monthly" or "quarterly"
+
+    if (!plan || !VEROTEL_PLANS[plan]) {
+      return res.status(400).json({ error: "Invalid plan. Use 'monthly' or 'quarterly'" });
+    }
+
+    // Get user email from session
+    const token = req.cookies?.[SESSION_COOKIE_NAME] || null;
+    const payload = token ? verifySession(token) : null;
+
+    let email = null;
+    if (payload?.userId) {
+      const { rows } = await pool.query(
+        `SELECT email FROM users WHERE user_id = $1`,
+        [payload.userId]
+      );
+      email = rows[0]?.email;
+    } else if (payload?.email) {
+      email = payload.email;
+    }
+
+    if (!email) {
+      return res.status(401).json({ error: "Not logged in" });
+    }
+
+    // Generate Verotel subscription URL
+    const subscriptionURL = generateVerotelSubscriptionURL(plan, email);
+
+    console.log(`[verotel] Generated ${plan} subscription URL for ${email}`);
+
+    return res.json({
+      ok: true,
+      url: subscriptionURL,
+      plan: plan,
+      price: VEROTEL_PLANS[plan].priceAmount,
+      currency: VEROTEL_PLANS[plan].priceCurrency
+    });
+
+  } catch (e) {
+    console.error("[verotel] Subscribe error:", e);
+    return res.status(500).json({ error: "Failed to create subscription" });
+  }
+});
+
+// Get available Verotel plans
+app.get("/api/verotel/plans", async (req, res) => {
+  return res.json({
+    ok: true,
+    plans: {
+      monthly: {
+        price: VEROTEL_PLANS.monthly.priceAmount,
+        currency: VEROTEL_PLANS.monthly.priceCurrency,
+        period: "30 days",
+        name: VEROTEL_PLANS.monthly.name
+      },
+      quarterly: {
+        price: VEROTEL_PLANS.quarterly.priceAmount,
+        currency: VEROTEL_PLANS.quarterly.priceCurrency,
+        period: "90 days",
+        name: VEROTEL_PLANS.quarterly.name
+      }
+    }
+  });
 });
 
 /** PAYWALL GUARD for chat/voice APIs (keeps Ellie handlers untouched) */
